@@ -4,7 +4,7 @@ const db = require('../models');
 const otpService = require('../services/otpService');
 const { success, error } = require('../utils/response');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
-const { User, Location, Admin, SuperAdmin } = db;
+const { User, Location, Admin, SuperAdmin, Rider } = db;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -24,6 +24,11 @@ const buildTokenPayload = (role, account) => {
     payload.zone_location_id = account.zone_location_id;
   }
 
+  if (role === 'rider') {
+    if (account.zone_location_id) payload.zone_location_id = account.zone_location_id;
+    if (account.user_id) payload.user_id = account.user_id;
+  }
+
   // Carry the linked user identity for admin and super_admin so they can
   // act as a regular user when the token is active for that role.
   if ((role === 'admin' || role === 'super_admin') && account.user_id) {
@@ -37,8 +42,9 @@ const buildTokenPayload = (role, account) => {
  * Given a phone number, checks all three tables and returns every role
  * that phone number holds, along with the account record for each.
  *
- * Returns: { superAdminAccount, adminAccount, userAccount }
+ * Returns: { superAdminAccount, adminAccount, userAccount, riderAccount }
  * Any of these may be null if the phone doesn't exist in that table.
+ * riderAccount is found via user_id link — same phone, rider table.
  */
 const findAllRolesForPhone = async (phone) => {
   const [superAdminAccount, adminAccount, userAccount] = await Promise.all([
@@ -46,18 +52,29 @@ const findAllRolesForPhone = async (phone) => {
     Admin.scope('withPassword').findOne({ where: { phone } }),
     User.scope('withPassword').findOne({ where: { phone } }),
   ]);
-  return { superAdminAccount, adminAccount, userAccount };
+
+  // Rider accounts are linked via user_id, not phone directly.
+  // Look up rider only if a user account exists.
+  let riderAccount = null;
+  if (userAccount) {
+    riderAccount = await Rider.scope('withPassword').findOne({
+      where: { user_id: userAccount.id, is_active: true },
+    });
+  }
+
+  return { superAdminAccount, adminAccount, userAccount, riderAccount };
 };
 
 /**
  * Derives the list of role strings held by a phone number.
  * Used to populate available_roles in the login response.
  */
-const deriveAvailableRoles = ({ superAdminAccount, adminAccount, userAccount }) => {
+const deriveAvailableRoles = ({ superAdminAccount, adminAccount, userAccount, riderAccount }) => {
   const roles = [];
   if (userAccount) roles.push('user');
   if (adminAccount) roles.push('admin');
   if (superAdminAccount) roles.push('super_admin');
+  if (riderAccount) roles.push('rider');
   return roles;
 };
 
@@ -244,12 +261,12 @@ const loginUser = async (req, res, next) => {
 const switchRole = async (req, res, next) => {
   try {
     const { role: requestedRole } = req.body;
-    const validRoles = ['user', 'admin', 'super_admin'];
+    const validRoles = ['user', 'admin', 'super_admin', 'rider'];
 
     if (!requestedRole || !validRoles.includes(requestedRole)) {
       return error(res, {
         statusCode: 400,
-        message: "role must be one of: 'user', 'admin', 'super_admin'",
+        message: "role must be one of: 'user', 'admin', 'super_admin', 'rider'",
       });
     }
 
@@ -263,6 +280,9 @@ const switchRole = async (req, res, next) => {
     } else if (req.auth.role === 'admin') {
       const adm = await Admin.findByPk(req.auth.id, { attributes: ['phone'] });
       callerPhone = adm?.phone;
+    } else if (req.auth.role === 'rider') {
+      const rdr = await Rider.findByPk(req.auth.id, { attributes: ['phone'] });
+      callerPhone = rdr?.phone;
     } else {
       const usr = await User.findByPk(req.auth.id, { attributes: ['phone'] });
       callerPhone = usr?.phone;
@@ -281,6 +301,7 @@ const switchRole = async (req, res, next) => {
     if (requestedRole === 'super_admin') targetAccount = superAdminAccount;
     else if (requestedRole === 'admin') targetAccount = adminAccount;
     else if (requestedRole === 'user') targetAccount = userAccount;
+    else if (requestedRole === 'rider') targetAccount = accounts.riderAccount;
 
     if (!targetAccount) {
       return error(res, {
@@ -328,7 +349,12 @@ const switchRole = async (req, res, next) => {
           ...(requestedRole === 'admin'
             ? { zone_location_id: targetAccount.zone_location_id }
             : {}),
-          ...(targetAccount.user_id ? { user_id: targetAccount.user_id } : {}),
+          ...(requestedRole === 'rider'
+            ? { zone_location_id: targetAccount.zone_location_id, user_id: targetAccount.user_id }
+            : {}),
+          ...(targetAccount.user_id && requestedRole !== 'rider'
+            ? { user_id: targetAccount.user_id }
+            : {}),
         },
       },
     });
