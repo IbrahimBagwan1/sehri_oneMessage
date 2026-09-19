@@ -1,0 +1,202 @@
+[
+  {
+    "slug": "morning",
+    "name": "Morning adhkar",
+    "description": "Short daily invocations recited after Fajr until sunrise.",
+    "order_index": 1,
+    "duas": [
+      {
+        "slug": "morning-tasbih",
+        "name": "Tasbih of the morning",
+        "arabic_text": "سُبْحَانَ اللَّهِ وَبِحَمْدِهِ",
+        "transliteration": "Subhan-Allahi wa bihamdihi",
+        "translation": "Glory is to Allah, and praise is His.",
+        "source": "Bukhari 6405; Muslim 2691",
+        "order_index": 1
+      },
+      {
+        "slug": "morning-istighfar",
+        "name": "Seeking forgiveness",
+        "arabic_text": "أَسْتَغْفِرُ اللَّهَ وَأَتُوبُ إِلَيْهِ",
+        "transliteration": "Astaghfirullaha wa atubu ilayh",
+        "translation": "I seek Allah's forgiveness and I turn to Him in repentance.",
+        "source": "Bukhari 6307; Muslim 2702",
+        "order_index": 2
+      },
+      {
+        "slug": "morning-tahlil",
+        "name": "Affirmation of Tawhid",
+        "arabic_text": "لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ، لَهُ الْمُلْكُ وَلَهُ الْحَمْدُ، وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ",
+        "transliteration": "La ilaha illa-Allahu wahdahu la sharika lah, lahul-mulku wa lahul-hamd, wa huwa 'ala kulli shay'in qadir",
+        "translation": "There is no god but Allah, alone, with no partner; His is the dominion, His is the praise, and He is able to do all things.",
+        "source": "Bukhari 6403; Muslim 2691",
+        "order_index": 3
+      }
+    ]
+  },
+  {
+    "slug": "evening",
+    "name": "Evening adhkar",
+    "description": "Short daily invocations recited between Asr and Maghrib.",
+    "order_index": 2,
+    "duas": [
+      {
+        "slug": "evening-tasbih",
+        "name": "Tasbih of the evening",
+        "arabic_text": "سُبْحَانَ اللَّهِ وَبِحَمْدِهِ عَدَدَ خَلْقِهِ، وَرِضَا نَفْسِهِ، وَزِنَةَ عَرْشِهِ، وَمِدَادَ كَلِمَاتِهِ",
+        "transliteration": "Subhan-Allahi wa bihamdihi 'adada khalqihi, wa rida nafsihi, wa zinata 'arshihi, wa midada kalimatih",
+        "translation": "Glory be to Allah and praise be to Him, as much as the number of His creation, as much as pleases Him, as much as the weight of His throne, and as much as the ink of His words.",
+        "source": "Muslim 2726",
+        "order_index": 1
+      },
+      {
+        "slug": "evening-ta-awwudh",
+        "name": "Seeking refuge in the perfect words of Allah",
+        "arabic_text": "أَعُوذُ بِكَلِمَاتِ اللَّهِ التَّامَّاتِ مِنْ شَرِّ مَا خَلَقَ",
+        "transliteration": "A'udhu bi-kalimatillahit-tammati min sharri ma khalaq",
+        "translation": "I seek refuge in the perfect words of Allah from the evil of what He has created.",
+        "source": "Muslim 2708",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "after-prayer",
+    "name": "After prayer",
+    "description": "Recommended dhikr after the obligatory prayers.",
+    "order_index": 3,
+    "duas": [
+      {
+        "slug": "after-prayer-istighfar",
+        "name": "Istighfar (three times)",
+        "arabic_text": "أَسْتَغْفِرُ اللَّهَ ﴿ثَلَاثًا﴾",
+        "transliteration": "Astaghfirullah (three times)",
+        "translation": "I seek Allah's forgiveness — said three times after the salam.",
+        "source": "Muslim 591",
+        "order_index": 1
+      },
+      {
+        "slug": "after-prayer-salam",
+        "name": "Allahumma antas-salam",
+        "arabic_text": "اللَّهُمَّ أَنْتَ السَّلَامُ، وَمِنْكَ السَّلَامُ، تَبَارَكْتَ يَا ذَا الْجَلَالِ وَالْإِكْرَامِ",
+        "transliteration": "Allahumma antas-salam, wa minkas-salam, tabarakta ya dhal-jalali wal-ikram",
+        "translation": "O Allah, You are Peace and from You is peace. Blessed are You, O Owner of Majesty and Honour.",
+        "source": "Muslim 592",
+        "order_index": 2
+      },
+      {
+        "slug": "after-prayer-tasbih",
+        "name": "Tasbih of Fatima (33-33-34)",
+        "arabic_text": "سُبْحَانَ اللَّهِ ﴿٣٣﴾، الْحَمْدُ لِلَّهِ ﴿٣٣﴾، اللَّهُ أَكْبَرُ ﴿٣٤﴾",
+        "transliteration": "Subhan-Allah (33x), Alhamdu lillah (33x), Allahu Akbar (34x)",
+        "translation": "Glory be to Allah (33 times), praise be to Allah (33 times), Allah is the Greatest (34 times).",
+        "source": "Muslim 596",
+        "order_index": 3
+      }
+    ]
+  },
+  {
+    "slug": "food",
+    "name": "Around food",
+    "description": "Before and after eating.",
+    "order_index": 4,
+    "duas": [
+      {
+        "slug": "food-before",
+        "name": "Before eating",
+        "arabic_text": "بِسْمِ اللَّهِ",
+        "transliteration": "Bismillah",
+        "translation": "In the name of Allah. (If forgotten at the start, say: Bismillahi fi awwalihi wa akhirihi.)",
+        "source": "Abu Dawud 3767; Tirmidhi 1858",
+        "order_index": 1
+      },
+      {
+        "slug": "food-after",
+        "name": "After eating",
+        "arabic_text": "الْحَمْدُ لِلَّهِ الَّذِي أَطْعَمَنِي هَذَا وَرَزَقَنِيهِ، مِنْ غَيْرِ حَوْلٍ مِنِّي وَلَا قُوَّةٍ",
+        "transliteration": "Alhamdu lillahilladhi at'amani hadha wa razaqanihi, min ghayri hawlin minni wa la quwwah",
+        "translation": "Praise is to Allah who has fed me this and provided it for me, without any strength or power on my part.",
+        "source": "Abu Dawud 4023; Tirmidhi 3458",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "sleep",
+    "name": "Before sleeping and on waking",
+    "description": "Short adhkar for bedtime and morning.",
+    "order_index": 5,
+    "duas": [
+      {
+        "slug": "sleep-before",
+        "name": "Before sleeping",
+        "arabic_text": "بِاسْمِكَ اللَّهُمَّ أَمُوتُ وَأَحْيَا",
+        "transliteration": "Bismika Allahumma amutu wa ahya",
+        "translation": "In Your name, O Allah, I die and I live.",
+        "source": "Bukhari 6324",
+        "order_index": 1
+      },
+      {
+        "slug": "sleep-waking",
+        "name": "On waking",
+        "arabic_text": "الْحَمْدُ لِلَّهِ الَّذِي أَحْيَانَا بَعْدَ مَا أَمَاتَنَا وَإِلَيْهِ النُّشُورُ",
+        "transliteration": "Alhamdu lillahilladhi ahyana ba'da ma amatana wa ilayhin-nushur",
+        "translation": "Praise is to Allah who gave us life after having taken it from us, and to Him is the resurrection.",
+        "source": "Bukhari 6324",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "home",
+    "name": "Entering and leaving home",
+    "description": "Short invocations at the threshold.",
+    "order_index": 6,
+    "duas": [
+      {
+        "slug": "home-leaving",
+        "name": "Leaving home",
+        "arabic_text": "بِسْمِ اللَّهِ، تَوَكَّلْتُ عَلَى اللَّهِ، وَلَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ",
+        "transliteration": "Bismillahi, tawakkaltu 'ala Allahi, wa la hawla wa la quwwata illa billah",
+        "translation": "In the name of Allah, I place my trust in Allah, and there is no might nor power except with Allah.",
+        "source": "Abu Dawud 5095; Tirmidhi 3426",
+        "order_index": 1
+      },
+      {
+        "slug": "home-entering",
+        "name": "Entering home",
+        "arabic_text": "اللَّهُمَّ إِنِّي أَسْأَلُكَ خَيْرَ الْمَوْلِجِ وَخَيْرَ الْمَخْرَجِ، بِسْمِ اللَّهِ وَلَجْنَا، وَبِسْمِ اللَّهِ خَرَجْنَا، وَعَلَى اللَّهِ رَبِّنَا تَوَكَّلْنَا",
+        "transliteration": "Allahumma inni as'aluka khayral-mawliji wa khayral-makhraji, bismillahi walajna, wa bismillahi kharajna, wa 'ala Allahi rabbina tawakkalna",
+        "translation": "O Allah, I ask You for the best entry and the best exit. In the name of Allah we enter, in the name of Allah we leave, and upon Allah our Lord we depend.",
+        "source": "Abu Dawud 5096",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "mosque",
+    "name": "Entering and leaving the mosque",
+    "description": "Short invocations at the mosque doorway.",
+    "order_index": 7,
+    "duas": [
+      {
+        "slug": "mosque-entering",
+        "name": "Entering the mosque",
+        "arabic_text": "اللَّهُمَّ افْتَحْ لِي أَبْوَابَ رَحْمَتِكَ",
+        "transliteration": "Allahumma iftah li abwaba rahmatik",
+        "translation": "O Allah, open for me the gates of Your mercy.",
+        "source": "Muslim 713",
+        "order_index": 1
+      },
+      {
+        "slug": "mosque-leaving",
+        "name": "Leaving the mosque",
+        "arabic_text": "اللَّهُمَّ إِنِّي أَسْأَلُكَ مِنْ فَضْلِكَ",
+        "transliteration": "Allahumma inni as'aluka min fadlik",
+        "translation": "O Allah, I ask You from Your bounty.",
+        "source": "Muslim 713",
+        "order_index": 2
+      }
+    ]
+  }
+]

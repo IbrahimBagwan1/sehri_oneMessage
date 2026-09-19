@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -19,18 +20,17 @@ import {
   Button,
   Card,
   Chip,
-  Divider,
   ErrorState,
   Header,
   Hero,
   LoadingState,
+  RubStar,
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
 // ==========================================
-// Constants — kept in one place so the poll card and prayer card don't
-// grow one-off literals over time.
+// Constants
 // ==========================================
 const PHASE = {
   VOTING:       'voting',
@@ -40,87 +40,165 @@ const PHASE = {
   CLOSED:       'closed',
 };
 
-// Prayer names in the order they occur through the day — used to derive
-// "which prayer is next?" from the AlAdhan timings map.
-const PRAYER_ORDER = [
-  { key: 'fajr',     label: 'Fajr'     },
-  { key: 'sunrise',  label: 'Sunrise'  },
-  { key: 'dhuhr',    label: 'Dhuhr'    },
-  { key: 'asr',      label: 'Asr'      },
-  { key: 'maghrib',  label: 'Maghrib'  },
-  { key: 'isha',     label: 'Isha'     },
-];
-
-// Extra rows shown in the full list (Tahajjud + Imsak sit outside the
-// six daily prayers but matter for the community's rhythm during Ramadan).
-const EXTENDED_ROWS = [
-  { key: 'tahajjud', label: 'Tahajjud', hint: 'Last third of the night' },
-  { key: 'imsak',    label: 'Imsak',    hint: 'Fasting begins' },
+/**
+ * Canonical order of the ribbon. Tahajjud + Imsak sit at the start
+ * during Ramadan because they matter for the community's rhythm; the
+ * six daily prayers follow in their natural time order.
+ */
+const PRAYER_TIMELINE = [
+  { key: 'tahajjud', label: 'Tahajjud', extended: true  },
+  { key: 'imsak',    label: 'Imsak',    extended: true  },
+  { key: 'fajr',     label: 'Fajr',     extended: false },
+  { key: 'sunrise',  label: 'Sunrise',  extended: false },
+  { key: 'dhuhr',    label: 'Dhuhr',    extended: false },
+  { key: 'asr',      label: 'Asr',      extended: false },
+  { key: 'maghrib',  label: 'Maghrib',  extended: false },
+  { key: 'isha',     label: 'Isha',     extended: false },
 ];
 
 // -------------------------------------------------------------------------
-// Small local helpers — all pure, all deterministic.
+// Pure helpers — deterministic, testable
 // -------------------------------------------------------------------------
 
-/** "22:30" → 22 * 60 + 30 = 1350; null-safe. */
-const toMinutes = (t) => {
+const parseHM = (t) => {
   if (!t || typeof t !== 'string') return null;
   const [h, m] = t.split(':').map((n) => Number.parseInt(n, 10));
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  return h * 60 + m;
+  return Number.isFinite(h) && Number.isFinite(m) ? { h, m } : null;
 };
 
-/** Format an HH:MM string in either 12h or 24h — 12h preferred for the UI. */
-const formatTime = (t) => {
-  if (!t) return '—';
-  const [h, m] = t.split(':').map((n) => Number.parseInt(n, 10));
-  if (Number.isNaN(h) || Number.isNaN(m)) return t;
-  const suffix = h >= 12 ? 'pm' : 'am';
-  const h12 = ((h + 11) % 12) + 1;
-  return `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
+const format12h = (t) => {
+  const hm = parseHM(t);
+  if (!hm) return '—';
+  const suffix = hm.h >= 12 ? 'pm' : 'am';
+  const h12 = ((hm.h + 11) % 12) + 1;
+  return `${h12}:${String(hm.m).padStart(2, '0')} ${suffix}`;
 };
 
-/** "in 34m" / "in 2h 15m" — human-friendly gap to a moment later today. */
-const relative = (minsFromNow) => {
-  if (minsFromNow == null || minsFromNow < 0) return null;
-  if (minsFromNow < 1) return 'now';
-  if (minsFromNow < 60) return `in ${minsFromNow}m`;
-  const h = Math.floor(minsFromNow / 60);
-  const m = minsFromNow % 60;
-  return m === 0 ? `in ${h}h` : `in ${h}h ${m}m`;
-};
-
-/** "Wednesday, 19 September" */
 const gregorianLine = () =>
-  new Date().toLocaleDateString('en-IN', {
-    weekday: 'long', day: '2-digit', month: 'long',
-  });
+  new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' });
+
+/**
+ * Turn the AlAdhan response into the ordered ribbon shape.
+ * Each row: { key, label, time, at (Date), isPast, extended }.
+ */
+const buildTimeline = (data) => {
+  if (!data) return [];
+  const now = new Date();
+  const t = data.timings || {};
+  const source = {
+    tahajjud: data.tahajjud_time,
+    imsak:    data.imsak_time || t.Imsak,
+    fajr:     t.Fajr,
+    sunrise:  t.Sunrise,
+    dhuhr:    t.Dhuhr,
+    asr:      t.Asr,
+    maghrib:  t.Maghrib,
+    isha:     t.Isha,
+  };
+
+  return PRAYER_TIMELINE
+    .map((row) => {
+      const time = source[row.key];
+      const hm = parseHM(time);
+      if (!hm) return null;
+      const at = new Date(now);
+      at.setHours(hm.h, hm.m, 0, 0);
+      // Tahajjud typically falls in the last third of the night (2 am-ish),
+      // which the API returns as "02:14" — that's tomorrow's, not today's.
+      // If the resulting timestamp is *before* now AND the label is
+      // tahajjud, treat it as tomorrow so the countdown makes sense.
+      if (row.key === 'tahajjud' && at < now) {
+        at.setDate(at.getDate() + 1);
+      }
+      return { ...row, time, at, isPast: at < now };
+    })
+    .filter(Boolean);
+};
+
+/**
+ * The "next" prayer is the earliest one whose time hasn't passed yet.
+ * If everything has passed (late night before Tahajjud rolls over), we
+ * roll to tomorrow's Fajr so the countdown never shows a negative gap.
+ */
+const findNext = (timeline) => {
+  const upcoming = timeline.find((r) => !r.isPast);
+  if (upcoming) return upcoming;
+  const first = timeline.find((r) => !r.extended) || timeline[0];
+  if (!first) return null;
+  const rollover = new Date(first.at);
+  rollover.setDate(rollover.getDate() + 1);
+  return { ...first, at: rollover, isPast: false };
+};
+
+/**
+ * Adaptive formatting: hours + minutes when far off, minutes + seconds
+ * inside the last hour, seconds only inside the last minute. Keeps the
+ * seconds counter from feeling jittery when a prayer is hours away.
+ */
+const formatCountdown = (ms) => {
+  if (!Number.isFinite(ms) || ms <= 0) return 'now';
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+};
 
 // -------------------------------------------------------------------------
-// Screen
+// Live countdown hook — self-adjusting tick rate.
+//   - >5 min out: tick every 30s (minute precision anyway)
+//   - >1 hour out: tick every 60s
+//   - <5 min out: tick every 1s
+// Cuts wasted renders 60x/min → 2x/min for most of the day.
 // -------------------------------------------------------------------------
+const useCountdown = (targetMs) => {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!targetMs) return undefined;
+    const tick = () => {
+      const remaining = targetMs - Date.now();
+      let interval;
+      if (remaining <= 0) interval = 60_000;
+      else if (remaining < 5 * 60_000) interval = 1_000;
+      else if (remaining < 60 * 60_000) interval = 60_000;
+      else interval = 60_000;
+      force((n) => n + 1);
+      return interval;
+    };
+    let handle;
+    const schedule = () => {
+      const next = tick();
+      handle = setTimeout(schedule, next);
+    };
+    schedule();
+    return () => clearTimeout(handle);
+  }, [targetMs]);
+  return targetMs ? Math.max(0, targetMs - Date.now()) : 0;
+};
+
+// =========================================================================
+// Screen
+// =========================================================================
 export default function HomeScreen() {
   const router          = useRouter();
   const user            = useAuthStore((s) => s.user);
   const available_roles = useAuthStore((s) => s.available_roles);
   const switchRole      = useAuthStore((s) => s.switchRole);
 
-  const [prayerData,   setPrayerData]  = useState<any>(null);   // full API response
-  const [pollData,     setPollData]    = useState<any>(null);   // { poll, phase, my_response }
-  const [loadingPrayer, setLoadingP]   = useState(true);
-  const [loadingPoll,   setLoadingV]   = useState(true);
-  const [prayerError,   setPrayerErr]  = useState<string | null>(null);
-  const [pollError,     setPollErr]    = useState<string | null>(null);
+  const [prayerData,    setPrayerData]  = useState<any>(null);
+  const [pollData,      setPollData]    = useState<any>(null);
+  const [loadingPrayer, setLoadingP]    = useState(true);
+  const [loadingPoll,   setLoadingV]    = useState(true);
+  const [prayerError,   setPrayerErr]   = useState<string | null>(null);
+  const [pollError,     setPollErr]     = useState<string | null>(null);
   const [submittingVote, setSubmitting] = useState(false);
-  const [refreshing,    setRefreshing] = useState(false);
-  const [nowMins, setNowMins] = useState(getMinutesNow());
+  const [refreshing,    setRefreshing]  = useState(false);
 
   const firstName = useMemo(() => (user?.name || 'Friend').trim().split(/\s+/)[0], [user?.name]);
 
-  // ---------------------------------------------------------------------
-  // Data loading — one function per resource. Errors are captured
-  // per-resource so a prayer-timings hiccup doesn't blank the poll card.
-  // ---------------------------------------------------------------------
+  // ---- Data loaders ----------------------------------------------------
   const loadPrayer = useCallback(async () => {
     setPrayerErr(null);
     try {
@@ -145,23 +223,12 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // Refetch on focus, and refresh the poll every 5 min while focused so
-  // phase changes (10 pm → voting, 10 am → special case, etc.) are picked
-  // up without the user having to reopen the tab.
-  useFocusEffect(
-    useCallback(() => {
-      loadPrayer();
-      loadPoll();
-      const pollInterval = setInterval(loadPoll, 5 * 60 * 1000);
-      return () => clearInterval(pollInterval);
-    }, [loadPrayer, loadPoll])
-  );
-
-  // Tick every 60s so the "in Xm" label on the next prayer stays live.
-  useEffect(() => {
-    const t = setInterval(() => setNowMins(getMinutesNow()), 60 * 1000);
+  useFocusEffect(useCallback(() => {
+    loadPrayer();
+    loadPoll();
+    const t = setInterval(loadPoll, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [loadPrayer, loadPoll]));
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -169,9 +236,7 @@ export default function HomeScreen() {
     setRefreshing(false);
   }, [loadPrayer, loadPoll]);
 
-  // ---------------------------------------------------------------------
-  // Actions — poll vote + role switch
-  // ---------------------------------------------------------------------
+  // ---- Actions ---------------------------------------------------------
   const handleVote = async (vote) => {
     if (!pollData?.poll) return;
     setSubmitting(true);
@@ -196,18 +261,13 @@ export default function HomeScreen() {
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Derived — the "next prayer" the highlight card renders
-  // ---------------------------------------------------------------------
-  const prayerRows = useMemo(() => buildPrayerRows(prayerData), [prayerData]);
-  const nextPrayer = useMemo(
-    () => prayerRows.find((r) => r.minutes != null && r.minutes >= nowMins) || prayerRows[0] || null,
-    [prayerRows, nowMins]
-  );
+  // ---- Derived ---------------------------------------------------------
+  const timeline = useMemo(() => buildTimeline(prayerData), [prayerData]);
+  const nextPrayer = useMemo(() => findNext(timeline), [timeline]);
+  const remainingMs = useCountdown(nextPrayer?.at?.getTime());
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
-      {/* ---------- Header ---------- */}
       <Header
         leading={<Wordmark />}
         trailing={
@@ -232,14 +292,16 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* ---------- Salaam hero ---------- */}
         <Hero
           greeting="Assalamu alaikum"
           name={firstName}
-          dateLine={buildDateLine(prayerData?.date_hijri)}
+          dateLine={
+            prayerData?.date_hijri
+              ? `${prayerData.date_hijri} · ${gregorianLine()}`
+              : gregorianLine()
+          }
         />
 
-        {/* ---------- Role switcher (only when the user actually has other roles) ---------- */}
         {available_roles.length > 1 && (
           <View style={styles.roleRow}>
             <Text style={styles.roleLabel}>Switch to</Text>
@@ -257,7 +319,7 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* ---------- Prayer times ---------- */}
+        {/* -------------------- Prayer timeline card -------------------- */}
         <View style={styles.section}>
           <SectionHeader
             title="Prayer times"
@@ -269,66 +331,19 @@ export default function HomeScreen() {
             <Card><LoadingState message="Loading today's prayer times…" compact /></Card>
           ) : prayerError ? (
             <Card><ErrorState message={prayerError} onRetry={loadPrayer} /></Card>
+          ) : timeline.length === 0 ? (
+            <Card><ErrorState message="No prayer times available right now." onRetry={loadPrayer} /></Card>
           ) : (
-            <Card padding={false}>
-              {/* Highlighted "next" strip */}
-              {nextPrayer && (
-                <View style={styles.nextStrip}>
-                  <View style={styles.nextLeft}>
-                    <Text style={styles.nextEyebrow}>Next</Text>
-                    <Text style={styles.nextLabel}>{nextPrayer.label}</Text>
-                    {nextPrayer.hint ? <Text style={styles.nextHint}>{nextPrayer.hint}</Text> : null}
-                  </View>
-                  <View style={styles.nextRight}>
-                    <Text style={styles.nextTime}>{formatTime(nextPrayer.time)}</Text>
-                    {(() => {
-                      const rel = nextPrayer.minutes != null ? relative(nextPrayer.minutes - nowMins) : null;
-                      return rel ? <Text style={styles.nextRelative}>{rel}</Text> : null;
-                    })()}
-                  </View>
-                </View>
-              )}
-
-              {/* Compact schedule of the whole day */}
-              <View style={styles.dayList}>
-                {prayerRows.map((row, i) => {
-                  const isNext = nextPrayer && row.key === nextPrayer.key;
-                  const isPast = row.minutes != null && row.minutes < nowMins && !isNext;
-                  return (
-                    <React.Fragment key={row.key}>
-                      {i > 0 && <Divider tone="faint" />}
-                      <View style={styles.dayRow}>
-                        <Text style={[
-                          styles.dayLabel,
-                          isNext && styles.dayLabelActive,
-                          isPast && styles.dayLabelPast,
-                        ]}>
-                          {row.label}
-                        </Text>
-                        <Text style={[
-                          styles.dayTime,
-                          isNext && styles.dayTimeActive,
-                          isPast && styles.dayTimePast,
-                        ]}>
-                          {formatTime(row.time)}
-                        </Text>
-                      </View>
-                    </React.Fragment>
-                  );
-                })}
-              </View>
-
-              {prayerData?.is_from_api === false && (
-                <View style={styles.calcHint}>
-                  <Ionicons name="calculator-outline" size={12} color={colors.inkFaint} />
-                  <Text style={styles.calcHintText}>Calculated locally — the online almanac was unreachable.</Text>
-                </View>
-              )}
-            </Card>
+            <PrayerCard
+              timeline={timeline}
+              nextPrayer={nextPrayer}
+              remainingMs={remainingMs}
+              isFallback={prayerData?.is_from_api === false}
+            />
           )}
         </View>
 
-        {/* ---------- Sehri poll ---------- */}
+        {/* -------------------- Sehri poll card -------------------- */}
         <View style={styles.section}>
           <SectionHeader
             title="Today's Sehri poll"
@@ -340,11 +355,7 @@ export default function HomeScreen() {
           ) : pollError ? (
             <Card><ErrorState message={pollError} onRetry={loadPoll} /></Card>
           ) : (
-            <PollCard
-              data={pollData}
-              submittingVote={submittingVote}
-              onVote={handleVote}
-            />
+            <PollCard data={pollData} submittingVote={submittingVote} onVote={handleVote} />
           )}
         </View>
       </ScrollView>
@@ -353,10 +364,130 @@ export default function HomeScreen() {
 }
 
 // -------------------------------------------------------------------------
-// Sub-components
+// PrayerCard — hero countdown + horizontal ribbon timeline
 // -------------------------------------------------------------------------
+function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
+  const scrollRef = useRef(null);
+  const nodePositions = useRef({});
+  const screenWidth = Dimensions.get('window').width;
 
-/** Wordmark used as the header's `leading` on tab-root screens. */
+  // Auto-scroll horizontally so the "next" node sits ~1/3 from the left,
+  // giving the reader both past context and what's coming next.
+  useEffect(() => {
+    if (!nextPrayer?.key) return;
+    const t = setTimeout(() => {
+      const x = nodePositions.current[nextPrayer.key];
+      if (x != null) {
+        const targetX = Math.max(0, x - screenWidth * 0.28);
+        scrollRef.current?.scrollTo({ x: targetX, animated: true });
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [nextPrayer?.key, screenWidth]);
+
+  return (
+    <Card padding={false}>
+      {/* ---- Countdown hero -------------------------------------------- */}
+      <View style={styles.hero}>
+        <View style={styles.heroEyebrowRow}>
+          <RubStar size={11} />
+          <Text style={styles.heroEyebrow}>Next prayer</Text>
+        </View>
+        <Text style={styles.heroPrayerName}>{nextPrayer?.label || '—'}</Text>
+
+        <View style={styles.heroCountdownRow}>
+          <Text style={styles.heroCountdown}>{formatCountdown(remainingMs)}</Text>
+          <View style={styles.heroDivider} />
+          <View>
+            <Text style={styles.heroAtLabel}>at</Text>
+            <Text style={styles.heroAtTime}>{format12h(nextPrayer?.time)}</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* ---- Ornament divider ------------------------------------------ */}
+      <View style={styles.ornamentDivider}>
+        <View style={styles.ornamentRule} />
+        <RubStar size={11} />
+        <View style={styles.ornamentRule} />
+      </View>
+
+      {/* ---- Horizontal timeline --------------------------------------- */}
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.timeline}
+      >
+        {timeline.map((row, i) => {
+          const isNext = nextPrayer && row.key === nextPrayer.key;
+          const isPast = row.isPast && !isNext;
+          const isFirst = i === 0;
+          const isLast  = i === timeline.length - 1;
+
+          // Segment leading INTO this node is "past" when the current
+          // node is past OR is the next-upcoming one.
+          const leadPastColored  = i > 0 && (timeline[i].isPast || isNext);
+          const trailPastColored = i < timeline.length - 1 && timeline[i].isPast;
+
+          return (
+            <View
+              key={row.key}
+              style={styles.node}
+              onLayout={(e) => { nodePositions.current[row.key] = e.nativeEvent.layout.x; }}
+            >
+              {/* Rail — left half + right half so each segment can be tinted */}
+              <View style={styles.rail}>
+                <View style={[
+                  styles.railSegment,
+                  isFirst && { opacity: 0 },
+                  leadPastColored ? styles.railPast : styles.railFuture,
+                ]} />
+                <View style={[
+                  styles.railSegment,
+                  isLast && { opacity: 0 },
+                  trailPastColored ? styles.railPast : styles.railFuture,
+                ]} />
+              </View>
+
+              {/* Dot */}
+              <View style={[
+                styles.dot,
+                isPast && styles.dotPast,
+                isNext && styles.dotNext,
+              ]}>
+                {isNext && <View style={styles.dotInner} />}
+              </View>
+
+              {/* Label + time */}
+              <Text style={[
+                styles.nodeLabel,
+                isNext && styles.nodeLabelNext,
+                isPast && styles.nodeLabelPast,
+              ]} numberOfLines={1}>{row.label}</Text>
+              <Text style={[
+                styles.nodeTime,
+                isNext && styles.nodeTimeNext,
+                isPast && styles.nodeTimePast,
+              ]} numberOfLines={1}>{format12h(row.time)}</Text>
+            </View>
+          );
+        })}
+      </ScrollView>
+
+      {isFallback && (
+        <View style={styles.calcHint}>
+          <Ionicons name="calculator-outline" size={12} color={colors.inkFaint} />
+          <Text style={styles.calcHintText}>Calculated locally — the online almanac was unreachable.</Text>
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------------------
+// Small components
+// -------------------------------------------------------------------------
 function Wordmark() {
   return (
     <View style={styles.wordmarkRow}>
@@ -366,7 +497,6 @@ function Wordmark() {
   );
 }
 
-/** Small colored chip mapping the poll's current phase. */
 function PhaseChip({ phase }) {
   const map = {
     [PHASE.VOTING]:       { tone: 'teal',    label: 'Voting open' },
@@ -379,17 +509,11 @@ function PhaseChip({ phase }) {
   return <Chip label={cfg.label} tone={cfg.tone} />;
 }
 
-/**
- * PollCard — phase-dependent content inside a single flat card.
- * Every phase renders the same card shell so the visual weight is
- * consistent as the day rolls through.
- */
 function PollCard({ data, submittingVote, onVote }) {
   const phase = data?.phase || PHASE.CLOSED;
   const poll = data?.poll;
   const my = data?.my_response;
 
-  // No poll for today at all
   if (!poll) {
     return (
       <Card>
@@ -399,13 +523,11 @@ function PollCard({ data, submittingVote, onVote }) {
     );
   }
 
-  // Voting phase — biggest reason someone opens the home tab
   if (phase === PHASE.VOTING) {
     return (
       <Card>
         <Text style={styles.pollHeadline}>Will you be having Sehri tomorrow?</Text>
         <Text style={styles.pollBody}>Voting closes at 10:00 am.</Text>
-
         {my ? (
           <View style={styles.votedRow}>
             <Ionicons name="checkmark-circle" size={18} color={colors.success} />
@@ -415,28 +537,14 @@ function PollCard({ data, submittingVote, onVote }) {
           </View>
         ) : (
           <View style={styles.voteButtons}>
-            <Button
-              label="Yes, count me in"
-              variant="primary"
-              onPress={() => onVote('yes')}
-              loading={submittingVote}
-              fullWidth
-            />
-            <Button
-              label="No, not tomorrow"
-              variant="secondary"
-              onPress={() => onVote('no')}
-              loading={submittingVote}
-              fullWidth
-              style={{ marginTop: space[2] }}
-            />
+            <Button label="Yes, count me in" onPress={() => onVote('yes')} loading={submittingVote} fullWidth />
+            <Button label="No, not tomorrow" variant="secondary" onPress={() => onVote('no')} loading={submittingVote} fullWidth style={{ marginTop: space[2] }} />
           </View>
         )}
       </Card>
     );
   }
 
-  // Special-case window
   if (phase === PHASE.SPECIAL_CASE) {
     if (my?.is_special_case) {
       return (
@@ -459,20 +567,33 @@ function PollCard({ data, submittingVote, onVote }) {
     );
   }
 
-  // Allotment (super admin is reviewing between 5–6 pm)
   if (phase === PHASE.ALLOTMENT) {
     return (
       <Card>
         <Text style={styles.pollHeadline}>Allotment in progress</Text>
         <Text style={styles.pollBody}>Special cases are being reviewed. The final list will be up by 6 pm.</Text>
         {my?.sehri_allowed && (
-          <SpecialCaseOutcome outcome={my.sehri_allowed} />
+          <View style={[
+            styles.outcomeRow,
+            my.sehri_allowed === 'approved' ? styles.outcomeApproved : styles.outcomeRejected,
+          ]}>
+            <Ionicons
+              name={my.sehri_allowed === 'approved' ? 'checkmark-circle' : 'close-circle'}
+              size={16}
+              color={my.sehri_allowed === 'approved' ? colors.success : colors.danger}
+            />
+            <Text style={[
+              styles.outcomeText,
+              { color: my.sehri_allowed === 'approved' ? colors.success : colors.danger },
+            ]}>
+              Special case {my.sehri_allowed}
+            </Text>
+          </View>
         )}
       </Card>
     );
   }
 
-  // Status window (6 pm – 10 pm)
   if (phase === PHASE.STATUS) {
     return (
       <Card>
@@ -495,7 +616,6 @@ function PollCard({ data, submittingVote, onVote }) {
     );
   }
 
-  // Closed
   return (
     <Card>
       <Text style={styles.pollHeadline}>Voting is closed for now.</Text>
@@ -510,139 +630,146 @@ function PollCard({ data, submittingVote, onVote }) {
   );
 }
 
-function SpecialCaseOutcome({ outcome }) {
-  const approved = outcome === 'approved';
-  return (
-    <View style={[styles.outcomeRow, approved ? styles.outcomeApproved : styles.outcomeRejected]}>
-      <Ionicons
-        name={approved ? 'checkmark-circle' : 'close-circle'}
-        size={16}
-        color={approved ? colors.success : colors.danger}
-      />
-      <Text style={[styles.outcomeText, { color: approved ? colors.success : colors.danger }]}>
-        Special case {outcome}
-      </Text>
-    </View>
-  );
-}
-
-// -------------------------------------------------------------------------
-// Pure helpers (kept at the bottom so the JSX flow reads top-to-bottom)
-// -------------------------------------------------------------------------
-
-function getMinutesNow() {
-  const d = new Date();
-  return d.getHours() * 60 + d.getMinutes();
-}
-
-/**
- * Turn the API's timings blob into a stable, ordered list the UI can
- * render. Includes tahajjud + imsak at the top, then the six daily
- * prayers in canonical order.
- */
-function buildPrayerRows(data) {
-  if (!data) return [];
-  const t = data.timings || {};
-  const rows = [];
-
-  if (data.tahajjud_time) {
-    rows.push({ ...EXTENDED_ROWS[0], time: data.tahajjud_time, minutes: toMinutes(data.tahajjud_time) });
-  }
-  if (data.imsak_time || t.Imsak) {
-    const time = data.imsak_time || t.Imsak;
-    rows.push({ ...EXTENDED_ROWS[1], time, minutes: toMinutes(time) });
-  }
-  for (const p of PRAYER_ORDER) {
-    const time = t[capitalize(p.key)];
-    rows.push({ ...p, time, minutes: toMinutes(time) });
-  }
-  return rows;
-}
-
-const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-
-/**
- * "15 Ramadan 1447 · Wednesday, 19 September" — with a graceful fallback
- * to just the Gregorian half if Hijri came back null (local fallback).
- */
-function buildDateLine(hijri) {
-  const g = gregorianLine();
-  return hijri ? `${hijri} · ${g}` : g;
-}
-
-// -------------------------------------------------------------------------
+// =========================================================================
 // Styles
-// -------------------------------------------------------------------------
+// =========================================================================
+const NODE_WIDTH = 84;
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.paperSoft },
   scroll: { paddingBottom: space[8] },
 
-  // Wordmark shown in the header slot on tab-root screens.
+  // Wordmark
   wordmarkRow: { flexDirection: 'row', alignItems: 'center' },
-  wordmarkDot: {
-    width: 8, height: 8, borderRadius: 4,
-    backgroundColor: colors.teal, marginRight: space[2],
-  },
-  wordmark: { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
+  wordmarkDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.teal, marginRight: space[2] },
+  wordmark:    { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
 
   // Role switcher
-  roleRow: {
-    paddingHorizontal: space[5],
-    paddingBottom: space[3],
-    gap: space[2],
-  },
-  roleLabel: { ...type.meta, color: colors.inkFaint },
-  roleChips: { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  roleRow:    { paddingHorizontal: space[5], paddingBottom: space[3], gap: space[2] },
+  roleLabel:  { ...type.meta, color: colors.inkFaint },
+  roleChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
 
   // Section wrapper
-  section: {
-    paddingHorizontal: space[4],
-    paddingTop: space[4],
-  },
+  section:    { paddingHorizontal: space[4], paddingTop: space[4] },
 
-  // Next-prayer strip inside the prayer card
-  nextStrip: {
+  // ---- Prayer HERO ------------------------------------------------------
+  hero: {
+    paddingHorizontal: space[5],
+    paddingTop: space[4],
+    paddingBottom: space[4],
+    backgroundColor: colors.tealSoft,
+    borderBottomWidth: 0,
+  },
+  heroEyebrowRow:  { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  heroEyebrow:     { ...type.micro, color: colors.tealDark, fontWeight: '700' },
+  heroPrayerName:  { fontSize: 26, fontWeight: '800', color: colors.ink, letterSpacing: -0.4, marginBottom: space[3] },
+
+  heroCountdownRow:{ flexDirection: 'row', alignItems: 'center', gap: space[3] },
+  heroCountdown:   {
+    fontSize: 32,
+    fontWeight: '800',
+    color: colors.tealDark,
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  heroDivider:     { width: 1, height: 32, backgroundColor: colors.tealBorder },
+  heroAtLabel:     { ...type.micro, color: colors.inkFaint, fontWeight: '600' },
+  heroAtTime:      { ...type.bodyStrong, color: colors.tealDark, marginTop: 2, fontVariant: ['tabular-nums'] },
+
+  // ---- Ornament divider between hero + ribbon --------------------------
+  ornamentDivider: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: space[4],
-    backgroundColor: colors.tealSoft,
+    gap: space[2],
+    paddingHorizontal: space[6],
+    paddingVertical: space[3],
+    backgroundColor: colors.paper,
+    borderTopWidth: 1,
+    borderTopColor: colors.tealBorder,
     borderBottomWidth: 1,
     borderBottomColor: colors.ruleFaint,
   },
-  nextLeft:     { flex: 1 },
-  nextEyebrow:  { ...type.micro, color: colors.tealDark, fontWeight: '700' },
-  nextLabel:    { fontSize: 20, fontWeight: '800', color: colors.ink, marginTop: 2 },
-  nextHint:     { ...type.meta, color: colors.inkFaint, marginTop: 2 },
-  nextRight:    { alignItems: 'flex-end' },
-  nextTime:     { fontSize: 22, fontWeight: '800', color: colors.tealDark, letterSpacing: -0.3 },
-  nextRelative: { ...type.meta, color: colors.tealDark, marginTop: 2 },
+  ornamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
 
-  // Full-day list inside the prayer card
-  dayList: { paddingHorizontal: space[4], paddingVertical: space[2] },
-  dayRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: space[3],
+  // ---- Horizontal ribbon timeline --------------------------------------
+  timeline: {
+    paddingHorizontal: space[2],
+    paddingTop: space[5],
+    paddingBottom: space[5],
+    backgroundColor: colors.paper,
   },
-  dayLabel:       { ...type.body, color: colors.ink, fontWeight: '500' },
-  dayLabelActive: { color: colors.tealDark, fontWeight: '700' },
-  dayLabelPast:   { color: colors.inkFaint },
-  dayTime:        { ...type.body, color: colors.inkMuted, fontWeight: '600', fontVariant: ['tabular-nums'] },
-  dayTimeActive:  { color: colors.tealDark, fontWeight: '800' },
-  dayTimePast:    { color: colors.inkGhost },
+  node: {
+    width: NODE_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 12, // room for the rail + dot
+    position: 'relative',
+  },
+  // Rail: two halves so past/future can be tinted independently
+  rail: {
+    position: 'absolute',
+    top: 22,
+    left: 0,
+    right: 0,
+    height: 2,
+    flexDirection: 'row',
+  },
+  railSegment: { flex: 1, height: 2 },
+  railPast:    { backgroundColor: colors.tealBorder },
+  railFuture:  { backgroundColor: colors.ruleSoft },
 
+  // Dot styles
+  dot: {
+    width: 14, height: 14, borderRadius: 7,
+    backgroundColor: colors.paper,
+    borderWidth: 2, borderColor: colors.ruleSoft,
+    marginBottom: space[3],
+    zIndex: 1,
+  },
+  dotPast: {
+    backgroundColor: colors.tealBorder,
+    borderColor: colors.tealBorder,
+  },
+  dotNext: {
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: colors.paper,
+    borderWidth: 2, borderColor: colors.gold,
+    marginTop: -3,
+    marginBottom: space[3] - 3,
+    alignItems: 'center', justifyContent: 'center',
+    // subtle glow ring
+    shadowColor: colors.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  dotInner: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: colors.teal,
+  },
+
+  // Node text
+  nodeLabel:     { ...type.meta, color: colors.inkMuted, fontWeight: '600', textAlign: 'center' },
+  nodeLabelNext: { color: colors.tealDark, fontWeight: '800' },
+  nodeLabelPast: { color: colors.inkFaint, fontWeight: '500' },
+  nodeTime:      { ...type.micro, color: colors.inkFaint, textAlign: 'center', marginTop: 2, fontVariant: ['tabular-nums'] },
+  nodeTimeNext:  { color: colors.tealDark, fontWeight: '700' },
+  nodeTimePast:  { color: colors.inkGhost },
+
+  // Fallback hint
   calcHint: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space[1],
     paddingHorizontal: space[4],
-    paddingBottom: space[3],
+    paddingVertical: space[3],
+    borderTopWidth: 1,
+    borderTopColor: colors.ruleFaint,
   },
   calcHintText: { ...type.micro, fontWeight: '500', color: colors.inkFaint },
 
-  // Poll card content
+  // ---- Poll ------------------------------------------------------------
   pollHeadline: { ...type.h3, marginBottom: space[1] },
   pollBody:     { ...type.body, marginBottom: space[3] },
 

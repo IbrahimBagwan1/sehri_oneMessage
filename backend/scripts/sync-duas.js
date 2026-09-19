@@ -3,23 +3,24 @@
 /**
  * sync-duas.js
  *
- * Standalone one-shot script that fills the dua_categories and duas
- * tables from the upstream Islamic API.
+ * Loads the bundled dua library (backend/src/data/duas-seed.json) into
+ * the dua_categories and duas tables. Idempotent — re-running refreshes
+ * the rows in place.
  *
  *   node scripts/sync-duas.js
  *
- * Re-running is safe — the sync service upserts on the stable slugs.
+ * To extend the library, edit the seed file and run this again.
  */
 
 require('dotenv').config();
-const { syncDuas } = require('../src/services/islamicApiSync');
+const { syncDuasFromSeed } = require('../src/services/islamicApiSync');
 const { sequelize } = require('../src/config/database');
 const logger = require('../src/utils/logger');
 
 (async () => {
   try {
     await sequelize.authenticate();
-    const result = await syncDuas({
+    const result = await syncDuasFromSeed({
       onProgress: ({ category, duas }) => {
         process.stdout.write(`  · ${category.padEnd(28, ' ')} → ${duas} duas\n`);
       },
