@@ -103,21 +103,13 @@ const submitVote = async (req, res, next) => {
     const { id: pollId } = req.params;
     const { response: vote } = req.body;
 
-    // 1. Validate input
-    if (!vote || !['yes', 'no'].includes(vote)) {
-      return error(res, {
-        statusCode: 400,
-        message: "Response must be 'yes' or 'no'",
-      });
-    }
-
-    // 2. Load the poll
+    // 1. Load the poll
     const poll = await Poll.findByPk(pollId);
     if (!poll) {
       return error(res, { statusCode: 404, message: 'Poll not found' });
     }
 
-    // 3. Check the voting window
+    // 2. Check the voting window
     if (!isVotingOpen(poll)) {
       return error(res, {
         statusCode: 403,
@@ -125,7 +117,7 @@ const submitVote = async (req, res, next) => {
       });
     }
 
-    // 4. Prevent duplicate votes
+    // 3. Prevent duplicate votes
     const existing = await PollResponse.findOne({
       where: { poll_id: pollId, user_id: req.actingUserId },
     });
@@ -136,7 +128,7 @@ const submitVote = async (req, res, next) => {
       });
     }
 
-    // 5. Resolve the user's zone from their location_id.
+    // 4. Resolve the user's zone from their location_id.
     //    Zone is stored as a snapshot so kitchen counts remain accurate
     //    even if the user changes zone later.
     const user = await User.findByPk(req.actingUserId, {
@@ -165,7 +157,7 @@ const submitVote = async (req, res, next) => {
       });
     }
 
-    // 6. Create the response
+    // 5. Create the response
     const pollResponse = await PollResponse.create({
       poll_id: pollId,
       user_id: req.actingUserId,
@@ -414,6 +406,7 @@ const getZoneVoters = async (req, res, next) => {
 };
 
 module.exports = {
+  getTodaysPoll, // exported so Person 2 handlers can import it
   getActivePoll,
   submitVote,
   getMyResponses,
