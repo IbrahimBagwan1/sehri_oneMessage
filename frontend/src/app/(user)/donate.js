@@ -80,8 +80,13 @@ export default function DonateScreen() {
   const handleCopy = async () => {
     if (!payment?.contact_number) return;
     try {
-      // Strip spaces so a paste into a UPI app is dial-clean.
-      await Clipboard.setStringAsync(payment.contact_number.replace(/\s+/g, ''));
+      // UPI apps expect just the 10-digit local number. Strip formatting
+      // and drop the +91 country code if present so pasting is clean.
+      const digits = payment.contact_number.replace(/\D/g, '');
+      const local = digits.startsWith('91') && digits.length === 12
+        ? digits.slice(2)
+        : digits;
+      await Clipboard.setStringAsync(local);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {

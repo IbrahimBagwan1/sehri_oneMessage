@@ -90,6 +90,10 @@ const normalizeVerse = (chapterId, raw) => {
     verse_number:       Number(raw.verse_number || 0),
     verse_key:          raw.verse_key || `${chapterId}:${raw.verse_number || ''}`,
     text_uthmani:       raw.text_uthmani || '',
+    // Indo-Pak orthography — preferred by South Asian readers. When
+    // missing (older rows / partial upstream response), the reader
+    // renders text_uthmani instead.
+    text_indopak:       raw.text_indopak || null,
     translation_text:   translationText,
     translation_source: translationSource,
   };
@@ -132,8 +136,9 @@ const syncQuran = async ({ onProgress } = {}) => {
       language: 'en',
       words: 'false',
       translations: TRANSLATION_ID,
-      fields: 'text_uthmani,verse_key,verse_number',
-      // per_page must be a number; sending `all` no longer works in v4.
+      // Fetch both script variants so we can switch renderer without
+      // re-syncing. Reader prefers text_indopak.
+      fields: 'text_uthmani,text_indopak,verse_key,verse_number',
       per_page: Math.max(chapter.verses_count, 1),
     });
 
@@ -149,7 +154,10 @@ const syncQuran = async ({ onProgress } = {}) => {
       .filter((v) => v.verse_number > 0 && v.text_uthmani);
 
     await QuranVerse.bulkCreate(verses, {
-      updateOnDuplicate: ['verse_key', 'text_uthmani', 'translation_text', 'translation_source'],
+      updateOnDuplicate: [
+        'verse_key', 'text_uthmani', 'text_indopak',
+        'translation_text', 'translation_source',
+      ],
     });
 
     totalVerses += verses.length;

@@ -31,6 +31,15 @@
         "translation": "There is no god but Allah, alone, with no partner; His is the dominion, His is the praise, and He is able to do all things.",
         "source": "Bukhari 6403; Muslim 2691",
         "order_index": 3
+      },
+      {
+        "slug": "morning-ridha",
+        "name": "Contentment with Allah, Islam, and the Prophet ﷺ",
+        "arabic_text": "رَضِيتُ بِاللَّهِ رَبًّا، وَبِالْإِسْلَامِ دِينًا، وَبِمُحَمَّدٍ ﷺ نَبِيًّا",
+        "transliteration": "Radhitu billahi rabban, wa bil-Islami dinan, wa bi-Muhammadin ﷺ nabiyya",
+        "translation": "I am pleased with Allah as my Lord, with Islam as my religion, and with Muhammad ﷺ as my Prophet.",
+        "source": "Abu Dawud 5072; Tirmidhi 3389",
+        "order_index": 4
       }
     ]
   },
@@ -57,6 +66,15 @@
         "translation": "I seek refuge in the perfect words of Allah from the evil of what He has created.",
         "source": "Muslim 2708",
         "order_index": 2
+      },
+      {
+        "slug": "evening-hasbi",
+        "name": "Reliance on Allah (seven times)",
+        "arabic_text": "حَسْبِيَ اللَّهُ لَا إِلَهَ إِلَّا هُوَ، عَلَيْهِ تَوَكَّلْتُ، وَهُوَ رَبُّ الْعَرْشِ الْعَظِيمِ ﴿٧×﴾",
+        "transliteration": "Hasbiya Allahu la ilaha illa huw, 'alayhi tawakkaltu, wa huwa rabbul-'arshil-'adhim (seven times)",
+        "translation": "Allah is sufficient for me. There is no god but Him. In Him I place my trust, and He is the Lord of the mighty throne.",
+        "source": "Abu Dawud 5081",
+        "order_index": 3
       }
     ]
   },
@@ -92,6 +110,15 @@
         "translation": "Glory be to Allah (33 times), praise be to Allah (33 times), Allah is the Greatest (34 times).",
         "source": "Muslim 596",
         "order_index": 3
+      },
+      {
+        "slug": "after-prayer-ibn-abbas",
+        "name": "Comprehensive dua taught by Ibn Abbas",
+        "arabic_text": "اللَّهُمَّ أَعِنِّي عَلَى ذِكْرِكَ، وَشُكْرِكَ، وَحُسْنِ عِبَادَتِكَ",
+        "transliteration": "Allahumma a'inni 'ala dhikrika, wa shukrika, wa husni 'ibadatik",
+        "translation": "O Allah, help me to remember You, to thank You, and to worship You in the best of ways.",
+        "source": "Abu Dawud 1522; Nasa'i 1303",
+        "order_index": 4
       }
     ]
   },
@@ -118,6 +145,24 @@
         "translation": "Praise is to Allah who has fed me this and provided it for me, without any strength or power on my part.",
         "source": "Abu Dawud 4023; Tirmidhi 3458",
         "order_index": 2
+      },
+      {
+        "slug": "food-drinking",
+        "name": "After drinking water",
+        "arabic_text": "الْحَمْدُ لِلَّهِ الَّذِي جَعَلَهُ عَذْبًا فُرَاتًا بِرَحْمَتِهِ، وَلَمْ يَجْعَلْهُ مِلْحًا أُجَاجًا بِذُنُوبِنَا",
+        "transliteration": "Alhamdu lillahilladhi ja'alahu 'adhban furatan bi-rahmatih, wa lam yaj'alhu milhan ujajan bi-dhunubina",
+        "translation": "Praise is to Allah who made it sweet and fresh by His mercy, and did not make it salty and bitter by our sins.",
+        "source": "Al-Adhkar an-Nawawi",
+        "order_index": 3
+      },
+      {
+        "slug": "food-host",
+        "name": "For the host after being fed",
+        "arabic_text": "اللَّهُمَّ أَطْعِمْ مَنْ أَطْعَمَنِي، وَاسْقِ مَنْ سَقَانِي",
+        "transliteration": "Allahumma at'im man at'amani, wa asqi man saqani",
+        "translation": "O Allah, feed the one who has fed me, and give drink to the one who has given me drink.",
+        "source": "Muslim 2055",
+        "order_index": 4
       }
     ]
   },
@@ -144,6 +189,15 @@
         "translation": "Praise is to Allah who gave us life after having taken it from us, and to Him is the resurrection.",
         "source": "Bukhari 6324",
         "order_index": 2
+      },
+      {
+        "slug": "sleep-refuge",
+        "name": "Seeking refuge before sleep",
+        "arabic_text": "أَعُوذُ بِكَلِمَاتِ اللَّهِ التَّامَّاتِ مِنْ غَضَبِهِ وَعِقَابِهِ، وَشَرِّ عِبَادِهِ، وَمِنْ هَمَزَاتِ الشَّيَاطِينِ وَأَنْ يَحْضُرُونِ",
+        "transliteration": "A'udhu bi-kalimatillahit-tammati min ghadabihi wa 'iqabih, wa sharri 'ibadih, wa min hamazatish-shayatini wa an yahdurun",
+        "translation": "I seek refuge in the perfect words of Allah from His anger and punishment, from the evil of His servants, and from the promptings of the devils and their presence.",
+        "source": "Abu Dawud 3893",
+        "order_index": 3
       }
     ]
   },
@@ -195,6 +249,136 @@
         "transliteration": "Allahumma inni as'aluka min fadlik",
         "translation": "O Allah, I ask You from Your bounty.",
         "source": "Muslim 713",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "travel",
+    "name": "Travel",
+    "description": "Short invocations for boarding a vehicle and setting out on a journey.",
+    "order_index": 8,
+    "duas": [
+      {
+        "slug": "travel-boarding",
+        "name": "When boarding a vehicle",
+        "arabic_text": "سُبْحَانَ الَّذِي سَخَّرَ لَنَا هَذَا وَمَا كُنَّا لَهُ مُقْرِنِينَ، وَإِنَّا إِلَى رَبِّنَا لَمُنْقَلِبُونَ",
+        "transliteration": "Subhanalladhi sakhkhara lana hadha wa ma kunna lahu muqrinin, wa inna ila rabbina la-munqalibun",
+        "translation": "Glory is to Him who has subjected this to us; we could never have accomplished it by ourselves. And indeed, to our Lord we will surely return.",
+        "source": "Az-Zukhruf 43:13–14; Muslim 1342",
+        "order_index": 1
+      },
+      {
+        "slug": "travel-journey",
+        "name": "For a journey",
+        "arabic_text": "اللَّهُمَّ إِنَّا نَسْأَلُكَ فِي سَفَرِنَا هَذَا الْبِرَّ وَالتَّقْوَى، وَمِنَ الْعَمَلِ مَا تَرْضَى، اللَّهُمَّ هَوِّنْ عَلَيْنَا سَفَرَنَا هَذَا وَاطْوِ عَنَّا بُعْدَهُ",
+        "transliteration": "Allahumma inna nas'aluka fi safarina hadhal-birra wat-taqwa, wa minal-'amali ma tarda, Allahumma hawwin 'alayna safarana hadha watwi 'anna bu'dah",
+        "translation": "O Allah, we ask You on this our journey for righteousness and piety, and for deeds pleasing to You. O Allah, make this journey easy for us and fold up its distance.",
+        "source": "Muslim 1342",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "bathroom",
+    "name": "Bathroom",
+    "description": "Before entering and upon leaving.",
+    "order_index": 9,
+    "duas": [
+      {
+        "slug": "bathroom-entering",
+        "name": "Before entering",
+        "arabic_text": "﴿بِسْمِ اللَّهِ﴾ اللَّهُمَّ إِنِّي أَعُوذُ بِكَ مِنَ الْخُبُثِ وَالْخَبَائِثِ",
+        "transliteration": "Bismillah, Allahumma inni a'udhu bika minal-khubuthi wal-khaba'ith",
+        "translation": "In the name of Allah. O Allah, I seek refuge with You from the male and female evil beings.",
+        "source": "Bukhari 142; Muslim 375",
+        "order_index": 1
+      },
+      {
+        "slug": "bathroom-leaving",
+        "name": "On leaving",
+        "arabic_text": "غُفْرَانَكَ",
+        "transliteration": "Ghufranak",
+        "translation": "I ask Your forgiveness.",
+        "source": "Abu Dawud 30; Tirmidhi 7",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "wudu",
+    "name": "Wudu (ablution)",
+    "description": "Before starting, and after completing.",
+    "order_index": 10,
+    "duas": [
+      {
+        "slug": "wudu-before",
+        "name": "Before wudu",
+        "arabic_text": "بِسْمِ اللَّهِ",
+        "transliteration": "Bismillah",
+        "translation": "In the name of Allah.",
+        "source": "Abu Dawud 101; Ibn Majah 399",
+        "order_index": 1
+      },
+      {
+        "slug": "wudu-after",
+        "name": "After wudu",
+        "arabic_text": "أَشْهَدُ أَنْ لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ، وَأَشْهَدُ أَنَّ مُحَمَّدًا عَبْدُهُ وَرَسُولُهُ",
+        "transliteration": "Ash-hadu an la ilaha illa Allahu wahdahu la sharika lah, wa ash-hadu anna Muhammadan 'abduhu wa rasuluh",
+        "translation": "I bear witness that there is no god but Allah alone, with no partner, and I bear witness that Muhammad is His servant and messenger.",
+        "source": "Muslim 234",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "distress",
+    "name": "In times of distress",
+    "description": "Short invocations for anxiety, grief, and difficulty.",
+    "order_index": 11,
+    "duas": [
+      {
+        "slug": "distress-la-ilaha",
+        "name": "In moments of hardship",
+        "arabic_text": "لَا إِلَهَ إِلَّا اللَّهُ الْعَظِيمُ الْحَلِيمُ، لَا إِلَهَ إِلَّا اللَّهُ رَبُّ الْعَرْشِ الْعَظِيمِ، لَا إِلَهَ إِلَّا اللَّهُ رَبُّ السَّمَاوَاتِ وَرَبُّ الْأَرْضِ وَرَبُّ الْعَرْشِ الْكَرِيمِ",
+        "transliteration": "La ilaha illa Allahul-'adhimul-halim, la ilaha illa Allahu rabbul-'arshil-'adhim, la ilaha illa Allahu rabbus-samawati wa rabbul-ardi wa rabbul-'arshil-karim",
+        "translation": "There is no god but Allah, the Mighty, the Forbearing. There is no god but Allah, Lord of the Mighty Throne. There is no god but Allah, Lord of the heavens, Lord of the earth, and Lord of the Noble Throne.",
+        "source": "Bukhari 6346; Muslim 2730",
+        "order_index": 1
+      },
+      {
+        "slug": "distress-anxiety",
+        "name": "In anxiety and grief",
+        "arabic_text": "اللَّهُمَّ إِنِّي عَبْدُكَ، ابْنُ عَبْدِكَ، ابْنُ أَمَتِكَ، نَاصِيَتِي بِيَدِكَ، مَاضٍ فِيَّ حُكْمُكَ، عَدْلٌ فِيَّ قَضَاؤُكَ، أَسْأَلُكَ بِكُلِّ اسْمٍ هُوَ لَكَ سَمَّيْتَ بِهِ نَفْسَكَ، أَوْ أَنْزَلْتَهُ فِي كِتَابِكَ، أَوْ عَلَّمْتَهُ أَحَدًا مِنْ خَلْقِكَ، أَوِ اسْتَأْثَرْتَ بِهِ فِي عِلْمِ الْغَيْبِ عِنْدَكَ، أَنْ تَجْعَلَ الْقُرْآنَ رَبِيعَ قَلْبِي، وَنُورَ صَدْرِي، وَجَلَاءَ حُزْنِي، وَذَهَابَ هَمِّي",
+        "transliteration": "Allahumma inni 'abduka, ibnu 'abdika, ibnu amatik, nasiyati bi-yadika, madin fiyya hukmuka, 'adlun fiyya qada'uka, as'aluka bi-kulli ismin huwa laka sammayta bihi nafsak, aw anzaltahu fi kitabika, aw 'allamtahu ahadan min khalqika, aw ista'tharta bihi fi 'ilmil-ghaybi 'indak, an taj'alal-Qur'ana rabi'a qalbi, wa nura sadri, wa jala'a huzni, wa dhahaba hammi",
+        "translation": "O Allah, I am Your servant, son of Your servant, son of Your maid-servant. My forelock is in Your hand. Your judgment is executed upon me and Your decree concerning me is just. I ask You by every name that is Yours — with which You have named Yourself, or revealed in Your Book, or taught to any of Your creation, or kept unto Yourself in the knowledge of the unseen with You — that You make the Qur'an the spring of my heart, the light of my chest, the departer of my sorrow, and the reliever of my anxiety.",
+        "source": "Ahmad 3712; Sahih al-Jami' 199",
+        "order_index": 2
+      }
+    ]
+  },
+  {
+    "slug": "rain",
+    "name": "Rain",
+    "description": "On seeing rain and when the wind blows.",
+    "order_index": 12,
+    "duas": [
+      {
+        "slug": "rain-beneficial",
+        "name": "When rain falls",
+        "arabic_text": "اللَّهُمَّ صَيِّبًا نَافِعًا",
+        "transliteration": "Allahumma sayyiban nafi'a",
+        "translation": "O Allah, make it a beneficial pouring rain.",
+        "source": "Bukhari 1032",
+        "order_index": 1
+      },
+      {
+        "slug": "rain-after",
+        "name": "After rain",
+        "arabic_text": "مُطِرْنَا بِفَضْلِ اللَّهِ وَرَحْمَتِهِ",
+        "transliteration": "Mutirna bi-fadlillahi wa rahmatih",
+        "translation": "We have been given rain by the grace and mercy of Allah.",
+        "source": "Bukhari 846; Muslim 71",
         "order_index": 2
       }
     ]

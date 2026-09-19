@@ -226,11 +226,13 @@
       } catch (_) { /* ignore — fallback text stays */ }
     })();
 
-    // Copy handler with a graceful degradation.
+    // Copy handler — normalizes to the 10-digit local number (drops +91
+    // and any formatting) so pasting into a UPI app is dial-clean.
     document.getElementById('copy-btn').addEventListener('click', async function () {
       const hint = document.getElementById('copy-hint');
       const el = document.getElementById('contact-number');
-      const text = el.textContent.replace(/\s+/g, '');
+      const digits = el.textContent.replace(/\D/g, '');
+      const text = (digits.length === 12 && digits.indexOf('91') === 0) ? digits.slice(2) : digits;
       try {
         await navigator.clipboard.writeText(text);
         hint.textContent = 'Copied to clipboard';

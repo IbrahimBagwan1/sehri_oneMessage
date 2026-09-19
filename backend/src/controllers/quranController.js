@@ -88,6 +88,7 @@ const getSurah = async (req, res, next) => {
         'verse_number',
         'verse_key',
         'text_uthmani',
+        'text_indopak',
         'translation_text',
         'translation_source',
       ],

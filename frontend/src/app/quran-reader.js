@@ -16,28 +16,26 @@ import { colors, fonts, ARABIC_TEXT_STYLE, toArabicDigits } from '../components/
 // -----------------------------------------------------------------------------
 // Quran reader — one surah, top-to-bottom, no pagination.
 //
-// Layout notes:
-//   • Arabic uses the shared ARABIC_TEXT_STYLE which pins fontFamily
-//     (Amiri), textAlign:'right', writingDirection:'rtl' — the three
-//     properties that must always travel together to render Uthmani
-//     script correctly, independent of the app's I18nManager state.
-//   • Verse markers use the traditional ornate parentheses ﴿ ﴾ around
-//     an Arabic-Indic numeral, in warm gold. This is how muṣḥaf pages
-//     mark verse boundaries and it reads as structural (not decorative).
-//   • Line-height 2.15× the Arabic font size, matching muṣḥaf spacing.
+// Script — we prefer Indo-Pak orthography (text_indopak) because most
+// South Asian readers are used to that muṣḥaf style. When a verse row
+// only has the Uthmani variant (legacy rows synced before the schema
+// added text_indopak), we fall back to text_uthmani so the reader
+// never renders empty.
+//
+// Layout — Arabic block first, then a small breathing gap, then the
+// English translation. Between verses, a visible gold rule with a
+// centered ۞ so ayat boundaries are unmistakable without shouting.
 // -----------------------------------------------------------------------------
 
-// Unicode ornate parentheses used to bracket verse numbers in
-// traditional muṣḥaf typesetting.
-const ORNATE_LEFT  = '﴾'; // ﴾ (visually left in LTR, right in Arabic)
-const ORNATE_RIGHT = '﴿'; // ﴿
+const ORNATE_LEFT  = '﴾';
+const ORNATE_RIGHT = '﴿';
 
 export default function QuranReaderScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const surahId = Number.parseInt(params.surah, 10);
 
-  const [data,    setData]    = useState(null); // { chapter, verses }
+  const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
 
@@ -104,28 +102,22 @@ export default function QuranReaderScreen() {
     <SafeAreaView style={styles.container}>
       <ReaderHeader router={router} chapter={chapter} surahId={surahId} />
 
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator
-      >
-        {/* Surah title strip — Arabic name centered, meta below */}
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator>
+        {/* Surah title strip */}
         <View style={styles.titleBlock}>
           <Text style={styles.surahArabic} accessibilityLanguage="ar">
             {chapter?.name_arabic}
           </Text>
           <View style={styles.titleRule} />
           <Text style={styles.surahMeta}>
-            {chapter?.translated_name
-              ? `${chapter.translated_name} · `
-              : ''}
+            {chapter?.translated_name ? `${chapter.translated_name} · ` : ''}
             {chapter?.revelation_place === 'medinan' ? 'Revealed in Madinah' : 'Revealed in Makkah'}
             {' · '}
             {chapter?.verses_count} verses
           </Text>
         </View>
 
-        {/* Bismillah — hidden for surah 9 (At-Tawbah) and surah 1
-            (Al-Fatihah, where it is verse 1 itself). */}
+        {/* Bismillah (skip surah 1 and 9) */}
         {chapter?.bismillah_pre && surahId !== 1 && (
           <View style={styles.bismillahBlock}>
             <View style={styles.ornamentRule} />
@@ -133,43 +125,60 @@ export default function QuranReaderScreen() {
               style={styles.bismillahText}
               accessibilityLabel="Bismillah ar-Rahman ar-Raheem"
             >
-              بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ
+              بسم اللہ الرحمٰن الرحیم
             </Text>
             <View style={styles.ornamentRule} />
           </View>
         )}
 
-        {/* Verses */}
-        {verses.map((v, idx) => (
-          <View
-            key={v.verse_key}
-            style={[styles.verseBlock, idx === verses.length - 1 && styles.verseBlockLast]}
-            accessible
-            accessibilityRole="text"
-            accessibilityLabel={`Verse ${v.verse_number}. ${v.translation_text || ''}`}
-          >
-            {/* Arabic — verse marker sits inline at the end of the line
-                (which visually is the left edge in RTL). We render it as
-                a suffix inside the same Text so the marker flows with
-                justification instead of dangling in a side badge. */}
-            <Text style={styles.arabicText} selectable accessibilityLanguage="ar">
-              {v.text_uthmani}
-              {'  '}
-              <Text style={styles.verseMarker}>
-                {ORNATE_LEFT}
-                {toArabicDigits(v.verse_number)}
-                {ORNATE_RIGHT}
-              </Text>
-            </Text>
+        {/* Verses — each is: Arabic (Indo-Pak) → translation → visible gold rule */}
+        {verses.map((v, idx) => {
+          // Prefer Indo-Pak orthography; fall back to Uthmani if the
+          // row hasn't been re-synced yet.
+          const arabicText = v.text_indopak || v.text_uthmani;
+          const isLast = idx === verses.length - 1;
 
-            {v.translation_text ? (
-              <Text style={styles.translation}>
-                <Text style={styles.verseNumberInline}>{v.verse_number}. </Text>
-                {v.translation_text}
-              </Text>
-            ) : null}
-          </View>
-        ))}
+          return (
+            <View
+              key={v.verse_key}
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={`Verse ${v.verse_number}. ${v.translation_text || ''}`}
+            >
+              <View style={styles.verseBlock}>
+                {/* Arabic — the ﴿١﴾ verse marker sits inline at the end
+                    of the Arabic line and flows with justification. */}
+                <Text style={styles.arabicText} selectable accessibilityLanguage="ar">
+                  {arabicText}
+                  {'  '}
+                  <Text style={styles.verseMarker}>
+                    {ORNATE_LEFT}
+                    {toArabicDigits(v.verse_number)}
+                    {ORNATE_RIGHT}
+                  </Text>
+                </Text>
+
+                {v.translation_text ? (
+                  <Text style={styles.translation}>
+                    <Text style={styles.verseNumberInline}>{v.verse_number}. </Text>
+                    {v.translation_text}
+                  </Text>
+                ) : null}
+              </View>
+
+              {/* Visible gold divider between ayat — hairline · ۞ · hairline.
+                  Uses the same ornament vocabulary as the home page and
+                  bismillah, so it reads as structural rather than decorative. */}
+              {!isLast && (
+                <View style={styles.verseDivider}>
+                  <View style={styles.dividerRule} />
+                  <Text style={styles.dividerStar}>۞</Text>
+                  <View style={styles.dividerRule} />
+                </View>
+              )}
+            </View>
+          );
+        })}
 
         {translationSource ? (
           <Text style={styles.attribution}>Translation · {translationSource}</Text>
@@ -179,9 +188,6 @@ export default function QuranReaderScreen() {
   );
 }
 
-// -----------------------------------------------------------------------------
-// Header — extracted so loading + error states share it.
-// -----------------------------------------------------------------------------
 function ReaderHeader({ router, chapter, surahId }) {
   return (
     <View style={styles.header}>
@@ -203,9 +209,6 @@ function ReaderHeader({ router, chapter, surahId }) {
   );
 }
 
-// -----------------------------------------------------------------------------
-// Styles
-// -----------------------------------------------------------------------------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.paperSoft },
   centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
@@ -232,7 +235,7 @@ const styles = StyleSheet.create({
 
   scrollContent: { paddingHorizontal: 20, paddingVertical: 20, paddingBottom: 60 },
 
-  // Title strip beneath the header
+  // Surah title strip
   titleBlock:      { alignItems: 'center', marginBottom: 12 },
   surahArabic: {
     ...ARABIC_TEXT_STYLE,
@@ -243,28 +246,15 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   titleRule: {
-    height: 1,
-    width: 60,
-    backgroundColor: colors.gold,
-    opacity: 0.6,
+    height: 1, width: 60,
+    backgroundColor: colors.gold, opacity: 0.6,
     marginBottom: 8,
   },
-  surahMeta: {
-    fontSize: 12,
-    color: colors.inkFaint,
-  },
+  surahMeta: { fontSize: 12, color: colors.inkFaint },
 
-  // Bismillah — set apart with hairline gold rules top and bottom
-  bismillahBlock: {
-    alignItems: 'center',
-    marginVertical: 18,
-    gap: 12,
-  },
-  ornamentRule: {
-    height: 1,
-    width: '55%',
-    backgroundColor: colors.goldBorder,
-  },
+  // Bismillah
+  bismillahBlock: { alignItems: 'center', marginVertical: 18, gap: 12 },
+  ornamentRule:   { height: 1, width: '55%', backgroundColor: colors.goldBorder },
   bismillahText: {
     ...ARABIC_TEXT_STYLE,
     textAlign: 'center',
@@ -274,31 +264,21 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 
-  // Individual verse block
+  // Verse
   verseBlock: {
-    marginBottom: 22,
-    paddingBottom: 18,
-    // Whisper-thin divider between verses — visible but not intrusive.
-    borderBottomWidth: 1,
-    borderBottomColor: colors.ruleFaint,
+    // Room to breathe between arabic ↔ translation ↔ divider.
+    paddingVertical: 6,
   },
-  verseBlockLast: {
-    borderBottomWidth: 0,
-  },
-
   arabicText: {
     ...ARABIC_TEXT_STYLE,
     fontSize: 26,
-    lineHeight: 56, // ~2.15× — muṣḥaf-style spacing
+    lineHeight: 56,       // ~2.15× — muṣḥaf-style spacing
   },
   verseMarker: {
-    // Ornate parens + Arabic numeral; sits inline at end of the Arabic
-    // line so it flows with justification rather than dangling to the side.
     fontFamily: fonts.arabic,
     fontSize: 22,
     color: colors.gold,
   },
-
   translation: {
     fontSize: 15,
     lineHeight: 24,
@@ -306,10 +286,27 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   verseNumberInline: {
-    // Small structural cue inside the English translation so a reader
-    // scanning translations only can still map to verse boundaries.
     fontWeight: '700',
     color: colors.teal,
+  },
+
+  // Visible divider between verses — gold hairline · ۞ · gold hairline.
+  // Structural, matches the ornament vocabulary in the home + bismillah.
+  verseDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 20,
+  },
+  dividerRule: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.goldBorder,
+  },
+  dividerStar: {
+    fontSize: 14,
+    color: colors.gold,
+    lineHeight: 14,
   },
 
   attribution: {
