@@ -64,11 +64,20 @@ export const useAuthStore = create((set, get) => ({
       const response = await apiClient.post('/auth/switch-role', { role: requestedRole });
       const { accessToken, refreshToken, active_role, available_roles, profile } = response.data.data;
 
-      await SecureStore.setItemAsync('access_token', accessToken);
-      await SecureStore.setItemAsync('refresh_token', refreshToken);
-      await SecureStore.setItemAsync('user_data', JSON.stringify(profile));
-      await SecureStore.setItemAsync('active_role', active_role);
-      await SecureStore.setItemAsync('available_roles', JSON.stringify(available_roles));
+      // Rider role — save to rider-specific keys, don't overwrite user session
+      if (active_role === 'rider') {
+        await SecureStore.setItemAsync('rider_access_token',  accessToken);
+        await SecureStore.setItemAsync('rider_refresh_token', refreshToken);
+        await SecureStore.setItemAsync('rider_data',          JSON.stringify(profile));
+        // active_role stays as the user's current role — rider is a parallel session
+        return { success: true, isRider: true };
+      }
+
+      await SecureStore.setItemAsync('access_token',     accessToken);
+      await SecureStore.setItemAsync('refresh_token',    refreshToken);
+      await SecureStore.setItemAsync('user_data',        JSON.stringify(profile));
+      await SecureStore.setItemAsync('active_role',      active_role);
+      await SecureStore.setItemAsync('available_roles',  JSON.stringify(available_roles));
 
       set({
         accessToken,
@@ -77,7 +86,7 @@ export const useAuthStore = create((set, get) => ({
         available_roles,
       });
 
-      return { success: true };
+      return { success: true, isRider: false };
     } catch (err) {
       throw err;
     }

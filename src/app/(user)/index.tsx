@@ -12,7 +12,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as Notifications from 'expo-notifications';
 import { useAuthStore } from '../../store/useAuthStore';
 import { prayersApi } from '../../api/prayers';
 import { pollsApi } from '../../api/polls';
@@ -132,31 +131,40 @@ export default function HomeScreen() {
 
   // ==========================================
   // SECTION C: SCHEDULING LOCAL NOTIFICATIONS
+  // Skipped in Expo Go (SDK 53+) — works in dev/production builds only
   // ==========================================
   useEffect(() => {
     const setupDailyNotifications = async () => {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') return;
+      try {
+        // Lazy require so the import doesn't crash in Expo Go at module load time
+        const Notifications = await import('expo-notifications');
+        const { status } = await Notifications.requestPermissionsAsync();
+        if (status !== 'granted') return;
 
-      await Notifications.cancelAllScheduledNotificationsAsync();
+        await Notifications.cancelAllScheduledNotificationsAsync();
 
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: 'Sehri Poll Open 🌙',
-          body: 'Will you be having Sehri food tomorrow? Cast your vote before 10 AM.',
-        },
-        // @ts-ignore
-        trigger: { hour: 22, minute: 0, repeats: true },
-      });
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: 'Sehri Poll Open 🌙',
+            body: 'Will you be having Sehri food tomorrow? Cast your vote before 10 AM.',
+          },
+          // @ts-ignore
+          trigger: { hour: 22, minute: 0, repeats: true },
+        });
 
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: 'Special Case Window Open ⏰',
-          body: 'Need to update your Sehri food request? Submit a special case between 10 AM - 5 PM.',
-        },
-        // @ts-ignore
-        trigger: { hour: 10, minute: 0, repeats: true },
-      });
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: 'Special Case Window Open ⏰',
+            body: 'Need to update your Sehri food request? Submit a special case between 10 AM - 5 PM.',
+          },
+          // @ts-ignore
+          trigger: { hour: 10, minute: 0, repeats: true },
+        });
+      } catch (e) {
+        // Expo Go doesn't support push notifications from SDK 53+
+        // Works fine in development builds and production
+        console.log('Notification setup skipped:', e.message);
+      }
     };
 
     setupDailyNotifications();
@@ -195,9 +203,22 @@ export default function HomeScreen() {
   const handleSwitchToSuperAdmin = async () => {
     try {
       await switchRole('super_admin');
-      router.replace('/(admin)');
+      router.replace('/super-admin/superadmin-dashboard');
     } catch (err) {
       const msg = err.response?.data?.message || 'Could not switch role.';
+      Alert.alert('Switch Failed', msg);
+    }
+  };
+
+  const handleSwitchToRider = async () => {
+    try {
+      const result = await switchRole('rider');
+      if (result.isRider) {
+        // Rider token saved to SecureStore — hydrate rider store then navigate
+        router.push('/(rider)/map');
+      }
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Could not switch to rider.';
       Alert.alert('Switch Failed', msg);
     }
   };
@@ -216,6 +237,14 @@ export default function HomeScreen() {
 
         <View style={styles.headerActions}>
           {/* Temporary role switch buttons — visible only if user holds multiple roles */}
+          {available_roles.includes('rider') && (
+            <TouchableOpacity
+              onPress={handleSwitchToRider}
+              style={styles.switchRoleBtn}
+            >
+              <Text style={styles.switchRoleText}>Rider</Text>
+            </TouchableOpacity>
+          )}
           {available_roles.includes('admin') && (
             <TouchableOpacity
               onPress={handleSwitchToAdmin}
@@ -239,14 +268,6 @@ export default function HomeScreen() {
             accessibilityLabel="Open Profile"
           >
             <Ionicons name="person-circle-outline" size={38} color="#1E293B" />
-          </TouchableOpacity>
-
-          {/* Logout button for testing */}
-          <TouchableOpacity
-            onPress={async () => { await logout(); router.replace('/(auth)/login'); }}
-            style={{ marginLeft: 8, padding: 6 }}
-          >
-            <Ionicons name="log-out-outline" size={28} color="#DC2626" />
           </TouchableOpacity>
         </View>
       </View>

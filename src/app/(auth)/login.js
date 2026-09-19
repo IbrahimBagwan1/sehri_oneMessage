@@ -42,7 +42,9 @@ export default function LoginScreen() {
       await setAuth(profile, accessToken, refreshToken, active_role, available_roles);
 
       // Route to the correct home based on the returned active role
-      if (active_role === 'admin' || active_role === 'super_admin') {
+      if (active_role === 'super_admin') {
+        router.replace('/super-admin/superadmin-dashboard');
+      } else if (active_role === 'admin') {
         router.replace('/(admin)');
       } else {
         router.replace('/(user)');
@@ -106,6 +108,14 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
+        {/* Rider Login */}
+        <TouchableOpacity
+          style={styles.riderLink}
+          onPress={() => router.push('/(rider)/login')}
+        >
+          <Text style={styles.riderLinkText}>Delivering today? <Text style={styles.riderLinkBold}>Rider login</Text></Text>
+        </TouchableOpacity>
+
         {/* Register Link */}
         <TouchableOpacity
           style={styles.registerLink}
@@ -155,7 +165,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   submitText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  registerLink: { marginTop: 16, alignItems: 'center' },
+  riderLink: { marginTop: 16, alignItems: 'center' },
+  riderLinkText: { color: '#94A3B8', fontSize: 13 },
+  riderLinkBold: { color: '#0D9488', fontWeight: '600' },
+  registerLink: { marginTop: 8, alignItems: 'center' },
   registerText: { color: '#64748B', fontSize: 14 },
   boldText: { color: '#2563EB', fontWeight: 'bold' },
   aboutContainer: { marginTop: 24, paddingHorizontal: 16, alignItems: 'center' },

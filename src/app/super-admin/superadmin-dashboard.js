@@ -1,11 +1,23 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useAuthStore } from '../../store/useAuthStore';
 
 export default function AdminDashboard() {
-  const router = useRouter();
+  const router          = useRouter();
+  const switchRole      = useAuthStore((state) => state.switchRole);
+  const available_roles = useAuthStore((state) => state.available_roles);
+
+  const handleSwitchToUser = async () => {
+    try {
+      await switchRole('user');
+      router.replace('/(user)');
+    } catch (err) {
+      Alert.alert('Switch Failed', err.response?.data?.message || 'Could not switch role.');
+    }
+  };
 
   // List of all Super Admin buttons and their navigation routes
   const menuItems = [
@@ -22,6 +34,12 @@ export default function AdminDashboard() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Super Admin Dashboard</Text>
+        {available_roles.includes('user') && (
+          <TouchableOpacity style={styles.switchBtn} onPress={handleSwitchToUser}>
+            <Ionicons name="person-outline" size={14} color="#0369A1" />
+            <Text style={styles.switchBtnText}>User</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.grid}>
@@ -47,9 +65,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff', 
     borderBottomWidth: 1, 
     borderBottomColor: '#E5E7EB', 
-    alignItems: 'center' 
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
   },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1F2937' },
+  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1F2937', flex: 1, textAlign: 'center' },
+  switchBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#E0F2FE',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    position: 'absolute',
+    right: 16,
+  },
+  switchBtnText: { fontSize: 12, fontWeight: '700', color: '#0369A1' },
   grid: { 
     padding: 16, 
     flexDirection: 'row', 

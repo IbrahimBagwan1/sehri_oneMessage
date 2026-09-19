@@ -165,13 +165,6 @@ export default function AdminDashboard() {
           >
             <Ionicons name="person-circle-outline" size={36} color="#1E293B" />
           </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={async () => { await logout(); router.replace('/(auth)/login'); }}
-            style={styles.iconBtn}
-          >
-            <Ionicons name="log-out-outline" size={26} color="#DC2626" />
-          </TouchableOpacity>
         </View>
       </View>
 

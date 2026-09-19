@@ -27,7 +27,11 @@ export default function Index() {
   }
 
   // Route to the correct home based on stored active role
-  if (active_role === 'admin' || active_role === 'super_admin') {
+  if (active_role === 'super_admin') {
+    return <Redirect href="/super-admin/superadmin-dashboard" />;
+  }
+
+  if (active_role === 'admin') {
     return <Redirect href="/(admin)" />;
   }
 
