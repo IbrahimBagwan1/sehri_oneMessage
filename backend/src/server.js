@@ -14,6 +14,7 @@ const locationRoutes = require('./routes/locations');
 const prayerRoutes = require('./routes/prayers');
 const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
 const chatRoutes = require('./routes/chat');           // community group chat
+const trackingRoutes = require('./routes/tracking');   // rider tracking
 const { initSocket } = require('./services/socketService');
 const logger = require('./utils/logger');
 const { error } = require('./utils/response');
@@ -50,6 +51,7 @@ app.use('/api/locations', locationRoutes);   // public — used by registration 
 app.use('/api/prayers', prayerRoutes);
 app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
 app.use('/api/chat', chatRoutes);            // community group chat
+app.use('/api/tracking', trackingRoutes);   // rider tracking
 
 // ---------------------------------------------------------------------------
 // Global error handler
