@@ -215,7 +215,7 @@ export default function DonateScreen() {
                 <Text style={styles.paymentEyebrow}>Send your donation to</Text>
                 <View style={styles.numberRow}>
                   <Text style={styles.numberText} selectable>
-                    {payment?.contact_number || '+91 XXXXXXXXXX'}
+                    {payment?.contact_number || '+91 96327 16392'}
                   </Text>
                   <Pressable
                     onPress={handleCopy}

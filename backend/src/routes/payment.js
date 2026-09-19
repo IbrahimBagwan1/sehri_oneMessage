@@ -20,7 +20,7 @@ const express = require('express');
 const router = express.Router();
 const { success } = require('../utils/response');
 
-const DEFAULT_CONTACT = '+91 XXXXXXXXXX';
+const DEFAULT_CONTACT = '+91 96327 16392';
 
 router.get('/info', (req, res) => {
   const contactNumber = process.env.PAYMENT_CONTACT_NUMBER || DEFAULT_CONTACT;
