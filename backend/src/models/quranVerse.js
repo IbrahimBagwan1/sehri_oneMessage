@@ -24,11 +24,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(15),
         allowNull: false,
       },
-      // Two Arabic-script variants. The reader prefers text_indopak
-      // (the script South Asian mushafs use) and falls back to
-      // text_uthmani when indopak is missing (legacy rows).
+      // Uthmani script — the classical mushaf orthography.
+      // (A dormant `text_indopak` column also exists in the schema
+      // from migration 20260920000001; the model + code no longer
+      // reference it. Safe to leave in the DB — nullable and unused.)
       text_uthmani:       { type: DataTypes.TEXT, allowNull: false },
-      text_indopak:       { type: DataTypes.TEXT, allowNull: true },
       translation_text:   { type: DataTypes.TEXT, allowNull: true },
       translation_source: { type: DataTypes.STRING(150), allowNull: true },
     },

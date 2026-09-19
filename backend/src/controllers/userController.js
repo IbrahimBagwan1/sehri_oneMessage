@@ -395,7 +395,13 @@ const softDeleteUser = async (userId) => {
     user.status = 'deleted';
     // Overwrite the password so no leaked hash is ever useful.
     user.password = await bcrypt.hash(`deleted-${user.id}-${Date.now()}`, 10);
-    await user.save({ transaction: t });
+
+    // Skip model validators + hooks: the anonymized values are intentionally
+    // shaped to break the "valid Indian mobile / real user" invariants
+    // those validators enforce. Without this, `user.save()` throws a
+    // Sequelize ValidationError on the phone regex and the delete silently
+    // fails with a generic 500.
+    await user.save({ transaction: t, validate: false, hooks: false });
 
     // Deactivate any linked privileged accounts so the person cannot log
     // back in via admin/super_admin/rider role.
@@ -415,10 +421,13 @@ const softDeleteUser = async (userId) => {
     }
 
     await t.commit();
-    logger.info(`[users] Account soft-deleted and anonymized: ${userId}`);
+    logger.info(`[users] Account soft-deleted and anonymized: ${userId} (phone→${anonymizedPhone})`);
     return { deleted: true };
   } catch (err) {
-    await t.rollback();
+    // Best-effort rollback; ignore double-rollback errors if the txn
+    // was already released (e.g. connection reset mid-save).
+    try { await t.rollback(); } catch (_) { /* noop */ }
+    logger.error(`[users] softDeleteUser(${userId}) failed: ${err.name}: ${err.message}`);
     throw err;
   }
 };

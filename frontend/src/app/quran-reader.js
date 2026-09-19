@@ -16,11 +16,8 @@ import { colors, fonts, ARABIC_TEXT_STYLE, toArabicDigits } from '../components/
 // -----------------------------------------------------------------------------
 // Quran reader — one surah, top-to-bottom, no pagination.
 //
-// Script — we prefer Indo-Pak orthography (text_indopak) because most
-// South Asian readers are used to that muṣḥaf style. When a verse row
-// only has the Uthmani variant (legacy rows synced before the schema
-// added text_indopak), we fall back to text_uthmani so the reader
-// never renders empty.
+// Script — Uthmani orthography (the classical muṣḥaf script). The API
+// stores it in text_uthmani; the reader renders that directly.
 //
 // Layout — Arabic block first, then a small breathing gap, then the
 // English translation. Between verses, a visible gold rule with a
@@ -125,17 +122,15 @@ export default function QuranReaderScreen() {
               style={styles.bismillahText}
               accessibilityLabel="Bismillah ar-Rahman ar-Raheem"
             >
-              بسم اللہ الرحمٰن الرحیم
+              بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ
             </Text>
             <View style={styles.ornamentRule} />
           </View>
         )}
 
-        {/* Verses — each is: Arabic (Indo-Pak) → translation → visible gold rule */}
+        {/* Verses — each is: Arabic (Uthmani) → translation → visible gold rule */}
         {verses.map((v, idx) => {
-          // Prefer Indo-Pak orthography; fall back to Uthmani if the
-          // row hasn't been re-synced yet.
-          const arabicText = v.text_indopak || v.text_uthmani;
+          const arabicText = v.text_uthmani;
           const isLast = idx === verses.length - 1;
 
           return (
