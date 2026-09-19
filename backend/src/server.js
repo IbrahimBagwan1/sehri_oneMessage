@@ -14,6 +14,12 @@ const locationRoutes = require('./routes/locations');
 const prayerRoutes = require('./routes/prayers');
 const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
 const trackingRoutes = require('./routes/tracking');   // rider management + live tracking
+const chatRoutes = require('./routes/chat');           // group chat + Socket.IO backed messaging
+const donationsRoutes = require('./routes/donations'); // user donations + admin verification
+const feedbackRoutes = require('./routes/feedback');   // user feedback + admin review
+const quranRoutes = require('./routes/quran');         // Quran chapters + verses (served from our DB)
+const duaRoutes = require('./routes/dua');             // Dua categories + entries (served from our DB)
+const { initSocket } = require('./services/socketService');
 const logger = require('./utils/logger');
 const { error } = require('./utils/response');
 
@@ -23,7 +29,13 @@ const app = express();
 // Security & observability middleware — must come first
 // ---------------------------------------------------------------------------
 app.use(helmet()); // Sets secure HTTP headers (XSS, clickjacking, MIME sniffing, etc.)
-app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev')); // Request logging
+
+// Route morgan output through winston so we get one unified log stream
+app.use(
+  morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', {
+    stream: { write: (msg) => logger.info(msg.trim()) },
+  })
+);
 
 // Allow all origins in development; lock down via CORS_ORIGIN env var in production
 app.use(cors({
@@ -32,13 +44,18 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 app.get('/', (req, res) => {
   res.send('Sehri backend is running');
+});
+
+// Health check for uptime monitors / container orchestrators
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
 
 app.use('/api/auth', authRoutes);
@@ -49,6 +66,21 @@ app.use('/api/locations', locationRoutes);   // public — used by registration 
 app.use('/api/prayers', prayerRoutes);
 app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
 app.use('/api/tracking', trackingRoutes);    // rider login, live tracking, rider management
+app.use('/api/chat', chatRoutes);            // group chat rooms + REST message history
+app.use('/api/donations', donationsRoutes);  // resident donations + admin verification workflow
+app.use('/api/feedback', feedbackRoutes);    // user feedback submission + admin review
+app.use('/api/quran', quranRoutes);          // 114 surahs, verses + translation (from our DB)
+app.use('/api/dua', duaRoutes);              // dua categories + entries + featured-today
+
+// ---------------------------------------------------------------------------
+// 404 for unmatched API routes — hit before the error handler
+// ---------------------------------------------------------------------------
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return error(res, { statusCode: 404, message: `Route not found: ${req.method} ${req.path}` });
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Global error handler

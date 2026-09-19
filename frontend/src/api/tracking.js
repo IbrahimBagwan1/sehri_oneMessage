@@ -29,4 +29,11 @@ export const trackingApi = {
     const response = await apiClient.get('/tracking/active');
     return response.data; // { success, data: { rider } }
   },
+
+  // GET /api/tracking/eta
+  // Driving ETA from today's rider to the calling user's address.
+  getEta: async () => {
+    const response = await apiClient.get('/tracking/eta');
+    return response.data; // { success, data: { rider, eta } }
+  },
 };

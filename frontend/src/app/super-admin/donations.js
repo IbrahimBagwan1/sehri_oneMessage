@@ -1,178 +1,343 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  ScrollView, 
-  TouchableOpacity, 
-  ActivityIndicator, 
-  Alert 
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import client from '../../api/client'; // Your Axios client
+import { useRouter, useFocusEffect } from 'expo-router';
+import { donationsApi } from '../../api/donations';
 
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+const STATUS_CONFIG = {
+  pending:  { label: 'Pending',  color: '#D97706', bg: '#FEF3C7' },
+  verified: { label: 'Verified', color: '#16A34A', bg: '#DCFCE7' },
+  rejected: { label: 'Rejected', color: '#DC2626', bg: '#FEE2E2' },
+};
+
+const FILTERS = [
+  { key: 'all',      label: 'All'      },
+  { key: 'pending',  label: 'Pending'  },
+  { key: 'verified', label: 'Verified' },
+  { key: 'rejected', label: 'Rejected' },
+];
+
+const formatINR = (val) => {
+  const n = Number.parseFloat(val);
+  if (!Number.isFinite(n)) return '₹0';
+  return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+};
+
+const formatDateTime = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
+    ' · ' +
+    d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
+// Walk the eager-loaded location chain to find a zone-type ancestor.
+const resolveZoneName = (location) => {
+  let current = location;
+  let hops = 0;
+  while (current && current.type !== 'zone' && hops < 10) {
+    current = current.parent || null;
+    hops += 1;
+  }
+  return current?.type === 'zone' ? current.name : null;
+};
+
+// -----------------------------------------------------------------------------
+// Screen
+// -----------------------------------------------------------------------------
 export default function SuperAdminDonationsScreen() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [donationsList, setDonationsList] = useState([]);
 
-  // Fetch donations from backend on load (with fallback mock data for testing)
-  useEffect(() => {
-    fetchDonations();
-  }, []);
+  const [filter,      setFilter]      = useState('all');
+  const [donations,   setDonations]   = useState([]);
+  const [summary,     setSummary]     = useState(null);
+  const [loading,     setLoading]     = useState(true);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [actioningId, setActioningId] = useState(null);
 
-  const fetchDonations = async () => {
+  const load = useCallback(async (isRefresh = false) => {
+    isRefresh ? setRefreshing(true) : setLoading(true);
     try {
-      setLoading(true);
-      // Replace with your actual backend endpoint
-       const response = await client.get('/super-admin/donations');
-      setDonationsList(response.data);
-
-      // Temporary mock data matching your exact requirements
-      setDonationsList([
-        {
-          id: '1',
-          donorName: 'Mohammed Asim',
-          zone: 'Stanza',
-          pgName: 'Stanza Living (Cordoba)',
-          amount: '₹1,500',
-          timestamp: '02 Sep 2026, 05:30 PM'
-        },
-        {
-          id: '2',
-          donorName: 'Rahul Sharma',
-          zone: 'Masjid Zone',
-          pgName: 'Green Valley PG',
-          amount: '₹500',
-          timestamp: '01 Sep 2026, 02:10 PM'
-        }
+      const [listRes, summaryRes] = await Promise.all([
+        donationsApi.getAll({
+          page: 1,
+          limit: 100,
+          status: filter === 'all' ? undefined : filter,
+        }),
+        donationsApi.getSummary(),
       ]);
-    } catch (_error) {
-      Alert.alert('Error', 'Failed to load donation history.');
+      if (listRes.success) setDonations(listRes.data.donations || []);
+      if (summaryRes.success) setSummary(summaryRes.data);
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to load donations';
+      Alert.alert('Error', msg);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
+  }, [filter]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const handleUpdateStatus = (id, next, donorName) => {
+    const verb = next === 'verified' ? 'verify' : 'reject';
+    Alert.alert(
+      `${verb.charAt(0).toUpperCase() + verb.slice(1)} donation`,
+      `Are you sure you want to ${verb} the donation from ${donorName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: verb.charAt(0).toUpperCase() + verb.slice(1),
+          style: next === 'rejected' ? 'destructive' : 'default',
+          onPress: async () => {
+            setActioningId(id);
+            try {
+              await donationsApi.updateStatus(id, next);
+              // Optimistic update — drop from view if a filter is in use,
+              // otherwise reflect the new status.
+              setDonations((prev) =>
+                filter === 'all'
+                  ? prev.map((d) => (d.id === id ? { ...d, status: next } : d))
+                  : prev.filter((d) => d.id !== id)
+              );
+              load(); // refresh summary
+            } catch (err) {
+              const msg = err.response?.data?.message || 'Action failed';
+              Alert.alert('Error', msg);
+            } finally {
+              setActioningId(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
-  // Delete a single donation record
-  const handleDeleteItem = (id) => {
-    Alert.alert('Delete Record', 'Are you sure you want to remove this donation record?', [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
-        onPress: () => {
-          setDonationsList(prev => prev.filter(item => item.id !== id));
-        }
-      }
-    ]);
-  };
+  const renderCard = ({ item }) => {
+    const cfg  = STATUS_CONFIG[item.status] || STATUS_CONFIG.pending;
+    const zone = resolveZoneName(item.user?.location);
+    const isActioning = actioningId === item.id;
 
-  // Clear all donation history
-  const handleClearAll = () => {
-    Alert.alert('Clear History', 'Are you sure you want to delete all donation records?', [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Clear All', 
-        style: 'destructive', 
-        onPress: () => setDonationsList([])
-      }
-    ]);
-  };
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardTop}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.donorName}>{item.user?.name || '—'}</Text>
+            <Text style={styles.donorMeta}>
+              {item.user?.phone || ''}{zone ? ` · ${zone}` : ''}
+            </Text>
+          </View>
+          <View style={styles.amountBox}>
+            <Text style={styles.amountText}>{formatINR(item.amount)}</Text>
+          </View>
+        </View>
 
-  // Calculate total donations collected
-  const totalAmount = donationsList.reduce((sum, item) => {
-    const numericVal = parseInt(item.amount.replace(/[^0-9]/g, ''), 10) || 0;
-    return sum + numericVal;
-  }, 0);
+        {item.note ? <Text style={styles.noteText}>{item.note}</Text> : null}
+
+        <View style={styles.cardFooter}>
+          <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+            <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+          </View>
+          <Text style={styles.dateText}>{formatDateTime(item.created_at)}</Text>
+        </View>
+
+        {item.status === 'pending' && (
+          <View style={styles.actionRow}>
+            {isActioning ? (
+              <ActivityIndicator color="#0D9488" />
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.verifyBtn]}
+                  onPress={() => handleUpdateStatus(item.id, 'verified', item.user?.name || 'donor')}
+                >
+                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Text style={styles.actionText}>Verify</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.rejectBtn]}
+                  onPress={() => handleUpdateStatus(item.id, 'rejected', item.user?.name || 'donor')}
+                >
+                  <Ionicons name="close" size={16} color="#FFF" />
+                  <Text style={styles.actionText}>Reject</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#1F2937" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="#1F2937" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Donations History</Text>
-        {donationsList.length > 0 ? (
-          <TouchableOpacity onPress={handleClearAll}>
-            <Text style={styles.clearText}>Clear All</Text>
-          </TouchableOpacity>
-        ) : (
-          <View style={{ width: 24 }} />
-        )}
+        <Text style={styles.headerTitle}>Donations</Text>
+        <TouchableOpacity onPress={() => load(true)} style={styles.iconBtn}>
+          <Ionicons name="refresh" size={20} color="#0D9488" />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* Total Summary Banner */}
-        {!loading && donationsList.length > 0 && (
-          <View style={styles.summaryBanner}>
-            <View>
-              <Text style={styles.summaryLabel}>Total Collections</Text>
-              <Text style={styles.summaryAmount}>₹{totalAmount.toLocaleString('en-IN')}</Text>
-            </View>
-            <Ionicons name="wallet-outline" size={28} color="#0D9488" />
+      {/* Summary banner */}
+      {summary && (
+        <View style={styles.summaryBanner}>
+          <View style={styles.summaryCell}>
+            <Text style={styles.summaryLabel}>Verified</Text>
+            <Text style={[styles.summaryValue, { color: '#16A34A' }]}>
+              {formatINR(summary.total_amount)}
+            </Text>
+            <Text style={styles.summaryCount}>{summary.counts?.verified ?? 0} donations</Text>
           </View>
-        )}
-
-        {loading ? (
-          <ActivityIndicator size="large" color="#0D9488" style={{ marginTop: 40 }} />
-        ) : donationsList.length > 0 ? (
-          donationsList.map(item => (
-            <View key={item.id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.donorName}>{item.donorName}</Text>
-                  <Text style={styles.locationText}>
-                    {item.pgName} • <Text style={styles.zoneHighlight}>{item.zone}</Text>
-                  </Text>
-                </View>
-                <View style={styles.amountBadge}>
-                  <Text style={styles.amountText}>{item.amount}</Text>
-                </View>
-                <TouchableOpacity onPress={() => handleDeleteItem(item.id)} style={styles.deleteIcon}>
-                  <Ionicons name="trash-outline" size={18} color="#EF4444" />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.footerRow}>
-                <Text style={styles.timestampText}>Paid on: {item.timestamp}</Text>
-              </View>
-            </View>
-          ))
-        ) : (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="card-outline" size={48} color="#9CA3AF" />
-            <Text style={styles.emptyText}>No donation records available.</Text>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryCell}>
+            <Text style={styles.summaryLabel}>Pending</Text>
+            <Text style={[styles.summaryValue, { color: '#D97706' }]}>
+              {formatINR(summary.pending_amount)}
+            </Text>
+            <Text style={styles.summaryCount}>{summary.counts?.pending ?? 0} donations</Text>
           </View>
-        )}
-      </ScrollView>
+        </View>
+      )}
+
+      {/* Filter tabs */}
+      <View style={styles.filterRow}>
+        {FILTERS.map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            style={[styles.filterBtn, filter === f.key && styles.filterBtnActive]}
+            onPress={() => setFilter(f.key)}
+          >
+            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#0D9488" />
+        </View>
+      ) : (
+        <FlatList
+          data={donations}
+          keyExtractor={(item) => item.id}
+          renderItem={renderCard}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => load(true)}
+              colors={['#0D9488']}
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.centered}>
+              <Ionicons name="wallet-outline" size={40} color="#CBD5E1" />
+              <Text style={styles.emptyText}>No donations found.</Text>
+            </View>
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
-  backButton: { padding: 4 },
-  clearText: { color: '#EF4444', fontWeight: '600', fontSize: 14 },
-  content: { padding: 16 },
-  summaryBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F0FDFA', borderWidth: 1, borderColor: '#CCFBF1', borderRadius: 12, padding: 16, marginBottom: 16 },
-  summaryLabel: { fontSize: 12, color: '#0F766E', fontWeight: '600', textTransform: 'uppercase' },
-  summaryAmount: { fontSize: 22, fontWeight: 'bold', color: '#0D9488', marginTop: 2 },
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 3, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingBottom: 10, marginBottom: 8 },
-  donorName: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
-  locationText: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  zoneHighlight: { color: '#0D9488', fontWeight: '600' },
-  amountBadge: { backgroundColor: '#ECFDF5', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginRight: 8 },
-  amountText: { color: '#059669', fontWeight: 'bold', fontSize: 14 },
-  deleteIcon: { padding: 4 },
-  footerRow: { flexDirection: 'row', justifyContent: 'flex-end' },
-  timestampText: { fontSize: 11, color: '#9CA3AF' },
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', marginTop: 60 },
-  emptyText: { fontSize: 14, color: '#9CA3AF', fontStyle: 'italic', marginTop: 8 }
+  container:   { flex: 1, backgroundColor: '#F8FAFC' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    backgroundColor: '#FFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#1F2937' },
+  backBtn:     { padding: 4 },
+  iconBtn:     { padding: 4 },
+
+  summaryBanner: {
+    flexDirection: 'row',
+    backgroundColor: '#FFF',
+    marginHorizontal: 14,
+    marginTop: 14,
+    borderRadius: 12,
+    paddingVertical: 14,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+  },
+  summaryCell:   { flex: 1, alignItems: 'center' },
+  summaryDivider: { width: 1, backgroundColor: '#E2E8F0', marginVertical: 4 },
+  summaryLabel:  { fontSize: 11, color: '#64748B', textTransform: 'uppercase', fontWeight: '600' },
+  summaryValue:  { fontSize: 18, fontWeight: '800', marginTop: 4 },
+  summaryCount:  { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+
+  filterRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  filterBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: '#E2E8F0',
+  },
+  filterBtnActive: { backgroundColor: '#0D9488' },
+  filterText:      { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  filterTextActive:{ color: '#FFF' },
+
+  listContent: { paddingHorizontal: 14, paddingBottom: 24 },
+
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+  },
+  cardTop:      { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  donorName:    { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  donorMeta:    { fontSize: 12, color: '#64748B', marginTop: 2 },
+  amountBox:    { backgroundColor: '#ECFDF5', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  amountText:   { color: '#059669', fontWeight: '700', fontSize: 14 },
+  noteText:     { fontSize: 13, color: '#475569', marginBottom: 8 },
+  cardFooter:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  statusBadge:  { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 },
+  statusText:   { fontSize: 11, fontWeight: '700' },
+  dateText:     { fontSize: 11, color: '#94A3B8' },
+  actionRow:    { flexDirection: 'row', gap: 10, marginTop: 12, borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 10 },
+  actionBtn:    { flex: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', alignItems: 'center', paddingVertical: 8, borderRadius: 8 },
+  verifyBtn:    { backgroundColor: '#16A34A' },
+  rejectBtn:    { backgroundColor: '#DC2626' },
+  actionText:   { color: '#FFF', fontWeight: '700', fontSize: 13 },
+
+  centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
+  emptyText: { fontSize: 13, color: '#94A3B8' },
 });

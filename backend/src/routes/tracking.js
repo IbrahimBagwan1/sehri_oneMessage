@@ -13,6 +13,7 @@ const {
   getActiveRider,
   getDeliveryList,
   deleteRider,
+  getEta,
 } = require('../controllers/trackingController');
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,11 @@ router.post('/rider-login', riderLogin);
 // requireUserAccess: allows user, and admin/super_admin with a linked user account.
 // Must be declared BEFORE /:id routes to avoid 'active' being matched as an id.
 router.get('/active', verifyToken, requireUserAccess, getActiveRider);
+
+// GET /api/tracking/eta
+// Driving ETA from today's assigned rider to the calling user's address.
+// Uses Google Distance Matrix + Geocoding on the backend.
+router.get('/eta', verifyToken, requireUserAccess, getEta);
 
 // ---------------------------------------------------------------------------
 // Rider — delivery operations

@@ -1,359 +1,490 @@
-import React, { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TextInput, 
-  TouchableOpacity, 
-  ActivityIndicator, 
-  Alert, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
   ScrollView,
   Modal,
-  FlatList
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { useAuthStore } from '../store/useAuthStore'; 
-import client from '../api/client'; 
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useAuthStore } from '../store/useAuthStore';
+import { usersApi } from '../api/users';
+import { locationsApi } from '../api/auth';
 
-// Data mapping rules based on your specifications
-const ZONES_BY_REGION = {
-  'South Bangalore': ['Girls Zone', 'Masjid Zone', 'Hostel', 'Stanza'],
-  'North Bangalore': [],
-  'East Bangalore': [],
-  'West Bangalore': [],
+// -----------------------------------------------------------------------------
+// Profile screen — real data from GET /api/users/me.
+//
+// Edits are submitted via POST /api/users/request-profile-edit and require
+// super-admin approval before they land on the users row. The screen also
+// lets the user hit "Delete Account" which soft-deletes their record and
+// logs them out.
+//
+// Only fields the backend allow-lists as editable are exposed here:
+//   name, gender, occupation, city, location_id, address
+// Phone is the login identifier and stays read-only.
+// -----------------------------------------------------------------------------
+const OCCUPATIONS = ['student', 'employee', 'others'];
+const GENDERS     = ['male', 'female'];
+
+// Walk the eager-loaded location chain in memory.
+const resolveChain = (location) => {
+  const chain = [];
+  let current = location;
+  let hops = 0;
+  while (current && hops < 10) {
+    chain.push(current);
+    current = current.parent || null;
+    hops += 1;
+  }
+  return chain;
 };
 
-const PGS_BY_ZONE = {
-  'Stanza': [
-    '888 7th Stage 11th Cross Road, Mylasandra Kings and Queens PG',
-    'Stanza Living (Cordoba)', 'Target PG', 'RR Luxury PG',
-    'Krishna Villa Apartments', 'Balaji PG for Gents', 'Lasya PG',
-    'Shiva Sai PG', 'Stanza Living (Huelva House)', 'Global Vista',
-    'SS Luxury PG', 'Good Lands PG', 'Millenial Blue Opal',
-    'Paras Global Kutir', 'Others'
-  ],
-  'Girls Zone': [
-    'Chaitrashree Comforts', 'Chiguru PG for ladies', 'Global Residency', 
-    'Global Vista Apartment', 'Goodlands luxury ladies PG', 'habitat illuminar', 
-    'JV Queens PG', 'JV Queens Prime PG', 'Krishna Global Villaments', 
-    'New SL Ladies PG', 'RVCE girls DJ hostel', 'RVCE girls krishna garden hostel', 
-    'Sai Ram luxury PG for ladies', 'Samruddhi PG for ladies', 
-    'SL grand luxury ladies PG', 'SL prime PG for ladies', 'SLN grand', 
-    'Sri Ladies PG', 'Sri Sai Durga ladies PG', 'Sri vengamamba PG', 
-    'SS Home stay', 'SSR PG for ladies', 'Stanza Living Granada House', 
-    'Stanza Living Nome House', 'Stay Luxe Inn', 'The Millenial Topaz 1', 
-    'The Millenial Topaz 2', 'Others'
-  ],
-  'Masjid Zone': [
-    'Maruti pg', 'Flat infront of masjid', 'Malanad apartments', 
-    'Dupasipallya musalla', 'RK pal pg', 'Others'
-  ],
-  'Hostel': [
-    'Krishna Hostel', 'Cauvery Hostel', 'MV hostel', 'Others'
-  ]
-};
-
-const OCCUPATION_OPTIONS = ['Student', 'Employee', 'Others'];
-const REGION_OPTIONS = ['South Bangalore', 'North Bangalore', 'East Bangalore', 'West Bangalore'];
+const zoneNameFromChain = (chain) => chain.find((c) => c.type === 'zone')?.name || null;
 
 export default function ProfileScreen() {
-  const router = useRouter();
-  
-  const user = useAuthStore((state) => state.user) || {
-    name: 'Resident',
-    email: 'resident@example.com',
-    phone: '+91 9876543210',
-    region: 'South Bangalore',
-    zone: 'Girls Zone',
-    pg: 'Global Vista Apartment',
-    occupation: 'Student'
-  };
-  const logout = useAuthStore((state) => state.logout);
+  const router  = useRouter();
+  const user    = useAuthStore((s) => s.user);
+  const logout  = useAuthStore((s) => s.logout);
 
+  const [loading,       setLoading]       = useState(true);
+  const [profile,       setProfile]       = useState(null);   // full user object from /me
+  const [zoneName,      setZoneName]      = useState(null);
+
+  // Editable form state — reset from profile when it loads.
   const [isEditing, setIsEditing] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [approvalStatus, setApprovalStatus] = useState(user.approvalStatus || 'Approved'); // 'Pending for Approval'
+  const [saving,    setSaving]    = useState(false);
+  const [deleting,  setDeleting]  = useState(false);
+  const [name,       setName]       = useState('');
+  const [gender,     setGender]     = useState('');
+  const [occupation, setOccupation] = useState('');
+  const [address,    setAddress]    = useState('');
 
-  // Form states
-  const [name, setName] = useState(user.name || '');
-  const [phone, setPhone] = useState(user.phone || '');
-  const [region, setRegion] = useState(user.region || 'South Bangalore');
-  const [zone, setZone] = useState(user.zone || 'Girls Zone');
-  const [pg, setPg] = useState(user.pg || '');
-  const [customPg, setCustomPg] = useState('');
-  
-  const [occupation, setOccupation] = useState(user.occupation || 'Student');
-  const [customOccupation, setCustomOccupation] = useState('');
+  // Zone / address picker state (mirrors the register screen)
+  const [zones,           setZones]           = useState([]);
+  const [addresses,       setAddresses]       = useState([]);
+  const [selectedZone,    setSelectedZone]    = useState(null);   // { id, name }
+  const [selectedAddress, setSelectedAddress] = useState(null);   // { id, name } | null
+  const [loadingZones,    setLoadingZones]    = useState(false);
 
-  // Modal selector states
+  // Modal picker for gender/occupation
+  const [modalType,    setModalType]    = useState(null);   // 'gender' | 'occupation'
   const [modalVisible, setModalVisible] = useState(false);
-  const [modalType, setModalType] = useState(''); // 'region', 'zone', 'pg', 'occupation'
 
-  // Cascading logic handlers
-  const handleSelectRegion = (selectedRegion) => {
-    setRegion(selectedRegion);
-    // Reset zone and pg when region changes
-    const availableZones = ZONES_BY_REGION[selectedRegion] || [];
-    setZone(availableZones[0] || '');
-    setPg('');
-    setModalVisible(false);
-  };
+  // ---------------------------------------------------------------------------
+  // Load profile from the server (source of truth) each time the screen
+  // gets focus, so approvals show up without a manual refresh.
+  // ---------------------------------------------------------------------------
+  const loadProfile = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await usersApi.getMe();
+      if (res.success) {
+        const u = res.data.user;
+        setProfile(u);
+        setZoneName(res.data.zone?.name || null);
+        setName(u.name || '');
+        setGender(u.gender || '');
+        setOccupation(u.occupation || '');
+        setAddress(u.address || '');
 
-  const handleSelectZone = (selectedZone) => {
-    setZone(selectedZone);
-    setPg(''); // Reset PG when zone changes
-    setModalVisible(false);
-  };
+        const chain = resolveChain(u.location);
+        const zone  = chain.find((c) => c.type === 'zone');
+        setSelectedZone(zone ? { id: zone.id, name: zone.name } : null);
+        // If the user's leaf is an address row, seed selectedAddress with it.
+        if (u.location && u.location.type === 'address') {
+          setSelectedAddress({ id: u.location.id, name: u.location.name });
+        } else {
+          setSelectedAddress(null);
+        }
+      }
+    } catch (err) {
+      Alert.alert('Error', err.response?.data?.message || 'Could not load profile');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const openSelectionModal = (type) => {
-    if (!isEditing) return;
-    setModalType(type);
-    setModalVisible(true);
-  };
+  useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
 
-  const getModalData = () => {
-    if (modalType === 'region') return REGION_OPTIONS;
-    if (modalType === 'zone') return ZONES_BY_REGION[region] || [];
-    if (modalType === 'pg') return PGS_BY_ZONE[zone] || [];
-    if (modalType === 'occupation') return OCCUPATION_OPTIONS;
-    return [];
-  };
+  // Load the zone list once we enter edit mode.
+  useEffect(() => {
+    if (!isEditing || zones.length > 0) return;
+    (async () => {
+      try {
+        setLoadingZones(true);
+        const res = await locationsApi.getLocations({ type: 'zone' });
+        setZones(res.data || []);
+      } catch (err) {
+        Alert.alert('Error', 'Could not load zones');
+      } finally {
+        setLoadingZones(false);
+      }
+    })();
+  }, [isEditing, zones.length]);
 
-  const handleModalItemSelect = (item) => {
-    if (modalType === 'region') handleSelectRegion(item);
-    else if (modalType === 'zone') handleSelectZone(item);
-    else if (modalType === 'pg') {
-      setPg(item);
-      setModalVisible(false);
-    } else if (modalType === 'occupation') {
-      setOccupation(item);
-      setModalVisible(false);
+  const loadAddressesForZone = async (zoneId) => {
+    try {
+      const res = await locationsApi.getLocations({ type: 'address', parent_id: zoneId });
+      setAddresses(res.data || []);
+    } catch {
+      setAddresses([]);
     }
   };
 
-  const handleSaveProfile = async () => {
+  const handleZonePick = async (z) => {
+    setSelectedZone(z);
+    setSelectedAddress(null);
+    await loadAddressesForZone(z.id);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Submit an edit request. We only include fields that actually changed —
+  // the backend allow-list will strip anything else.
+  // ---------------------------------------------------------------------------
+  const handleSave = async () => {
+    if (!profile) return;
+
+    const changes = {};
+    if (name.trim() && name.trim() !== profile.name) changes.name = name.trim();
+    if (gender && gender !== profile.gender) changes.gender = gender;
+    if (occupation && occupation !== profile.occupation) changes.occupation = occupation;
+    if (address.trim() && address.trim() !== profile.address) changes.address = address.trim();
+
+    // Determine the intended location_id: address if the zone has addresses
+    // and one is picked, else the zone itself.
+    const intendedLocId = selectedAddress?.id || selectedZone?.id || null;
+    if (intendedLocId && intendedLocId !== profile.location_id) {
+      changes.location_id = intendedLocId;
+    }
+
+    if (Object.keys(changes).length === 0) {
+      Alert.alert('No changes', 'You have not modified any fields.');
+      return;
+    }
+
+    setSaving(true);
     try {
-      setLoading(true);
-      const finalPg = pg === 'Others' ? customPg : pg;
-      const finalOccupation = occupation === 'Others' ? customOccupation : occupation;
-
-      // API request to backend
-      await client.put('/user/profile', {
-        name,
-        phone,
-        region,
-        zone,
-        pg: finalPg,
-        occupation: finalOccupation,
-      });
-
-      setApprovalStatus('Pending for Approval');
-      Alert.alert('Submitted', 'Profile update sent for Super Admin approval.');
+      await usersApi.requestProfileEdit(changes);
+      Alert.alert(
+        'Submitted',
+        'Your changes have been sent to the super admin for review.'
+      );
       setIsEditing(false);
-    } catch (error) {
-      // @ts-ignore
-      Alert.alert('Error', error.response?.data?.message || 'Failed to update profile.');
+    } catch (err) {
+      Alert.alert('Error', err.response?.data?.message || 'Failed to submit edit request');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
   const handleLogout = () => {
     Alert.alert('Logout', 'Are you sure you want to log out?', [
       { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Logout', 
-        style: 'destructive', 
-        onPress: () => {
-          logout();
-          router.replace('/(auth)/login'); 
-        } 
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          await logout();
+          router.replace('/(auth)/login');
+        },
       },
     ]);
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'This will permanently delete your account and anonymize your personal information. This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            // Second confirmation — Play/App Store guidelines strongly
+            // recommend a two-step irreversible flow.
+            Alert.alert(
+              'Are you sure?',
+              'Your poll history and donations will remain (for records) but your name, phone, and address will be permanently removed.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, delete forever',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setDeleting(true);
+                    try {
+                      await usersApi.deleteMe();
+                      await logout();
+                      router.replace('/(auth)/login');
+                    } catch (err) {
+                      Alert.alert(
+                        'Error',
+                        err.response?.data?.message || 'Failed to delete account'
+                      );
+                    } finally {
+                      setDeleting(false);
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  if (loading) {
+    return (
+      <SafeAreaView style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color="#0D9488" />
+      </SafeAreaView>
+    );
+  }
+
+  const openModal = (type) => {
+    if (!isEditing) return;
+    setModalType(type);
+    setModalVisible(true);
+  };
+
+  const modalOptions = modalType === 'gender' ? GENDERS : OCCUPATIONS;
+
+  const zoneHasAddresses = addresses.length > 0;
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#333" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="#1F2937" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>My Profile</Text>
-        <TouchableOpacity onPress={() => setIsEditing(!isEditing)}>
-          <Text style={styles.editText}>{isEditing ? 'Cancel' : 'Edit'}</Text>
+        <TouchableOpacity
+          onPress={() => {
+            if (isEditing) loadProfile(); // discard changes
+            setIsEditing((e) => !e);
+          }}
+        >
+          <Text style={styles.editLink}>{isEditing ? 'Cancel' : 'Edit'}</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        {/* Avatar & Status Banner */}
-        <View style={styles.avatarContainer}>
-          <Ionicons name="person-circle-outline" size={90} color="#0D9488" />
-          <Text style={styles.nameDisplay}>{name}</Text>
-          <Text style={styles.emailText}>{user.email}</Text>
-          
-          {approvalStatus === 'Pending for Approval' && (
-            <View style={styles.pendingBadge}>
-              <Text style={styles.pendingText}>⚠️ Pending for Super Admin Approval</Text>
+        {/* Avatar / header */}
+        <View style={styles.avatarBox}>
+          <Ionicons name="person-circle-outline" size={92} color="#0D9488" />
+          <Text style={styles.nameDisplay}>{profile?.name || 'Resident'}</Text>
+          <Text style={styles.phoneDisplay}>{profile?.phone}</Text>
+          {profile?.status === 'pending' && (
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusText}>Pending admin approval</Text>
             </View>
           )}
         </View>
 
-        {/* Details Card */}
+        {/* Editable / read-only fields */}
         <View style={styles.card}>
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Full Name</Text>
-            <TextInput
-              style={[styles.input, !isEditing && styles.disabledInput]}
-              value={name}
-              onChangeText={setName}
-              editable={isEditing}
-            />
-          </View>
-        
+          <Field
+            label="Full Name"
+            value={name}
+            onChangeText={setName}
+            editable={isEditing}
+          />
 
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Phone Number</Text>
-            <TextInput
-              style={[styles.input, !isEditing && styles.disabledInput]}
-              value={phone}
-              onChangeText={setPhone}
-              editable={isEditing}
-              keyboardType="phone-pad"
-            />
-          </View>
+          <Field
+            label="Phone (cannot be changed)"
+            value={profile?.phone || ''}
+            editable={false}
+          />
 
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>City (Fixed)</Text>
-            <TextInput
-              style={[styles.input, styles.disabledInput]}
-              value="Bangalore"
-              editable={false}
-            />
-          </View>
+          <Field
+            label="City"
+            value={profile?.city || 'Bangalore'}
+            editable={false}
+          />
 
-          {/* Region Selection */}
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Region</Text>
-            <TouchableOpacity 
-              style={[styles.input, !isEditing && styles.disabledInput, styles.selectorBox]} 
-              onPress={() => openSelectionModal('region')}
-              disabled={!isEditing}
-            >
-              <Text style={styles.selectorText}>{region}</Text>
-              {isEditing && <Ionicons name="chevron-down" size={18} color="#666" />}
-            </TouchableOpacity>
-          </View>
+          {/* Gender */}
+          <Text style={styles.fieldLabel}>Gender</Text>
+          <TouchableOpacity
+            style={[styles.selectBox, !isEditing && styles.disabled]}
+            onPress={() => openModal('gender')}
+            disabled={!isEditing}
+          >
+            <Text style={styles.selectText}>{gender || '—'}</Text>
+            {isEditing && <Ionicons name="chevron-down" size={16} color="#64748B" />}
+          </TouchableOpacity>
 
-          {/* Zone Selection */}
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Zone</Text>
-            <TouchableOpacity 
-              style={[styles.input, !isEditing && styles.disabledInput, styles.selectorBox]} 
-              onPress={() => openSelectionModal('zone')}
-              disabled={!isEditing || ZONES_BY_REGION[region]?.length === 0}
-            >
-              <Text style={styles.selectorText}>{zone || 'Select Zone'}</Text>
-              {isEditing && <Ionicons name="chevron-down" size={18} color="#666" />}
-            </TouchableOpacity>
-          </View>
+          {/* Occupation */}
+          <Text style={styles.fieldLabel}>Occupation</Text>
+          <TouchableOpacity
+            style={[styles.selectBox, !isEditing && styles.disabled]}
+            onPress={() => openModal('occupation')}
+            disabled={!isEditing}
+          >
+            <Text style={styles.selectText}>{occupation || '—'}</Text>
+            {isEditing && <Ionicons name="chevron-down" size={16} color="#64748B" />}
+          </TouchableOpacity>
 
-          {/* PG / Hostel Selection */}
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>PG / Hostel</Text>
-            <TouchableOpacity 
-              style={[styles.input, !isEditing && styles.disabledInput, styles.selectorBox]} 
-              onPress={() => openSelectionModal('pg')}
-              disabled={!isEditing || !zone}
-            >
-              <Text style={styles.selectorText} numberOfLines={1}>{pg || 'Select PG / Hostel'}</Text>
-              {isEditing && <Ionicons name="chevron-down" size={18} color="#666" />}
-            </TouchableOpacity>
-          </View>
-
-          {/* Custom PG Input if "Others" selected */}
-          {isEditing && pg === 'Others' && (
-            <View style={styles.fieldContainer}>
-              <Text style={styles.label}>Enter Custom PG Name</Text>
-              <TextInput
-                style={styles.input}
-                value={customPg}
-                onChangeText={setCustomPg}
-                placeholder="Type your PG name"
-              />
-            </View>
-          )}
-
-          {/* Occupation Selection */}
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Occupation</Text>
-            <TouchableOpacity 
-              style={[styles.input, !isEditing && styles.disabledInput, styles.selectorBox]} 
-              onPress={() => openSelectionModal('occupation')}
-              disabled={!isEditing}
-            >
-              <Text style={styles.selectorText}>{occupation}</Text>
-              {isEditing && <Ionicons name="chevron-down" size={18} color="#666" />}
-            </TouchableOpacity>
-          </View>
-
-          {/* Custom Occupation Input if "Others" selected */}
-          {isEditing && occupation === 'Others' && (
-            <View style={styles.fieldContainer}>
-              <Text style={styles.label}>Specify Occupation</Text>
-              <TextInput
-                style={styles.input}
-                value={customOccupation}
-                onChangeText={setCustomOccupation}
-                placeholder="Type occupation"
-              />
-            </View>
-          )}
-
-          {/* Save Button */}
-          {isEditing && (
-            <TouchableOpacity 
-              style={styles.saveButton} 
-              onPress={handleSaveProfile}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
+          {/* Zone */}
+          <Text style={styles.fieldLabel}>Zone</Text>
+          {isEditing ? (
+            <>
+              {loadingZones ? (
+                <ActivityIndicator color="#0D9488" style={{ marginVertical: 6 }} />
               ) : (
-                <Text style={styles.saveButtonText}>Submit for Approval</Text>
+                <View style={styles.zoneChips}>
+                  {zones.map((z) => (
+                    <TouchableOpacity
+                      key={z.id}
+                      style={[styles.zoneChip, selectedZone?.id === z.id && styles.zoneChipActive]}
+                      onPress={() => handleZonePick(z)}
+                    >
+                      <Text
+                        style={[
+                          styles.zoneChipText,
+                          selectedZone?.id === z.id && styles.zoneChipTextActive,
+                        ]}
+                      >
+                        {z.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              {/* Address picker — only if zone has addresses */}
+              {zoneHasAddresses && (
+                <>
+                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>PG / Address</Text>
+                  <View style={styles.zoneChips}>
+                    {addresses.map((a) => (
+                      <TouchableOpacity
+                        key={a.id}
+                        style={[styles.zoneChip, selectedAddress?.id === a.id && styles.zoneChipActive]}
+                        onPress={() => setSelectedAddress(a)}
+                      >
+                        <Text
+                          style={[
+                            styles.zoneChipText,
+                            selectedAddress?.id === a.id && styles.zoneChipTextActive,
+                          ]}
+                        >
+                          {a.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+            </>
+          ) : (
+            <View style={[styles.selectBox, styles.disabled]}>
+              <Text style={styles.selectText}>{zoneName || '—'}</Text>
+            </View>
+          )}
+
+          {/* Address (free text) */}
+          <Field
+            label="Address (flat, block, landmark)"
+            value={address}
+            onChangeText={setAddress}
+            editable={isEditing}
+            multiline
+          />
+
+          {isEditing && (
+            <TouchableOpacity
+              style={[styles.saveBtn, saving && styles.disabledBtn]}
+              onPress={handleSave}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.saveBtnText}>Submit for approval</Text>
               )}
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Log Out Button */}
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={20} color="#EF4444" />
-          <Text style={styles.logoutText}>Log Out</Text>
-        </TouchableOpacity>
+        {/* Quick actions */}
+        {!isEditing && (
+          <View style={styles.actionsCard}>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => router.push('/feedback')}
+            >
+              <Ionicons name="chatbubble-outline" size={20} color="#0D9488" />
+              <Text style={styles.actionText}>Send feedback</Text>
+              <Ionicons name="chevron-forward" size={18} color="#94A3B8" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={handleLogout}
+            >
+              <Ionicons name="log-out-outline" size={20} color="#DC2626" />
+              <Text style={[styles.actionText, { color: '#DC2626' }]}>Log out</Text>
+              <Ionicons name="chevron-forward" size={18} color="#94A3B8" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.actionRow, styles.dangerRow]}
+              onPress={handleDeleteAccount}
+              disabled={deleting}
+            >
+              {deleting ? (
+                <ActivityIndicator color="#DC2626" />
+              ) : (
+                <>
+                  <Ionicons name="trash-outline" size={20} color="#DC2626" />
+                  <Text style={[styles.actionText, { color: '#DC2626', fontWeight: '700' }]}>
+                    Delete account
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
 
-      {/* Selection Modal */}
-      <Modal visible={modalVisible} animationType="slide" transparent={true}>
+      {/* Gender / occupation modal */}
+      <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select {modalType.toUpperCase()}</Text>
+            <Text style={styles.modalTitle}>
+              Select {modalType === 'gender' ? 'Gender' : 'Occupation'}
+            </Text>
             <FlatList
-              data={getModalData()}
-              keyExtractor={(item, index) => index.toString()}
+              data={modalOptions}
+              keyExtractor={(item) => item}
               renderItem={({ item }) => (
-                <TouchableOpacity 
-                  style={styles.modalItem} 
-                  onPress={() => handleModalItemSelect(item)}
+                <TouchableOpacity
+                  style={styles.modalItem}
+                  onPress={() => {
+                    if (modalType === 'gender') setGender(item);
+                    if (modalType === 'occupation') setOccupation(item);
+                    setModalVisible(false);
+                  }}
                 >
-                  <Text style={styles.modalItemText}>{item}</Text>
+                  <Text style={styles.modalItemText}>
+                    {item.charAt(0).toUpperCase() + item.slice(1)}
+                  </Text>
                 </TouchableOpacity>
               )}
             />
-            <TouchableOpacity 
-              style={styles.modalCloseButton} 
+            <TouchableOpacity
+              style={styles.modalClose}
               onPress={() => setModalVisible(false)}
             >
               <Text style={styles.modalCloseText}>Cancel</Text>
@@ -365,34 +496,132 @@ export default function ProfileScreen() {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Small reusable field
+// -----------------------------------------------------------------------------
+function Field({ label, value, onChangeText, editable, multiline }) {
+  return (
+    <>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={[
+          styles.input,
+          !editable && styles.disabled,
+          multiline && { minHeight: 60, textAlignVertical: 'top' },
+        ]}
+        value={value}
+        onChangeText={onChangeText}
+        editable={editable}
+        multiline={!!multiline}
+      />
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
-  backButton: { padding: 4 },
-  editText: { fontSize: 16, color: '#0D9488', fontWeight: '600' },
-  content: { padding: 20 },
-  avatarContainer: { alignItems: 'center', marginBottom: 20 },
-  nameDisplay: { fontSize: 22, fontWeight: 'bold', color: '#1F2937', marginTop: 8 },
-  emailText: { fontSize: 14, color: '#6B7280', marginTop: 2 },
-  pendingBadge: { backgroundColor: '#FEF3C7', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6, marginTop: 8 },
-  pendingText: { color: '#D97706', fontSize: 12, fontWeight: '600' },
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 20, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
-  fieldContainer: { marginBottom: 16 },
-  label: { fontSize: 13, fontWeight: '600', color: '#4B5563', marginBottom: 6 },
-  input: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, color: '#1F2937', backgroundColor: '#fff' },
-  disabledInput: { backgroundColor: '#F3F4F6', color: '#6B7280', borderColor: '#E5E7EB' },
-  selectorBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  selectorText: { fontSize: 16, color: '#1F2937' },
-  saveButton: { backgroundColor: '#0D9488', borderRadius: 8, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
-  saveButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  logoutButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEE2E2', paddingVertical: 14, borderRadius: 8, justifyContent: 'center' },
-  logoutText: { color: '#EF4444', fontSize: 16, fontWeight: '600', marginLeft: 8 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '60%', padding: 20 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center', color: '#1F2937' },
-  modalItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  modalItemText: { fontSize: 16, color: '#374151' },
-  modalCloseButton: { marginTop: 16, backgroundColor: '#E5E7EB', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
-  modalCloseText: { fontSize: 16, fontWeight: '600', color: '#374151' }
+  container:  { flex: 1, backgroundColor: '#F8FAFC' },
+  centered:   { justifyContent: 'center', alignItems: 'center' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: '#FFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#1F2937' },
+  backBtn:     { padding: 4 },
+  editLink:    { color: '#0D9488', fontSize: 15, fontWeight: '700' },
+  content:     { padding: 16, paddingBottom: 30 },
+
+  avatarBox:      { alignItems: 'center', marginBottom: 20 },
+  nameDisplay:    { fontSize: 22, fontWeight: '700', color: '#0F172A', marginTop: 6 },
+  phoneDisplay:   { fontSize: 13, color: '#64748B', marginTop: 2 },
+  statusBadge:    { marginTop: 8, backgroundColor: '#FEF3C7', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 },
+  statusText:     { fontSize: 12, color: '#92400E', fontWeight: '600' },
+
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+  },
+
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: '#334155', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: 0.4 },
+  input: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#0F172A',
+  },
+  disabled:      { backgroundColor: '#F1F5F9', color: '#64748B' },
+  selectBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  selectText:    { fontSize: 15, color: '#0F172A', textTransform: 'capitalize' },
+
+  zoneChips:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  zoneChip:      { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#F1F5F9', borderRadius: 20 },
+  zoneChipActive:{ backgroundColor: '#0D9488' },
+  zoneChipText:  { fontSize: 12, fontWeight: '600', color: '#475569' },
+  zoneChipTextActive: { color: '#FFF' },
+
+  saveBtn: {
+    backgroundColor: '#0D9488',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  disabledBtn:   { opacity: 0.6 },
+  saveBtnText:   { color: '#FFF', fontSize: 15, fontWeight: '700' },
+
+  actionsCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    marginBottom: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    overflow: 'hidden',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  dangerRow:    { borderBottomWidth: 0, backgroundColor: '#FEF2F2' },
+  actionText:   { fontSize: 15, color: '#0F172A', fontWeight: '500' },
+
+  modalOverlay:  { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent:  { backgroundColor: '#FFF', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, maxHeight: '60%' },
+  modalTitle:    { fontSize: 17, fontWeight: '700', color: '#1F2937', marginBottom: 12, textAlign: 'center' },
+  modalItem:     { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  modalItemText: { fontSize: 16, color: '#334155' },
+  modalClose:    { marginTop: 12, backgroundColor: '#E2E8F0', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  modalCloseText:{ fontSize: 15, fontWeight: '600', color: '#334155' },
 });

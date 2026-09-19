@@ -16,7 +16,8 @@ export default function RootLayout() {
         <Stack.Screen name="(rider)" />
         <Stack.Screen name="super-admin" />
         <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
-        <Stack.Screen name="profile" options={{ headerShown: true, title: 'Profile' }} />
+        <Stack.Screen name="profile" options={{ headerShown: false }} />
+        <Stack.Screen name="feedback" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
     </>

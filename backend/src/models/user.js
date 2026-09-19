@@ -52,7 +52,10 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       status: {
-        type: DataTypes.ENUM('pending', 'approved', 'rejected'),
+        // 'deleted' is used by the account soft-delete flow. Rows in that
+        // state have their PII anonymized but keep their id so FKs from
+        // poll_responses, donations, etc. stay valid.
+        type: DataTypes.ENUM('pending', 'approved', 'rejected', 'deleted'),
         defaultValue: 'pending',
       },
       is_phone_verified: {

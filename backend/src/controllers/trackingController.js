@@ -6,6 +6,8 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const { signAccessToken, signRefreshToken } = require('../utils/jwt');
 const { resolveZone } = require('../utils/resolveZone');
+const googleMapsService = require('../services/googleMapsService');
+const logger = require('../utils/logger');
 
 const { Rider, Poll, PollResponse, User, Location } = db;
 
@@ -470,6 +472,31 @@ const pushLocation = async (req, res, next) => {
 
     await rider.save();
 
+    // Server-side reverse-geocode fallback: the rider app already tries to
+    // resolve an address on-device, but if the device can't (offline
+    // geocoder failure, denied permission, etc.) we backfill it here.
+    // Fired forget-style — we don't await this so the hot-path response
+    // stays under a few ms.
+    if (!current_address && googleMapsService.isConfigured()) {
+      googleMapsService
+        .reverseGeocode({ lat, lng })
+        .then(async (resolved) => {
+          if (resolved) {
+            try {
+              await Rider.update(
+                { current_address: resolved },
+                { where: { id: rider.id } }
+              );
+            } catch (bgErr) {
+              logger.warn(`[tracking] background reverse-geocode save failed: ${bgErr.message}`);
+            }
+          }
+        })
+        .catch((bgErr) => {
+          logger.warn(`[tracking] background reverse-geocode failed: ${bgErr.message}`);
+        });
+    }
+
     return success(res, {
       statusCode: 200,
       message: 'Location updated',
@@ -480,6 +507,102 @@ const pushLocation = async (req, res, next) => {
         current_address: rider.current_address,
         eta_minutes: rider.eta_minutes,
         status: rider.status,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/tracking/eta
+// Access: requireUserAccess (user, or admin/super_admin with linked user)
+//
+// Returns the driving ETA from today's assigned rider's live position to
+// the calling user's registered address. The user's address is geocoded on
+// the fly — a future optimization would cache the (address, lat, lng)
+// tuple on the users row so we don't hit Geocode on every ETA call.
+// ---------------------------------------------------------------------------
+const getEta = async (req, res, next) => {
+  try {
+    const poll = await getTodaysPoll();
+    if (!poll || !poll.assigned_rider_id) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No rider assigned for today',
+        data: { eta: null },
+      });
+    }
+
+    const rider = await Rider.findByPk(poll.assigned_rider_id, {
+      attributes: ['id', 'name', 'latitude', 'longitude', 'status', 'is_active'],
+    });
+
+    if (!rider || !rider.is_active || rider.status === 'done') {
+      return success(res, {
+        statusCode: 200,
+        message: 'Rider is not currently delivering',
+        data: { eta: null },
+      });
+    }
+    if (rider.latitude == null || rider.longitude == null) {
+      return success(res, {
+        statusCode: 200,
+        message: 'Rider has not started broadcasting location yet',
+        data: { eta: null },
+      });
+    }
+
+    const user = await User.findByPk(req.actingUserId, { attributes: ['id', 'address', 'city'] });
+    if (!user || !user.address) {
+      return error(res, {
+        statusCode: 422,
+        message: 'Your profile does not have an address — update your profile first',
+      });
+    }
+
+    if (!googleMapsService.isConfigured()) {
+      return error(res, {
+        statusCode: 503,
+        message: 'ETA service is not configured on the server',
+      });
+    }
+
+    // Include the city in the geocode query so it disambiguates in India.
+    const fullAddress = user.city ? `${user.address}, ${user.city}` : user.address;
+    const destination = await googleMapsService.geocode(fullAddress);
+    if (!destination) {
+      return error(res, {
+        statusCode: 422,
+        message: 'Could not locate your address on the map',
+      });
+    }
+
+    const result = await googleMapsService.distanceMatrix({
+      origin: { lat: Number(rider.latitude), lng: Number(rider.longitude) },
+      destination,
+      mode: 'driving',
+    });
+
+    return success(res, {
+      statusCode: 200,
+      message: 'ETA computed',
+      data: {
+        rider: {
+          id: rider.id,
+          name: rider.name,
+          latitude: Number(rider.latitude),
+          longitude: Number(rider.longitude),
+          status: rider.status,
+        },
+        eta: {
+          distance_meters: result.distanceMeters,
+          distance_text: result.distanceText,
+          duration_seconds: result.durationSeconds,
+          duration_text: result.durationText,
+          eta_minutes:
+            result.durationSeconds != null ? Math.round(result.durationSeconds / 60) : null,
+        },
       },
     });
   } catch (err) {
@@ -708,4 +831,5 @@ module.exports = {
   getActiveRider,
   getDeliveryList,
   deleteRider,
+  getEta,
 };

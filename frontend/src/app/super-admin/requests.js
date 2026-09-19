@@ -1,166 +1,300 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  ScrollView, 
-  TouchableOpacity, 
-  ActivityIndicator, 
-  Alert 
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import client from '../../api/client'; // Your Axios client
+import { useRouter, useFocusEffect } from 'expo-router';
+import { usersApi } from '../../api/users';
+
+// -----------------------------------------------------------------------------
+// Super admin — Profile edit request review screen.
+//
+// Users submit profile changes (name/gender/occupation/city/location_id/address)
+// via POST /api/users/request-profile-edit. This screen lists the pending
+// queue and lets a super admin approve or reject each one. On approve the
+// backend atomically applies the changes to the users row.
+// -----------------------------------------------------------------------------
+const STATUS_CONFIG = {
+  pending:  { label: 'Pending',  color: '#D97706', bg: '#FEF3C7' },
+  approved: { label: 'Approved', color: '#16A34A', bg: '#DCFCE7' },
+  rejected: { label: 'Rejected', color: '#DC2626', bg: '#FEE2E2' },
+};
+
+const FIELD_LABELS = {
+  name:        'Name',
+  gender:      'Gender',
+  occupation:  'Occupation',
+  city:        'City',
+  location_id: 'Zone / Address',
+  address:     'Address',
+};
+
+const resolveZoneName = (location) => {
+  let current = location;
+  let hops = 0;
+  while (current && current.type !== 'zone' && hops < 10) {
+    current = current.parent || null;
+    hops += 1;
+  }
+  return current?.type === 'zone' ? current.name : null;
+};
+
+const formatDate = (iso) => {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+};
 
 export default function SuperAdminRequestsScreen() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [requestsList, setRequestsList] = useState([]);
 
-  // Fetch requests from backend on load
-  useEffect(() => {
-    fetchRequests();
-  }, []);
+  const [filter,     setFilter]     = useState('pending');
+  const [requests,   setRequests]   = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reviewing,  setReviewing]  = useState(null); // id being decided
 
-  const fetchRequests = async () => {
+  const load = useCallback(async (isRefresh = false) => {
+    isRefresh ? setRefreshing(true) : setLoading(true);
     try {
-      setLoading(true);
-      // Replace with your actual backend endpoint
-       const response = await client.get('/admin/requests');
-       setRequestsList(response.data);
-
-      // Temporary mock data matching your exact requirements
-      setRequestsList([
-        {
-          id: '1',
-          userName: 'Mohammed Asim',
-          zone: 'Stanza',
-          requestType: 'User Registration Approval',
-          timestamp: '03 Sep 2026, 10:15 AM'
-        },
-        {
-          id: '2',
-          userName: 'Rahul Sharma',
-          zone: 'Masjid Zone',
-          requestType: 'Profile Heading Update',
-          timestamp: '02 Sep 2026, 04:45 PM'
-        },
-        {
-          id: '3',
-          userName: 'Ayesha',
-          zone: 'Girls Zone',
-          requestType: 'Admin Privileges Request',
-          timestamp: '02 Sep 2026, 01-20 PM'
-        }
-      ]);
-    } catch (_error) {
-      Alert.alert('Error', 'Failed to load requests.');
+      const res = await usersApi.getProfileEditRequests({
+        status: filter === 'all' ? undefined : filter,
+      });
+      if (res.success) setRequests(res.data || []);
+    } catch (err) {
+      Alert.alert('Error', err.response?.data?.message || 'Failed to load requests');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  };
+  }, [filter]);
 
-  // Handle Approve or Reject action
-  const handleAction = async (id, actionType, userName) => {
-    try {
-      // Call backend to process the approval/rejection and notify the user
-      // await client.post(`/admin/requests/${id}/action`, { status: actionType });
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-      // Update local UI state by removing the handled request
-      setRequestsList(prev => prev.filter(item => item.id !== id));
-      
-      Alert.alert(
-        'Success', 
-        `Request for ${userName} has been ${actionType === 'approve' ? 'approved' : 'rejected'}. Notification sent to user.`
-      );
-    } catch (_error) {
-      Alert.alert('Error', `Failed to ${actionType} the request.`);
-    }
+  const handleDecision = (id, decision, userName) => {
+    const verb = decision === 'approved' ? 'approve' : 'reject';
+    Alert.alert(
+      `${verb.charAt(0).toUpperCase() + verb.slice(1)} request`,
+      `Are you sure you want to ${verb} the profile changes for ${userName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: verb.charAt(0).toUpperCase() + verb.slice(1),
+          style: decision === 'rejected' ? 'destructive' : 'default',
+          onPress: async () => {
+            setReviewing(id);
+            try {
+              await usersApi.reviewProfileEditRequest(id, decision);
+              setRequests((prev) =>
+                filter === 'all'
+                  ? prev.map((r) => (r.id === id ? { ...r, status: decision } : r))
+                  : prev.filter((r) => r.id !== id)
+              );
+            } catch (err) {
+              Alert.alert('Error', err.response?.data?.message || 'Failed to review');
+            } finally {
+              setReviewing(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#1F2937" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="#1F2937" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Requests Approval</Text>
-        <View style={{ width: 24 }} />
+        <Text style={styles.headerTitle}>Profile Edit Requests</Text>
+        <TouchableOpacity onPress={() => load(true)} style={styles.iconBtn}>
+          <Ionicons name="refresh" size={20} color="#0D9488" />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {loading ? (
-          <ActivityIndicator size="large" color="#0D9488" style={{ marginTop: 40 }} />
-        ) : requestsList.length > 0 ? (
-          requestsList.map(item => (
-            <View key={item.id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.userName}>{item.userName}</Text>
-                  <Text style={styles.locationText}>
-                    Zone: <Text style={styles.zoneHighlight}>{item.zone}</Text>
-                  </Text>
-                </View>
-                <View style={styles.typeBadge}>
-                  <Text style={styles.typeText}>{item.requestType}</Text>
-                </View>
-              </View>
+      <View style={styles.filterRow}>
+        {['pending', 'approved', 'rejected', 'all'].map((f) => (
+          <TouchableOpacity
+            key={f}
+            style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
+            onPress={() => setFilter(f)}
+          >
+            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
-              <View style={styles.footerRow}>
-                <Text style={styles.timestampText}>{item.timestamp}</Text>
-              </View>
-
-              {/* Action Buttons */}
-              <View style={styles.buttonContainer}>
-                <TouchableOpacity 
-                  style={styles.rejectBtn} 
-                  onPress={() => handleAction(item.id, 'reject', item.userName)}
-                >
-                  <Ionicons name="close-circle-outline" size={18} color="#EF4444" style={{ marginRight: 4 }} />
-                  <Text style={styles.rejectText}>Reject</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                  style={styles.approveBtn} 
-                  onPress={() => handleAction(item.id, 'approve', item.userName)}
-                >
-                  <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 4 }} />
-                  <Text style={styles.approveText}>Approve</Text>
-                </TouchableOpacity>
-              </View>
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#0D9488" />
+        </View>
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => load(true)}
+              colors={['#0D9488']}
+            />
+          }
+        >
+          {requests.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <Ionicons name="checkbox-outline" size={40} color="#CBD5E1" />
+              <Text style={styles.emptyText}>No {filter === 'all' ? '' : filter + ' '}requests.</Text>
             </View>
-          ))
-        ) : (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="checkbox-outline" size={48} color="#9CA3AF" />
-            <Text style={styles.emptyText}>No pending requests.</Text>
-          </View>
-        )}
-      </ScrollView>
+          ) : (
+            requests.map((r) => {
+              const cfg  = STATUS_CONFIG[r.status] || STATUS_CONFIG.pending;
+              const zone = resolveZoneName(r.user?.location);
+              const changes = r.requested_changes || {};
+              const isPending = r.status === 'pending';
+              const isReviewingThis = reviewing === r.id;
+
+              return (
+                <View key={r.id} style={styles.card}>
+                  <View style={styles.cardTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.userName}>{r.user?.name || 'Unknown user'}</Text>
+                      <Text style={styles.userMeta}>
+                        {r.user?.phone || ''}{zone ? ` · ${zone}` : ''}
+                      </Text>
+                    </View>
+                    <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+                      <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.changesBox}>
+                    <Text style={styles.changesTitle}>Requested changes:</Text>
+                    {Object.entries(changes).length === 0 ? (
+                      <Text style={styles.changeValue}>—</Text>
+                    ) : (
+                      Object.entries(changes).map(([field, value]) => (
+                        <View key={field} style={styles.changeRow}>
+                          <Text style={styles.changeLabel}>{FIELD_LABELS[field] || field}:</Text>
+                          <Text style={styles.changeValue} numberOfLines={2}>
+                            {String(value)}
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                  </View>
+
+                  <Text style={styles.dateText}>Submitted {formatDate(r.created_at)}</Text>
+
+                  {isPending && (
+                    <View style={styles.actionRow}>
+                      {isReviewingThis ? (
+                        <ActivityIndicator color="#0D9488" />
+                      ) : (
+                        <>
+                          <TouchableOpacity
+                            style={[styles.actionBtn, styles.rejectBtn]}
+                            onPress={() => handleDecision(r.id, 'rejected', r.user?.name || 'user')}
+                          >
+                            <Ionicons name="close" size={16} color="#FFF" />
+                            <Text style={styles.actionText}>Reject</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.actionBtn, styles.approveBtn]}
+                            onPress={() => handleDecision(r.id, 'approved', r.user?.name || 'user')}
+                          >
+                            <Ionicons name="checkmark" size={16} color="#FFF" />
+                            <Text style={styles.actionText}>Approve</Text>
+                          </TouchableOpacity>
+                        </>
+                      )}
+                    </View>
+                  )}
+                </View>
+              );
+            })
+          )}
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
-  backButton: { padding: 4 },
-  content: { padding: 16 },
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 3, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingBottom: 10, marginBottom: 8 },
-  userName: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
-  locationText: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  zoneHighlight: { color: '#0D9488', fontWeight: '600' },
-  typeBadge: { backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#CCFBF1' },
-  typeText: { color: '#0F766E', fontSize: 11, fontWeight: '600' },
-  footerRow: { flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 10 },
-  timestampText: { fontSize: 11, color: '#9CA3AF' },
-  buttonContainer: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  rejectBtn: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FEF2F2', paddingVertical: 10, borderRadius: 8, marginRight: 6, borderWidth: 1, borderColor: '#FEE2E2' },
-  rejectText: { color: '#EF4444', fontWeight: 'bold', fontSize: 13 },
-  approveBtn: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#0D9488', paddingVertical: 10, borderRadius: 8, marginLeft: 6 },
-  approveText: { color: '#fff', fontWeight: 'bold', fontSize: 13 }
+  container:   { flex: 1, backgroundColor: '#F8FAFC' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    backgroundColor: '#FFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#1F2937' },
+  backBtn:     { padding: 4 },
+  iconBtn:     { padding: 4 },
+
+  filterRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  filterBtn:       { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: '#E2E8F0' },
+  filterBtnActive: { backgroundColor: '#0D9488' },
+  filterText:      { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  filterTextActive:{ color: '#FFF' },
+
+  listContent: { paddingHorizontal: 14, paddingBottom: 24 },
+
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+  },
+  cardTop:      { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  userName:     { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  userMeta:     { fontSize: 12, color: '#64748B', marginTop: 2 },
+  statusBadge:  { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 },
+  statusText:   { fontSize: 11, fontWeight: '700' },
+
+  changesBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+  },
+  changesTitle: { fontSize: 12, fontWeight: '700', color: '#334155', marginBottom: 6, textTransform: 'uppercase' },
+  changeRow:    { flexDirection: 'row', marginBottom: 4 },
+  changeLabel:  { fontSize: 13, color: '#64748B', fontWeight: '600', width: 100 },
+  changeValue:  { flex: 1, fontSize: 13, color: '#0F172A' },
+
+  dateText:     { fontSize: 11, color: '#94A3B8', marginBottom: 8 },
+  actionRow:    { flexDirection: 'row', gap: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 10 },
+  actionBtn:    { flex: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', alignItems: 'center', paddingVertical: 8, borderRadius: 8 },
+  approveBtn:   { backgroundColor: '#16A34A' },
+  rejectBtn:    { backgroundColor: '#DC2626' },
+  actionText:   { color: '#FFF', fontWeight: '700', fontSize: 13 },
+
+  emptyBox:  { alignItems: 'center', padding: 32, gap: 8 },
+  emptyText: { fontSize: 13, color: '#94A3B8' },
+
+  centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
 });

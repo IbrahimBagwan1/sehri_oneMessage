@@ -1,192 +1,256 @@
-import React, { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  ScrollView, 
-  TouchableOpacity, 
-  Alert 
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { feedbackApi } from '../../api/feedback';
 
-const ZONES = ['Stanza', 'Masjid Zone', 'Girls Zone', 'Hostel'];
+const CATEGORY_CONFIG = {
+  suggestion:   { label: 'Suggestion',   color: '#0369A1', bg: '#E0F2FE', icon: 'bulb-outline' },
+  complaint:    { label: 'Complaint',    color: '#DC2626', bg: '#FEE2E2', icon: 'warning-outline' },
+  bug:          { label: 'Bug',          color: '#7C3AED', bg: '#EDE9FE', icon: 'bug-outline' },
+  appreciation: { label: 'Appreciation', color: '#16A34A', bg: '#DCFCE7', icon: 'heart-outline' },
+  other:        { label: 'Other',        color: '#64748B', bg: '#F1F5F9', icon: 'chatbox-outline' },
+};
 
-export default function SuperAdminUsersScreen() {
+const FILTERS = [
+  { key: 'all',    label: 'All'    },
+  { key: 'unread', label: 'Unread' },
+  { key: 'read',   label: 'Read'   },
+];
+
+const resolveZoneName = (location) => {
+  let current = location;
+  let hops = 0;
+  while (current && current.type !== 'zone' && hops < 10) {
+    current = current.parent || null;
+    hops += 1;
+  }
+  return current?.type === 'zone' ? current.name : null;
+};
+
+const formatDateTime = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
+    ' · ' +
+    d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
+export default function SuperAdminFeedbackScreen() {
   const router = useRouter();
 
-  // Mock users data categorized by zone with approval status and roles
-  const [zoneUsers, setZoneUsers] = useState({
-    'Stanza': [
-      { id: '1', name: 'Mohammed Asim', phone: '+91 9876543210', status: 'Pending', role: 'User' },
-      { id: '2', name: 'Rahul Sharma', phone: '+91 9123456789', status: 'Approved', role: 'Admin' }
-    ],
-    'Masjid Zone': [],
-    'Girls Zone': [
-      { id: '3', name: 'Ayesha', phone: '+91 9988776655', status: 'Pending', role: 'User' }
-    ],
-    'Hostel': []
-  });
+  const [filter,     setFilter]     = useState('all');
+  const [items,      setItems]      = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Handle user approval workflow
-  const handleApproveUser = (zone, id) => {
-    setZoneUsers(prev => ({
-      ...prev,
-      [zone]: prev[zone].map(user => 
-        user.id === id ? { ...user, status: 'Approved' } : user
-      )
-    }));
-    Alert.alert('Success', 'User has been approved.');
+  const load = useCallback(async (isRefresh = false) => {
+    isRefresh ? setRefreshing(true) : setLoading(true);
+    try {
+      const params = {};
+      if (filter === 'unread') params.is_read = false;
+      if (filter === 'read')   params.is_read = true;
+
+      const res = await feedbackApi.list(params);
+      if (res.success) setItems(res.data.feedback || []);
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to load feedback';
+      Alert.alert('Error', msg);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [filter]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const handleMarkRead = async (id) => {
+    try {
+      await feedbackApi.markRead(id);
+      setItems((prev) =>
+        prev.map((f) =>
+          f.id === id ? { ...f, is_read: true, read_at: new Date().toISOString() } : f
+        )
+      );
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Could not mark as read';
+      Alert.alert('Error', msg);
+    }
   };
 
-  // Handle appointing a user as a Zone Admin
-  const handleAppointAdmin = (zone, id, name) => {
-    Alert.alert(
-      'Assign Admin', 
-      `Are you sure you want to appoint ${name} as the Admin for ${zone}?`, 
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Appoint', 
-          onPress: () => {
-            setZoneUsers(prev => ({
-              ...prev,
-              [zone]: prev[zone].map(user => 
-                user.id === id ? { ...user, role: 'Admin' } : user
-              )
-            }));
-            Alert.alert('Success', `${name} is now the Admin for ${zone}.`);
-          } 
-        }
-      ]
+  const renderItem = ({ item }) => {
+    const cfg  = CATEGORY_CONFIG[item.category] || CATEGORY_CONFIG.other;
+    const zone = resolveZoneName(item.user?.location);
+    const isUnread = !item.is_read;
+
+    return (
+      <View style={[styles.card, isUnread && styles.cardUnread]}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.categoryBadge, { backgroundColor: cfg.bg }]}>
+            <Ionicons name={cfg.icon} size={12} color={cfg.color} />
+            <Text style={[styles.categoryText, { color: cfg.color }]}>{cfg.label}</Text>
+          </View>
+          {isUnread && <View style={styles.unreadDot} />}
+        </View>
+
+        <Text style={styles.message}>{item.message}</Text>
+
+        <View style={styles.meta}>
+          <Ionicons name="person-outline" size={12} color="#94A3B8" />
+          <Text style={styles.metaText}>
+            {item.user?.name || 'Unknown'}
+            {item.user?.phone ? ` · ${item.user.phone}` : ''}
+            {zone ? ` · ${zone}` : ''}
+          </Text>
+        </View>
+
+        <View style={styles.footer}>
+          <Text style={styles.dateText}>{formatDateTime(item.created_at)}</Text>
+          {isUnread ? (
+            <TouchableOpacity
+              style={styles.markReadBtn}
+              onPress={() => handleMarkRead(item.id)}
+            >
+              <Ionicons name="checkmark" size={14} color="#0D9488" />
+              <Text style={styles.markReadText}>Mark read</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.readBadge}>
+              <Ionicons name="checkmark-done" size={12} color="#64748B" />
+              <Text style={styles.readText}>Read</Text>
+            </View>
+          )}
+        </View>
+      </View>
     );
-  };
-
-  // Handle navigating to private chat with a specific user
-  const handlePrivateChat = (user) => {
-    // Navigate to chat screen passing user details as query params
-    router.push({
-      pathname: '/super-admin/chat',
-      params: { recipientId: user.id, recipientName: user.name }
-    });
-  };
-
-  // Handle deleting a user entry
-  const handleDeleteUser = (zone, id) => {
-    Alert.alert('Delete User', 'Are you sure you want to remove this user?', [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
-        onPress: () => {
-          setZoneUsers(prev => ({
-            ...prev,
-            [zone]: prev[zone].filter(user => user.id !== id)
-          }));
-        }
-      }
-    ]);
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#1F2937" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="#1F2937" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Zone-wise Users & Approvals</Text>
-        <View style={{ width: 24 }} />
+        <Text style={styles.headerTitle}>User Feedback</Text>
+        <TouchableOpacity onPress={() => load(true)} style={styles.iconBtn}>
+          <Ionicons name="refresh" size={20} color="#0D9488" />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {ZONES.map(zone => {
-          const users = zoneUsers[zone] || [];
-          return (
-            <View key={zone} style={styles.zoneCard}>
-              <View style={styles.zoneHeaderRow}>
-                <Text style={styles.zoneTitle}>{zone}</Text>
-                <Text style={styles.countBadge}>{users.length} Users</Text>
-              </View>
+      <View style={styles.filterRow}>
+        {FILTERS.map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            style={[styles.filterBtn, filter === f.key && styles.filterBtnActive]}
+            onPress={() => setFilter(f.key)}
+          >
+            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
-              {users.length > 0 ? (
-                users.map(user => (
-                  <View key={user.id} style={styles.userRow}>
-                    <View style={styles.userInfo}>
-                      <View style={styles.rowInline}>
-                        <Text style={styles.userName}>{user.name}</Text>
-                        <Text style={[styles.roleTag, user.role === 'Admin' ? styles.adminTag : styles.userTag]}>
-                          {user.role}
-                        </Text>
-                      </View>
-                      <Text style={styles.userPhone}>{user.phone}</Text>
-                      <Text style={[styles.statusText, user.status === 'Approved' ? styles.approvedText : styles.pendingText]}>
-                        Status: {user.status}
-                      </Text>
-                    </View>
-
-                    {/* Action Buttons */}
-                    <View style={styles.actionsContainer}>
-                      {user.status === 'Pending' && (
-                        <TouchableOpacity style={styles.approveBtn} onPress={() => handleApproveUser(zone, user.id)}>
-                          <Text style={styles.btnText}>Approve</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      {user.role !== 'Admin' && user.status === 'Approved' && (
-                        <TouchableOpacity style={styles.appointBtn} onPress={() => handleAppointAdmin(zone, user.id, user.name)}>
-                          <Text style={styles.btnText}>Make Admin</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      <TouchableOpacity style={styles.chatIconBtn} onPress={() => handlePrivateChat(user)}>
-                        <Ionicons name="chatbubble-ellipses-outline" size={18} color="#0D9488" />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity style={styles.deleteIconBtn} onPress={() => handleDeleteUser(zone, user.id)}>
-                        <Ionicons name="trash-outline" size={18} color="#EF4444" />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.emptyText}>No users in this zone.</Text>
-              )}
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#0D9488" />
+        </View>
+      ) : (
+        <FlatList
+          data={items}
+          keyExtractor={(item) => item.id}
+          renderItem={renderItem}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => load(true)}
+              colors={['#0D9488']}
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.centered}>
+              <Ionicons name="chatbubble-outline" size={40} color="#CBD5E1" />
+              <Text style={styles.emptyText}>No feedback yet.</Text>
             </View>
-          );
-        })}
-      </ScrollView>
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
-  backButton: { padding: 4 },
-  content: { padding: 16 },
-  zoneCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 16, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, elevation: 2 },
-  zoneHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingBottom: 8, marginBottom: 12 },
-  zoneTitle: { fontSize: 16, fontWeight: 'bold', color: '#0D9488' },
-  countBadge: { fontSize: 12, backgroundColor: '#F3F4F6', color: '#4B5563', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, overflow: 'hidden' },
-  userRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F9FAFB' },
-  userInfo: { flex: 1 },
-  rowInline: { flexDirection: 'row', alignItems: 'center' },
-  userName: { fontSize: 15, fontWeight: '600', color: '#1F2937', marginRight: 8 },
-  roleTag: { fontSize: 10, fontWeight: 'bold', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
-  userTag: { backgroundColor: '#E5E7EB', color: '#374151' },
-  adminTag: { backgroundColor: '#CCFBF1', color: '#0F766E' },
-  userPhone: { fontSize: 13, color: '#6B7280', marginTop: 2 },
-  statusText: { fontSize: 11, fontWeight: '600', marginTop: 2 },
-  approvedText: { color: '#059669' },
-  pendingText: { color: '#D97706' },
-  actionsContainer: { flexDirection: 'row', alignItems: 'center' },
-  approveBtn: { backgroundColor: '#0D9488', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginRight: 6 },
-  appointBtn: { backgroundColor: '#2563EB', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginRight: 6 },
-  btnText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  chatIconBtn: { padding: 6, backgroundColor: '#F0FDFA', borderRadius: 6, marginRight: 6 },
-  deleteIconBtn: { padding: 6, backgroundColor: '#FEF2F2', borderRadius: 6 },
-  emptyText: { fontSize: 13, color: '#9CA3AF', fontStyle: 'italic', paddingVertical: 6, textAlign: 'center' }
+  container:   { flex: 1, backgroundColor: '#F8FAFC' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    backgroundColor: '#FFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#1F2937' },
+  backBtn:     { padding: 4 },
+  iconBtn:     { padding: 4 },
+
+  filterRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  filterBtn:       { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: '#E2E8F0' },
+  filterBtnActive: { backgroundColor: '#0D9488' },
+  filterText:      { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  filterTextActive:{ color: '#FFF' },
+
+  listContent: { paddingHorizontal: 14, paddingBottom: 24 },
+
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+  },
+  cardUnread:  { borderLeftWidth: 3, borderLeftColor: '#0D9488' },
+  cardHeader:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  categoryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  categoryText:  { fontSize: 11, fontWeight: '700' },
+  unreadDot:     { width: 8, height: 8, borderRadius: 4, backgroundColor: '#0D9488' },
+  message:       { fontSize: 14, color: '#0F172A', lineHeight: 20, marginBottom: 8 },
+  meta:          { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 8 },
+  metaText:      { fontSize: 12, color: '#64748B' },
+  footer:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 8 },
+  dateText:      { fontSize: 11, color: '#94A3B8' },
+  markReadBtn:   { flexDirection: 'row', gap: 4, alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#F0FDF9' },
+  markReadText:  { fontSize: 12, color: '#0D9488', fontWeight: '700' },
+  readBadge:     { flexDirection: 'row', gap: 3, alignItems: 'center' },
+  readText:      { fontSize: 11, color: '#64748B' },
+
+  centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
+  emptyText: { fontSize: 13, color: '#94A3B8' },
 });

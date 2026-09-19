@@ -1,4 +1,5 @@
 const { Sequelize } = require('sequelize');
+const logger = require('../utils/logger');
 require('dotenv').config();
 
 const sequelize = new Sequelize(
@@ -9,7 +10,7 @@ const sequelize = new Sequelize(
     host: process.env.DB_HOST,
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
-    logging: process.env.NODE_ENV === 'development' ? console.log : false,
+    logging: process.env.NODE_ENV === 'development' ? (msg) => logger.debug(msg) : false,
     define: {
       underscored: true,   // snake_case columns in DB, matches doc's schema style
       timestamps: true,
@@ -26,10 +27,10 @@ const sequelize = new Sequelize(
 const testConnection = async () => {
   try {
     await sequelize.authenticate();
-    console.log('✅ Database connection established successfully.');
-  } catch (error) {
-    console.error('❌ Unable to connect to the database:', error.message);
-    throw error;
+    logger.info('Database connection established successfully.');
+  } catch (err) {
+    logger.error(`Unable to connect to the database: ${err.message}`);
+    throw err;
   }
 };
 

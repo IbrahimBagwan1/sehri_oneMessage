@@ -1,1 +1,26 @@
+# Environment
 .env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build / cache
+dist/
+build/
+.expo/
+.expo-shared/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

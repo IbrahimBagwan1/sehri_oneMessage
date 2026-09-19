@@ -1,124 +1,99 @@
-# Sehri One Message — What's Built vs What's Missing
+# Sehri OneMessage
 
-## Backend
+A community-scale Sehri (pre-dawn Ramadan meal) coordination app for
+Bangalore. Residents vote nightly on whether they need food, the kitchen
+prepares zone-by-zone, and a rider delivers with live GPS tracking.
 
-### What's done ✅
+## Repository layout
 
-| Area | Implemented Endpoints |
+| Directory | Description |
 |---|---|
-| Auth | `POST /send-otp`, `POST /register`, `POST /login`, `POST /refresh`, forgot-password flow (3 endpoints), `POST /switch-role`, `POST /fcm-token`, `POST /create-admin`, `POST /create-super-admin`, `GET /list-admins`, `DELETE /admins/:id`, `PATCH /admins/:id/link-user` |
-| Polls | `GET /active`, `POST /:id/respond`, `GET /my-responses`, `GET /active/stats`, `GET /:id/zone-voters` |
-| Tracking | Full — rider login, create/delete rider, assign today, toggle, manual location, push-location, get active, delivery list |
-| Prayers | `GET /` (today's schedule), `POST /refresh` (force refresh) |
-| Users | `GET /` (list users), `PATCH /:id/status` (approve/reject) |
-| Locations | Public location/zone picker for registration |
+| `backend/` | Node.js + Express 5 + Sequelize (MySQL) + Socket.IO |
+| `frontend/` | Expo (React Native) app with `expo-router` file-based routing |
 
-### What's missing ❌
+## Backend — what ships
 
-1. **Poll — Special Cases** (5 endpoints in the docs, all stubbed in `polls.js` as comments):
-   - `POST /api/polls/:id/special-case` — user submits opt-in/opt-out
-   - `POST /api/polls/:id/special-case/undo` — user undoes it
-   - `GET /api/polls/special-cases` — super admin views list
-   - `POST /api/polls/special-cases/allot` — super admin approves/rejects
-   - `PATCH /api/polls/active/toggle` — super admin manually open/close poll
+### Endpoints
 
-2. **Poll — History** (2 endpoints stubbed):
-   - `GET /api/polls/history` — past polls list
-   - `GET /api/polls/date/:date/stats` — stats for a specific date
-
-3. **Donations** — zero backend routes, controller, or model
-   - `POST /api/donations/submit`
-   - `GET /api/donations/history`
-   - `GET /api/donations/all`
-   - `GET /api/donations/summary`
-   - `PATCH /api/donations/:id/status`
-
-4. **Chat** — zero backend routes, controller, or model
-   - All `/api/chat/groups/*` endpoints (10+)
-   - Socket.IO setup for real-time messaging
-
-5. **Feedback** — zero backend routes, controller, or model
-   - `POST /api/feedback`, `GET /api/feedback/my`, `GET /api/feedback/`, `PATCH /api/feedback/:id/read`
-
-6. **User profile endpoints** missing:
-   - `GET /api/users/me` (own profile)
-   - `DELETE /api/users/:id` (delete user)
-   - `POST /api/users/request-profile-edit`
-   - `GET /api/users/profile-edit-requests`
-
-7. **Database models missing**: `Donation`, `ChatGroup`, `ChatGroupMember`, `ChatMessage`, `Feedback`, `ProfileEditRequest`
-
-8. **Cron jobs** — no scheduler file exists at all (`node-cron` scheduled tasks for poll open/close, prayer fetch, push notifications)
-
-9. **Push notifications** — Firebase Admin SDK / `expoPushService.js` not present
-
----
-
-## Frontend
-
-### What's done ✅
-
-| Screen | Status |
+| Domain | Endpoints |
 |---|---|
-| Auth — Login, Register, Forgot Password | Built |
-| Rider — Login, Map (GPS broadcast), Deliveries list | Built |
-| User — Home (poll voting + phases + prayer times) | Built |
-| User — Track (live rider map) | Built |
-| User — Donate (UI shell exists) | Built (UI only) |
-| User — Dua, Quran | Built |
-| Admin — Dashboard (zone vote counts) | Built |
-| Admin — Users (approve/reject) | Built |
-| Admin — Feedback (view list) | Built |
-| Admin — Chat (UI shell) | Built |
-| Super Admin — Dashboard | Built |
-| Super Admin — Users, Donations, Feedback, Poll History, Manage Admins, Chat | Built (mostly UI shells with mock data) |
-| API layer | auth, polls, tracking, prayers, admin (partial) |
+| Auth | `POST /send-otp`, `POST /register`, `POST /login`, `POST /switch-role`, `POST /forgot-password/verify-otp`, `POST /refresh-token` |
+| Users | `GET /me`, `DELETE /me`, `POST /request-profile-edit`, `GET /profile-edit-requests`, `PATCH /profile-edit-requests/:id/review`, `GET /`, `PATCH /:id/status`, `DELETE /:id` |
+| Polls | `GET /active`, `POST /:id/respond`, `GET /my-responses`, `GET /active/stats`, `GET /:id/zone-voters`, `POST /:id/special-case`, `POST /:id/special-case/undo`, `GET /special-cases`, `POST /special-cases/allot`, `PATCH /active/toggle`, `GET /history`, `GET /date/:date/stats` |
+| Tracking | `POST /rider-login`, `POST /`, `GET /all`, `PATCH /:id/assign-today`, `PATCH /:id/toggle`, `PATCH /:id/location`, `PATCH /:id/push-location`, `GET /active`, `GET /eta`, `GET /delivery-list`, `DELETE /:id` |
+| Chat | `GET /groups`, `POST /groups`, `GET /admins`, `GET /groups/:id`, `DELETE /groups/:id`, `GET /groups/:id/messages`, `POST /groups/:id/messages`, `POST /groups/:id/read`, `POST /groups/:id/members`, `DELETE /groups/:id/messages/:msgId`, `DELETE /groups/:id/members/:userId` |
+| Donations | `POST /submit`, `GET /history`, `GET /all`, `GET /summary`, `PATCH /:id/status` |
+| Feedback | `POST /`, `GET /my`, `GET /`, `PATCH /:id/read` |
+| Prayers | `GET /`, `POST /refresh` |
+| Locations | `GET /` (public — cascading picker) |
+| Admin management | `POST /create-admin`, `POST /create-super-admin`, `GET /list-admins`, `DELETE /admins/:id`, `PATCH /admins/:id/link-user` |
+| Ops | `GET /health` |
 
-### What's missing ❌
+### Real-time
+Socket.IO shares the HTTP port. Rooms are per chat group; JWT auth is
+required on the socket handshake. Emitters live in
+`src/services/socketService.js`.
 
-1. **Special Cases screen** — `(admin)/special-cases.js` exists but is a "Coming soon" placeholder — needs full implementation wired to the backend endpoints
+### Google Maps integration
+Server-side reverse-geocode fallback fires (fire-and-forget) when the
+rider push omits `current_address`. `GET /api/tracking/eta` returns
+driving ETA from the assigned rider to the calling user's address using
+Distance Matrix. Set `GOOGLE_MAPS_API_KEY` in `.env` — see `.env.example`.
 
-2. **Super Admin — Requests screen** (`super-admin/requests.js`) — profile edit request approval UI, needs `/api/users/profile-edit-requests` backend too
+### Database
+Sequelize migrations under `src/migrations/`. Run:
 
-3. **Poll History screen** — `super-admin/polls.js` exists but likely a placeholder; the `adminApi.getPollHistory()` call hits `/api/polls/history` which doesn't exist on the backend yet
+```bash
+cd backend
+npm install
+cp .env.example .env       # fill in secrets
+npm run migrate
+npm run seed
+npm run dev                # nodemon
+```
 
-4. **Donations** — Frontend screen exists but uses hardcoded mock data and hits non-existent endpoint `/super-admin/donations`. Needs to be wired to the real donations API once backend is built
+## Frontend — what ships
 
-5. **Chat** — Super admin chat hits completely wrong endpoints (`/admin/chat/directory`, `/admin/chat/broadcast`) that don't exist. Needs to be rewritten against the real `/api/chat/groups/*` API once backend is done
+| Screen | State |
+|---|---|
+| Auth — Login, Register, Forgot Password | Live |
+| Rider — Login, Map (GPS broadcast), Deliveries | Live |
+| User — Home (poll + phases + prayer times) | Live |
+| User — Track (live rider map) | Live |
+| User — Donate (submit + history) | Live |
+| User — Dua, Quran | Placeholders |
+| User — Feedback (submit + history) | Live (reached from Profile) |
+| User — Profile (edit-request workflow + delete account) | Live |
+| Admin — Dashboard, Users approval | Live |
+| Admin — Special cases | Live |
+| Admin — Feedback | Live |
+| Admin — Chat | Placeholder (backend live, frontend chat UI TBD) |
+| Super Admin — Dashboard, Poll history, Special cases | Live |
+| Super Admin — Donations, Feedback, Requests approval | Live |
+| Super Admin — Users, Admins management, Chat | Placeholder (uses mock/legacy — backend endpoints available) |
 
-6. **User feedback submit** — `(user)/feedback.js` or `(tabs)/feedback.js` — check if this screen even exists (not visible in the file list)
+### Run
 
-7. **Profile screen** — `profile.js` exists at root but unclear if profile edit requests are wired up
+```bash
+cd frontend
+npm install
+npm start                  # then press a / i / w
+```
 
-8. **User — Poll History screen** — `pollsApi.getMyResponses()` exists in the API layer but there's no dedicated Poll History screen for users (`(user)/poll-history`)
+Set the API base URL in `src/api/client.js` to your backend/ngrok URL.
 
-9. **Missing API files**: `donationsApi`, `chatApi`, `feedbackApi` — none of these files exist in `/src/api/`
+## Play Store / App Store readiness
 
-10. **Push notifications** — no Expo notification registration or handling on the frontend
-
-11. **Welcome/onboarding screen** — no `welcome.tsx` in `(auth)/`
-
----
-
-## Priority Build Order
-
-Given where things stand, the most logical order to complete the app:
-
-**Backend first:**
-1. Poll special cases + history endpoints + toggle (just controller functions + route wires)
-2. Donations model + migration + all 5 endpoints
-3. Feedback model + migration + 4 endpoints
-4. Profile edit request model + migration + user endpoints
-5. Chat models + migrations + Socket.IO setup + all group endpoints
-6. Cron job scheduler (polls, prayer fetch, push notifications)
-7. Push notification service (Firebase)
-
-**Frontend after each backend piece:**
-1. Special cases screen (admin)
-2. Wire donations to real API
-3. Wire feedback submit + admin feedback to real API
-4. Profile edit requests screen
-5. Rewrite chat to use real `/api/chat` endpoints
-6. Add `donationsApi.js`, `chatApi.js`, `feedbackApi.js` in `/src/api/`
-7. User poll history screen
-8. Welcome/onboarding screen
+- **Account deletion** — required by both stores. `DELETE /api/users/me`
+  soft-deletes and anonymizes (name/phone/address/fcm_token). The profile
+  screen exposes a two-step confirmation flow.
+- **Environment secrets** — never commit `.env` (covered by root and
+  `backend/.gitignore`). Rotate the Google Maps key in `frontend/app.json`
+  before release and restrict it to your Android package name + iOS bundle
+  id in the Google Cloud console.
+- **JWT secrets** — generate long random strings for `JWT_SECRET` and
+  `JWT_REFRESH_SECRET` in production.
+- **CORS** — set `CORS_ORIGIN` in production `.env` to your exact
+  frontend origin(s); development defaults to `*`.
+- **Push notifications** — Expo notifications currently skipped in Expo
+  Go; wire Expo push tokens to the `fcm_token` column in a dev/prod build.
