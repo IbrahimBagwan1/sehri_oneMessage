@@ -12,15 +12,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { duaApi } from '../../api/dua';
+import { colors, fonts, ARABIC_TEXT_STYLE } from '../../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
-// Dua landing screen — categories list + featured-of-the-day card.
+// Dua landing screen — categories list with the featured-of-the-day card
+// at the top.
 //
-// The categories endpoint already returns the featured dua inline so
-// this screen fully populates in one HTTP round-trip.
+// Categories are rendered as a flat two-column grid (a subtle index look
+// rather than uniform cards on a scroll of shadowed rectangles). The
+// featured card at the top gets a warm parchment tint so it reads as
+// separate content, not just "the first category".
 // -----------------------------------------------------------------------------
 
-// Icons per category slug. Unmapped slugs get a neutral book icon.
+// Icons per known category slug — falls back to a book glyph.
 const CATEGORY_ICON = {
   morning:        'sunny-outline',
   evening:        'moon-outline',
@@ -53,7 +57,7 @@ export default function DuaCategoryList() {
         setFeatured(res.data.featured_today || null);
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not load duas');
+      setError("Couldn't load duas right now — check your connection and pull to refresh.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -64,26 +68,20 @@ export default function DuaCategoryList() {
 
   const renderCategory = ({ item }) => (
     <TouchableOpacity
-      style={styles.categoryCard}
+      style={styles.categoryTile}
       onPress={() =>
         router.push({ pathname: '/dua-detail', params: { slug: item.slug } })
       }
       accessibilityRole="button"
       accessibilityLabel={`${item.name}, ${item.dua_count} duas`}
     >
-      <View style={styles.categoryIconBox}>
-        <Ionicons name={iconFor(item.slug)} size={22} color="#0D9488" />
+      <View style={styles.tileIconWrap}>
+        <Ionicons name={iconFor(item.slug)} size={22} color={colors.teal} />
       </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.categoryName}>{item.name}</Text>
-        {item.description ? (
-          <Text style={styles.categoryDesc} numberOfLines={1}>{item.description}</Text>
-        ) : null}
-        <Text style={styles.categoryCount}>
-          {item.dua_count} {item.dua_count === 1 ? 'dua' : 'duas'}
-        </Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+      <Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
+      <Text style={styles.tileCount}>
+        {item.dua_count} {item.dua_count === 1 ? 'dua' : 'duas'}
+      </Text>
     </TouchableOpacity>
   );
 
@@ -97,18 +95,13 @@ export default function DuaCategoryList() {
         })
       }
       accessibilityRole="button"
-      accessibilityLabel={`Featured dua of the day: ${featured.name}`}
+      accessibilityLabel={`Today's dua: ${featured.name}`}
     >
-      <View style={styles.featuredHeader}>
-        <View style={styles.featuredBadge}>
-          <Ionicons name="star" size={11} color="#B45309" />
-          <Text style={styles.featuredBadgeText}>Featured today</Text>
-        </View>
-        {featured.category?.name ? (
-          <Text style={styles.featuredCategory}>{featured.category.name}</Text>
-        ) : null}
-      </View>
+      <Text style={styles.featuredEyebrow}>Today&apos;s dua</Text>
 
+      {featured.category?.name ? (
+        <Text style={styles.featuredCategory}>{featured.category.name}</Text>
+      ) : null}
       <Text style={styles.featuredTitle}>{featured.name}</Text>
 
       <Text
@@ -124,11 +117,6 @@ export default function DuaCategoryList() {
           {featured.translation}
         </Text>
       ) : null}
-
-      <View style={styles.featuredFooter}>
-        <Text style={styles.featuredReadLink}>Read full dua</Text>
-        <Ionicons name="arrow-forward" size={14} color="#0D9488" />
-      </View>
     </TouchableOpacity>
   ) : null;
 
@@ -136,16 +124,17 @@ export default function DuaCategoryList() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Duas &amp; Adhkar</Text>
-        <Text style={styles.headerSubtitle}>Daily supplications, categorized</Text>
+        <Text style={styles.headerSubtitle}>Daily supplications for every moment</Text>
       </View>
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#0D9488" />
+          <ActivityIndicator size="large" color={colors.teal} />
+          <Text style={styles.loadingText}>Loading duas…</Text>
         </View>
       ) : error ? (
         <View style={styles.centered}>
-          <Ionicons name="alert-circle-outline" size={40} color="#DC2626" />
+          <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={() => load()}>
             <Text style={styles.retryText}>Try again</Text>
@@ -156,20 +145,29 @@ export default function DuaCategoryList() {
           data={categories}
           keyExtractor={(item) => item.id}
           renderItem={renderCategory}
-          ListHeaderComponent={FeaturedHeader}
+          numColumns={2}
+          columnWrapperStyle={styles.gridRow}
+          ListHeaderComponent={
+            <>
+              {FeaturedHeader}
+              {categories.length > 0 ? (
+                <Text style={styles.sectionEyebrow}>All categories</Text>
+              ) : null}
+            </>
+          }
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={() => load(true)}
-              colors={['#0D9488']}
+              colors={[colors.teal]}
             />
           }
           ListEmptyComponent={
             <View style={styles.centered}>
-              <Ionicons name="book-outline" size={40} color="#CBD5E1" />
+              <Ionicons name="book-outline" size={36} color={colors.inkGhost} />
               <Text style={styles.emptyText}>
-                No duas yet — the sync may still be running.
+                No duas yet. Ask the coordinator to run the dua sync.
               </Text>
             </View>
           }
@@ -180,78 +178,85 @@ export default function DuaCategoryList() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: colors.paperSoft },
   header: {
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 14,
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
-  headerTitle:    { fontSize: 22, fontWeight: '800', color: '#0F172A' },
-  headerSubtitle: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  headerTitle:    { fontSize: 22, fontWeight: '800', color: colors.ink },
+  headerSubtitle: { fontSize: 12, color: colors.inkFaint, marginTop: 2 },
 
-  listContent: { padding: 14 },
+  listContent: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 24 },
 
-  // Featured card
+  // Featured card — warm parchment tint, no arrow decoration, no shadow.
   featuredCard: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 14,
-    padding: 16,
+    backgroundColor: colors.goldSoft,
+    borderRadius: 12,
+    padding: 18,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: colors.goldBorder,
   },
-  featuredHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  featuredBadge:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
-  featuredBadgeText:{ fontSize: 11, fontWeight: '700', color: '#B45309' },
-  featuredCategory: { fontSize: 11, color: '#92400E', fontWeight: '600' },
-  featuredTitle:    { fontSize: 15, fontWeight: '700', color: '#0F172A', marginBottom: 10 },
+  featuredEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.gold,
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  featuredCategory: { fontSize: 11, color: colors.inkFaint, marginBottom: 2 },
+  featuredTitle:    { fontSize: 16, fontWeight: '700', color: colors.ink, marginBottom: 12 },
   featuredArabic: {
-    fontSize: 20,
-    lineHeight: 40,
-    color: '#0F172A',
-    writingDirection: 'rtl',
-    textAlign: 'right',
-    marginBottom: 8,
+    ...ARABIC_TEXT_STYLE,
+    fontFamily: fonts.arabic,
+    fontSize: 22,
+    lineHeight: 44,
+    marginBottom: 10,
   },
-  featuredTranslation: { fontSize: 13, color: '#475569', lineHeight: 20, marginBottom: 10 },
-  featuredFooter:   { flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'flex-end' },
-  featuredReadLink: { fontSize: 12, color: '#0D9488', fontWeight: '700' },
+  featuredTranslation: {
+    fontSize: 14,
+    color: colors.inkMuted,
+    lineHeight: 22,
+  },
 
-  // Category rows
-  categoryCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#FFF',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+  sectionEyebrow: {
+    fontSize: 11,
+    color: colors.inkFaint,
+    marginBottom: 10,
+    marginLeft: 4,
   },
-  categoryIconBox: {
-    width: 40,
-    height: 40,
+
+  // Two-column tile grid
+  gridRow: { gap: 10, marginBottom: 10 },
+  categoryTile: {
+    flex: 1,
+    backgroundColor: colors.paper,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    minHeight: 108,
+  },
+  tileIconWrap: {
+    width: 34,
+    height: 34,
     borderRadius: 8,
-    backgroundColor: '#F0FDF9',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
+    backgroundColor: colors.tealSoft,
+    marginBottom: 10,
   },
-  categoryName:  { fontSize: 14, fontWeight: '700', color: '#0F172A' },
-  categoryDesc:  { fontSize: 12, color: '#64748B', marginTop: 1 },
-  categoryCount: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  tileName:  { fontSize: 14, fontWeight: '700', color: colors.ink, marginBottom: 4 },
+  tileCount: { fontSize: 11, color: colors.inkFaint },
 
-  centered:    { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 8 },
-  errorText:   { fontSize: 13, color: '#DC2626', textAlign: 'center' },
-  emptyText:   { fontSize: 13, color: '#94A3B8', textAlign: 'center' },
-  retryBtn:    { backgroundColor: '#0D9488', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, marginTop: 4 },
-  retryText:   { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  centered:    { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
+  loadingText: { fontSize: 13, color: colors.inkFaint },
+  errorText:   { fontSize: 14, color: colors.inkMuted, textAlign: 'center', lineHeight: 22 },
+  emptyText:   { fontSize: 14, color: colors.inkFaint, textAlign: 'center', lineHeight: 22 },
+  retryBtn:    { marginTop: 4, backgroundColor: colors.teal, paddingHorizontal: 22, paddingVertical: 10, borderRadius: 8 },
+  retryText:   { color: colors.paper, fontWeight: '700', fontSize: 14 },
 });

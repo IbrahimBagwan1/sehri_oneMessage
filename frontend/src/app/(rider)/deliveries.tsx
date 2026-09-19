@@ -1,98 +1,94 @@
+// @ts-nocheck
 import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
-  ActivityIndicator,
+  Pressable,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useRiderStore } from '../../store/useRiderStore';
+import {
+  Card,
+  Chip,
+  EmptyState,
+  ErrorState,
+  Header,
+  LoadingState,
+} from '../../components/ui';
+import { colors, radius, space, type } from '../../theme';
 
 const ZONE_LABELS: Record<string, string> = {
   masjid:      'Masjid',
-  boys_hostel: 'Boys Hostel',
-  stanza:      'Stanza Living',
-  girls:       'Girls Accommodation',
+  boys_hostel: "Boys' hostel",
+  stanza:      'Stanza',
+  girls:       'Girls',
 };
 
-// ---------------------------------------------------------------------------
-// Build display data from by_zone:
-//
-// Structure shown:
-//   MASJID  (5)
-//     Balaji PG for Gents  ×2  [checkbox]
-//     Global Vista         ×1  [checkbox]
-//   BOYS HOSTEL  (1)
-//     Paras Global Kutir   ×1  [checkbox]
-//
-// Each zone header shows total for that zone.
-// Each PG row shows how many deliveries go to that address, with a checkbox.
-// No individual resident names shown.
-// ---------------------------------------------------------------------------
-const buildListData = (by_zone: Record<string, any[]>) => {
-  const items: any[] = [];
+// -----------------------------------------------------------------------------
+// Rider delivery list — grouped by zone → PG. Each PG shows the count of
+// residents and a tappable checkbox to mark it delivered.
+// -----------------------------------------------------------------------------
 
+type PGRow = {
+  type: 'pg_row';
+  key: string;
+  zone: string;
+  address: string;
+  count: number;
+  isSpecial: boolean;
+};
+
+type ZoneHeader = {
+  type: 'zone_header';
+  key: string;
+  zone: string;
+  total: number;
+};
+
+type Row = PGRow | ZoneHeader;
+
+const buildListData = (by_zone: Record<string, any[]>): Row[] => {
+  const items: Row[] = [];
   for (const [zone, responses] of Object.entries(by_zone)) {
-    // Group responses by address within this zone
-    const byAddress: Record<string, { count: number; responseIds: string[]; isSpecial: boolean }> = {};
-
+    const byAddress: Record<string, { count: number; isSpecial: boolean }> = {};
     for (const r of responses) {
       const addr = r.address || 'Unknown address';
-      if (!byAddress[addr]) {
-        byAddress[addr] = { count: 0, responseIds: [], isSpecial: false };
-      }
-      byAddress[addr].count++;
-      byAddress[addr].responseIds.push(r.response_id);
+      if (!byAddress[addr]) byAddress[addr] = { count: 0, isSpecial: false };
+      byAddress[addr].count += 1;
       if (r.is_special_case) byAddress[addr].isSpecial = true;
     }
-
-    // Zone header
-    items.push({
-      type:  'zone_header',
-      zone,
-      total: responses.length,
-      key:   `header-${zone}`,
-    });
-
-    // PG rows
+    items.push({ type: 'zone_header', key: `header-${zone}`, zone, total: responses.length });
     for (const [address, data] of Object.entries(byAddress)) {
       items.push({
-        type:        'pg_row',
+        type: 'pg_row',
+        key: `pg-${zone}-${address}`,
         zone,
         address,
-        count:       data.count,
-        responseIds: data.responseIds,
-        isSpecial:   data.isSpecial,
-        key:         `pg-${zone}-${address}`,
+        count: data.count,
+        isSpecial: data.isSpecial,
       });
     }
   }
-
   return items;
 };
 
 export default function DeliveriesScreen() {
-  const fetchDeliveryList = useRiderStore((state) => state.fetchDeliveryList);
-  const deliveryList      = useRiderStore((state) => state.deliveryList);
-  const loadingList       = useRiderStore((state) => state.loadingList);
-  const listError         = useRiderStore((state) => state.listError);
+  const fetchDeliveryList = useRiderStore((s) => s.fetchDeliveryList);
+  const deliveryList      = useRiderStore((s) => s.deliveryList);
+  const loadingList       = useRiderStore((s) => s.loadingList);
+  const listError         = useRiderStore((s) => s.listError);
 
-  // Checkbox state per PG (keyed by "zone-address")
-  const [delivered, setDelivered] = useState<Record<string, boolean>>({});
+  const [delivered, setDelivered]   = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchDeliveryList();
-    }, [fetchDeliveryList])
-  );
+  useFocusEffect(useCallback(() => { fetchDeliveryList(); }, [fetchDeliveryList]));
 
-  const handleRefresh = async () => {
+  const onRefresh = async () => {
     setRefreshing(true);
     await fetchDeliveryList();
     setRefreshing(false);
@@ -102,359 +98,174 @@ export default function DeliveriesScreen() {
     setDelivered((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const listData = deliveryList?.by_zone ? buildListData(deliveryList.by_zone) : [];
-
-  const completedCount = Object.values(delivered).filter(Boolean).length;
+  const listData: Row[] = deliveryList?.by_zone ? buildListData(deliveryList.by_zone) : [];
   const totalPGs = listData.filter((i) => i.type === 'pg_row').length;
+  const doneCount = Object.values(delivered).filter(Boolean).length;
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-  const renderItem = ({ item }: { item: any }) => {
+  const renderItem = ({ item }: { item: Row }) => {
     if (item.type === 'zone_header') {
       return (
         <View style={styles.zoneHeader}>
-          <Ionicons name="location" size={15} color="#0D9488" />
-          <Text style={styles.zoneHeaderText}>
-            {ZONE_LABELS[item.zone] || item.zone}
-          </Text>
-          <View style={styles.zoneCountBadge}>
-            <Text style={styles.zoneCountText}>{item.total}</Text>
-          </View>
+          <Ionicons name="location-outline" size={13} color={colors.gold} />
+          <Text style={styles.zoneHeaderText}>{ZONE_LABELS[item.zone] || item.zone}</Text>
+          <View style={styles.zoneCount}><Text style={styles.zoneCountText}>{item.total}</Text></View>
         </View>
       );
     }
 
-    // PG row
-    const isDone = delivered[item.key];
-
+    const isDone = !!delivered[item.key];
     return (
-      <TouchableOpacity
-        style={[styles.pgRow, isDone && styles.pgRowDone]}
+      <Pressable
         onPress={() => toggleDelivered(item.key)}
-        activeOpacity={0.7}
+        style={({ pressed }) => [styles.pgRow, pressed && styles.pgRowPressed, isDone && styles.pgRowDone]}
         accessibilityRole="checkbox"
         accessibilityState={{ checked: isDone }}
-        accessibilityLabel={`Mark ${item.address} as ${isDone ? 'not delivered' : 'delivered'}`}
+        accessibilityLabel={`${item.address}, mark ${isDone ? 'undelivered' : 'delivered'}`}
       >
-        <View style={styles.pgRowLeft}>
+        <View style={{ flex: 1 }}>
           {item.isSpecial && (
-            <View style={styles.specialBadge}>
-              <Text style={styles.specialBadgeText}>Special</Text>
+            <View style={{ marginBottom: space[1] }}>
+              <Chip label="Special case" tone="gold" />
             </View>
           )}
-          <Text style={[styles.pgName, isDone && styles.textDone]} numberOfLines={2}>
-            {item.address}
-          </Text>
+          <Text style={[styles.pgName, isDone && styles.textDone]} numberOfLines={2}>{item.address}</Text>
           <Text style={[styles.pgCount, isDone && styles.textDone]}>
             {item.count} {item.count === 1 ? 'person' : 'people'}
           </Text>
         </View>
-
         <View style={[styles.checkbox, isDone && styles.checkboxDone]}>
-          {isDone && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+          {isDone && <Ionicons name="checkmark" size={15} color={colors.paper} />}
         </View>
-      </TouchableOpacity>
+      </Pressable>
     );
   };
 
-  // ---------------------------------------------------------------------------
-  // Loading state
-  // ---------------------------------------------------------------------------
   if (loadingList && !refreshing) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Deliveries</Text>
-        </View>
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#0D9488" />
-          <Text style={styles.loadingText}>Loading today's list...</Text>
-        </View>
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <Header title="Deliveries" />
+        <LoadingState message="Loading today's list…" />
       </SafeAreaView>
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Error state
-  // ---------------------------------------------------------------------------
   if (listError) {
-    const isNotAssigned = listError.toLowerCase().includes('not assigned');
+    const notAssigned = listError.toLowerCase().includes('not assigned');
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Deliveries</Text>
-        </View>
-        <View style={styles.centered}>
-          <Ionicons
-            name={isNotAssigned ? 'calendar-outline' : 'alert-circle-outline'}
-            size={48}
-            color={isNotAssigned ? '#94A3B8' : '#DC2626'}
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <Header title="Deliveries" />
+        {notAssigned ? (
+          <EmptyState
+            icon="calendar-outline"
+            title="Not assigned today"
+            message="You haven't been assigned as today's delivery rider. Check with the coordinator."
+            actionLabel="Refresh"
+            onAction={fetchDeliveryList}
           />
-          <Text style={styles.emptyTitle}>
-            {isNotAssigned ? 'Not Assigned Today' : 'Something went wrong'}
-          </Text>
-          <Text style={styles.emptySubtitle}>
-            {isNotAssigned
-              ? "You haven't been assigned as today's delivery rider."
-              : listError}
-          </Text>
-          <TouchableOpacity style={styles.retryButton} onPress={fetchDeliveryList}>
-            <Text style={styles.retryButtonText}>Try Again</Text>
-          </TouchableOpacity>
-        </View>
+        ) : (
+          <ErrorState message={listError} onRetry={fetchDeliveryList} />
+        )}
       </SafeAreaView>
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Empty state
-  // ---------------------------------------------------------------------------
   if (!deliveryList || deliveryList.total === 0) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Deliveries</Text>
-        </View>
-        <View style={styles.centered}>
-          <Ionicons name="checkmark-done-circle-outline" size={48} color="#0D9488" />
-          <Text style={styles.emptyTitle}>No deliveries today</Text>
-          <Text style={styles.emptySubtitle}>No one voted yes for today's Sehri.</Text>
-        </View>
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <Header title="Deliveries" />
+        <EmptyState
+          icon="checkmark-done-circle-outline"
+          title="No deliveries today"
+          message="Nobody voted yes for today's Sehri."
+        />
       </SafeAreaView>
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Main list
-  // ---------------------------------------------------------------------------
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Deliveries</Text>
-        <Text style={styles.headerDate}>{deliveryList.poll_date}</Text>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <Header title="Deliveries" subtitle={deliveryList.poll_date} />
+
+      {/* Summary strip */}
+      <View style={styles.summaryStrip}>
+        <SummaryCell label="People"    value={deliveryList.total}       color={colors.ink} />
+        <View style={styles.summaryDivider} />
+        <SummaryCell label="Done"      value={doneCount}                color={colors.success} />
+        <View style={styles.summaryDivider} />
+        <SummaryCell label="Remaining" value={totalPGs - doneCount}     color={colors.warn} />
       </View>
 
-      {/* Summary bar — total people / PGs done / remaining */}
-      <View style={styles.summaryBar}>
-        <View style={styles.summaryItem}>
-          <Text style={styles.summaryNumber}>{deliveryList.total}</Text>
-          <Text style={styles.summaryLabel}>People</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryItem}>
-          <Text style={[styles.summaryNumber, { color: '#16A34A' }]}>{completedCount}</Text>
-          <Text style={styles.summaryLabel}>PGs Done</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryItem}>
-          <Text style={[styles.summaryNumber, { color: '#D97706' }]}>
-            {totalPGs - completedCount}
-          </Text>
-          <Text style={styles.summaryLabel}>Remaining</Text>
-        </View>
-      </View>
-
-      {/* List */}
       <FlatList
         data={listData}
         keyExtractor={(item) => item.key}
         renderItem={renderItem}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor="#0D9488"
-          />
-        }
+        contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.teal]} tintColor={colors.teal} />}
         showsVerticalScrollIndicator={false}
       />
     </SafeAreaView>
   );
 }
 
+function SummaryCell({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <View style={styles.summaryCell}>
+      <Text style={[styles.summaryValue, { color }]}>{value}</Text>
+      <Text style={styles.summaryLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  header: {
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
+
+  summaryStrip: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.paper,
+    paddingVertical: space[4],
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.ruleSoft,
   },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerDate: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  summaryBar: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    marginBottom: 8,
-  },
-  summaryItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  summaryNumber: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  summaryLabel: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  summaryDivider: {
-    width: 1,
-    backgroundColor: '#E2E8F0',
-    marginVertical: 4,
-  },
-  listContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-  },
+  summaryCell:    { flex: 1, alignItems: 'center' },
+  summaryDivider: { width: 1, backgroundColor: colors.ruleSoft, marginVertical: 4 },
+  summaryValue:   { fontSize: 22, fontWeight: '800' },
+  summaryLabel:   { ...type.micro, color: colors.inkFaint, marginTop: 2 },
+
+  list: { padding: space[4], paddingBottom: space[8] },
+
   zoneHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    marginTop: 12,
-    gap: 6,
+    gap: space[2],
+    paddingVertical: space[3],
+    marginTop: space[2],
   },
-  zoneHeaderText: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#475569',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  zoneCountBadge: {
-    backgroundColor: '#E2E8F0',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  zoneCountText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#475569',
-  },
+  zoneHeaderText: { ...type.metaStrong, color: colors.inkMuted, flex: 1 },
+  zoneCount:      { backgroundColor: colors.goldSoft, borderRadius: radius.pill, paddingHorizontal: space[2], paddingVertical: 2, borderWidth: 1, borderColor: colors.goldBorder },
+  zoneCountText:  { ...type.micro, color: colors.gold, fontWeight: '700' },
+
   pgRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 8,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    backgroundColor: colors.paper,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.ruleSoft,
+    paddingHorizontal: space[4],
+    paddingVertical: space[3],
+    marginBottom: space[2],
   },
-  pgRowDone: {
-    opacity: 0.5,
-    backgroundColor: '#F8FAFC',
-  },
-  pgRowLeft: {
-    flex: 1,
-    marginRight: 12,
-    gap: 3,
-  },
-  specialBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginBottom: 4,
-  },
-  specialBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  pgName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1E293B',
-  },
-  pgCount: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  textDone: {
-    textDecorationLine: 'line-through',
-    color: '#94A3B8',
-  },
+  pgRowPressed: { backgroundColor: colors.tealSoft },
+  pgRowDone:    { opacity: 0.55 },
+  pgName:       { ...type.h3 },
+  pgCount:      { ...type.meta, marginTop: 2 },
+  textDone:     { textDecorationLine: 'line-through', color: colors.inkGhost },
+
   checkbox: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 26, height: 26, borderRadius: 6,
+    borderWidth: 2, borderColor: colors.ruleSoft,
+    alignItems: 'center', justifyContent: 'center',
+    marginLeft: space[3],
   },
-  checkboxDone: {
-    backgroundColor: '#0D9488',
-    borderColor: '#0D9488',
-  },
-  centered: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    gap: 12,
-  },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#334155',
-    textAlign: 'center',
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: '#94A3B8',
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  loadingText: {
-    fontSize: 14,
-    color: '#64748B',
-    marginTop: 8,
-  },
-  retryButton: {
-    marginTop: 8,
-    backgroundColor: '#0D9488',
-    paddingHorizontal: 24,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 14,
-  },
+  checkboxDone: { backgroundColor: colors.teal, borderColor: colors.teal },
 });

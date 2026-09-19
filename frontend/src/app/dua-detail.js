@@ -14,13 +14,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { duaApi } from '../api/dua';
+import { colors, fonts, ARABIC_TEXT_STYLE } from '../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
 // Dua detail — expandable cards for every dua in a category.
 //
-// Enable LayoutAnimation on Android so the collapse/expand feels natural.
 // A `highlight` query param (from the featured-today link) auto-expands
-// and scrolls to a specific dua.
+// the target card and scrolls to it after layout completes.
 // -----------------------------------------------------------------------------
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -42,7 +42,7 @@ export default function DuaDetailScreen() {
 
   const load = useCallback(async () => {
     if (!slug) {
-      setError('Missing category slug');
+      setError('This category link is missing.');
       setLoading(false);
       return;
     }
@@ -52,16 +52,19 @@ export default function DuaDetailScreen() {
       const res = await duaApi.getCategory(slug);
       if (res.success) {
         setData(res.data);
-        // If we arrived via a highlight target, expand that one up-front.
         if (highlight) {
           setExpanded({ [highlight]: true });
         } else if (res.data.duas?.length === 1) {
-          // Single-entry categories: default to expanded.
           setExpanded({ [res.data.duas[0].slug]: true });
         }
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not load duas');
+      const status = err?.response?.status;
+      if (status === 404) {
+        setError("This category isn't loaded yet. Ask the coordinator to run the dua sync.");
+      } else {
+        setError("Couldn't load this category — check your connection and try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -69,10 +72,9 @@ export default function DuaDetailScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // After the content lays out, jump to the highlighted card.
+  // Once content is on screen, scroll to the highlighted card.
   useEffect(() => {
     if (!highlight || !data) return;
-    // Wait a tick so onLayout has captured the position.
     const t = setTimeout(() => {
       const y = positions.current[highlight];
       if (y != null) {
@@ -90,19 +92,23 @@ export default function DuaDetailScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#0D9488" />
+        <ActivityIndicator size="large" color={colors.teal} />
+        <Text style={styles.loadingText}>Loading duas…</Text>
       </SafeAreaView>
     );
   }
 
   if (error) {
     return (
-      <SafeAreaView style={[styles.container, styles.centered]}>
-        <Ionicons name="alert-circle-outline" size={40} color="#DC2626" />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.retryBtn} onPress={load}>
-          <Text style={styles.retryText}>Try again</Text>
-        </TouchableOpacity>
+      <SafeAreaView style={styles.container}>
+        <Header router={router} title="Duas" />
+        <View style={styles.centered}>
+          <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={load}>
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
     );
   }
@@ -111,18 +117,7 @@ export default function DuaDetailScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color="#1F2937" />
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>{category?.name || 'Duas'}</Text>
-          <Text style={styles.headerSubtitle}>
-            {duas.length} {duas.length === 1 ? 'dua' : 'duas'}
-          </Text>
-        </View>
-        <View style={{ width: 30 }} />
-      </View>
+      <Header router={router} title={category?.name || 'Duas'} subtitle={`${duas.length} ${duas.length === 1 ? 'dua' : 'duas'}`} />
 
       <ScrollView
         ref={scrollRef}
@@ -135,8 +130,8 @@ export default function DuaDetailScreen() {
 
         {duas.length === 0 ? (
           <View style={[styles.centered, { paddingVertical: 40 }]}>
-            <Ionicons name="book-outline" size={36} color="#CBD5E1" />
-            <Text style={styles.emptyText}>No duas in this category yet.</Text>
+            <Ionicons name="book-outline" size={36} color={colors.inkGhost} />
+            <Text style={styles.emptyText}>No duas found in this category.</Text>
           </View>
         ) : (
           duas.map((d, idx) => {
@@ -157,16 +152,14 @@ export default function DuaDetailScreen() {
                   accessibilityState={{ expanded: isOpen }}
                   accessibilityLabel={`${d.name}, ${isOpen ? 'collapse' : 'expand'}`}
                 >
-                  <View style={styles.indexBadge}>
-                    <Text style={styles.indexText}>{idx + 1}</Text>
-                  </View>
+                  <Text style={styles.cardIndex}>{idx + 1}</Text>
                   <Text style={styles.cardTitle} numberOfLines={isOpen ? undefined : 2}>
                     {d.name}
                   </Text>
                   <Ionicons
                     name={isOpen ? 'chevron-up' : 'chevron-down'}
                     size={18}
-                    color="#64748B"
+                    color={colors.inkFaint}
                   />
                 </TouchableOpacity>
 
@@ -182,21 +175,21 @@ export default function DuaDetailScreen() {
 
                     {d.transliteration ? (
                       <>
-                        <Text style={styles.sectionLabel}>Transliteration</Text>
+                        <View style={styles.divider} />
                         <Text style={styles.transliteration}>{d.transliteration}</Text>
                       </>
                     ) : null}
 
                     {d.translation ? (
                       <>
-                        <Text style={styles.sectionLabel}>Translation</Text>
+                        <View style={styles.divider} />
                         <Text style={styles.translation}>{d.translation}</Text>
                       </>
                     ) : null}
 
                     {d.source ? (
                       <View style={styles.sourceRow}>
-                        <Ionicons name="library-outline" size={12} color="#94A3B8" />
+                        <Ionicons name="library-outline" size={12} color={colors.inkGhost} />
                         <Text style={styles.sourceText}>{d.source}</Text>
                       </View>
                     ) : null}
@@ -211,118 +204,120 @@ export default function DuaDetailScreen() {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Shared header — used by loading / error / content states.
+// -----------------------------------------------------------------------------
+function Header({ router, title, subtitle }) {
+  return (
+    <View style={styles.header}>
+      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+        <Ionicons name="arrow-back" size={22} color={colors.inkMuted} />
+      </TouchableOpacity>
+      <View style={styles.headerCenter}>
+        <Text style={styles.headerTitle}>{title}</Text>
+        {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
+      </View>
+      <View style={{ width: 30 }} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
-  centered:  { justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
+  container: { flex: 1, backgroundColor: colors.paperSoft },
+  centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
 
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
     gap: 8,
   },
   backBtn:        { padding: 4 },
   headerCenter:   { flex: 1 },
-  headerTitle:    { fontSize: 17, fontWeight: '800', color: '#0F172A' },
-  headerSubtitle: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  headerTitle:    { fontSize: 17, fontWeight: '700', color: colors.ink },
+  headerSubtitle: { fontSize: 12, color: colors.inkFaint, marginTop: 2 },
 
-  scrollContent: { padding: 14, paddingBottom: 32 },
-
-  categoryDescription: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 14,
-    lineHeight: 20,
-  },
+  scrollContent:       { padding: 14, paddingBottom: 32 },
+  categoryDescription: { fontSize: 13, color: colors.inkFaint, marginBottom: 14, lineHeight: 20 },
 
   card: {
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderRadius: 12,
     marginBottom: 10,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     overflow: 'hidden',
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  indexBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    backgroundColor: '#F0FDF9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
+  cardIndex: {
+    // Plain teal numeral — reads as a list index rather than a badge.
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.tealDark,
+    minWidth: 20,
   },
-  indexText:  { fontSize: 12, fontWeight: '700', color: '#0D9488' },
-  cardTitle:  { flex: 1, fontSize: 14, fontWeight: '600', color: '#0F172A' },
+  cardTitle:  { flex: 1, fontSize: 14, fontWeight: '600', color: colors.ink },
 
   cardBody: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
     paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.ruleFaint,
   },
 
   arabicText: {
+    ...ARABIC_TEXT_STYLE,
+    fontFamily: fonts.arabic,
     fontSize: 22,
-    lineHeight: 46,
-    color: '#0F172A',
-    writingDirection: 'rtl',
-    textAlign: 'right',
-    marginBottom: 14,
-  },
-
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#64748B',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 4,
+    lineHeight: 48,
     marginBottom: 4,
   },
+
+  // Thin gold rule separates Arabic → transliteration → translation.
+  divider: {
+    height: 1,
+    backgroundColor: colors.goldBorder,
+    opacity: 0.5,
+    marginVertical: 12,
+  },
+
   transliteration: {
     fontSize: 14,
-    color: '#334155',
+    color: colors.inkMuted,
     fontStyle: 'italic',
     lineHeight: 22,
-    marginBottom: 10,
   },
   translation: {
     fontSize: 15,
-    color: '#0F172A',
-    lineHeight: 22,
-    marginBottom: 10,
+    color: colors.ink,
+    lineHeight: 24,
   },
 
   sourceRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    marginTop: 6,
-    paddingTop: 8,
+    marginTop: 12,
+    paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    borderTopColor: colors.ruleFaint,
   },
-  sourceText: { fontSize: 11, color: '#94A3B8' },
+  sourceText: { fontSize: 11, color: colors.inkGhost },
 
-  errorText: { fontSize: 13, color: '#DC2626', textAlign: 'center' },
-  emptyText: { fontSize: 13, color: '#94A3B8', textAlign: 'center' },
-  retryBtn:  { backgroundColor: '#0D9488', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
-  retryText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  loadingText: { fontSize: 13, color: colors.inkFaint },
+  errorText:   { fontSize: 14, color: colors.inkMuted, textAlign: 'center', lineHeight: 22 },
+  emptyText:   { fontSize: 14, color: colors.inkFaint, textAlign: 'center', lineHeight: 22 },
+  retryBtn:    { marginTop: 4, backgroundColor: colors.teal, paddingHorizontal: 22, paddingVertical: 10, borderRadius: 8 },
+  retryText:   { color: colors.paper, fontWeight: '700', fontSize: 14 },
 });

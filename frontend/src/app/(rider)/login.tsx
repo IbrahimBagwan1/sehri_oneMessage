@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React, { useState } from 'react';
 import {
   View,
@@ -15,6 +16,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { trackingApi } from '../../api/tracking';
 import { useRiderStore } from '../../store/useRiderStore';
+import PasswordInput from '../../components/PasswordInput';
 
 export default function RiderLoginScreen() {
   const router       = useRouter();
@@ -86,11 +88,9 @@ export default function RiderLoginScreen() {
 
         {/* Password */}
         <Text style={styles.label}>Password</Text>
-        <TextInput
+        <PasswordInput
           ref={passwordRef}
-          style={styles.input}
           placeholder="Enter your password"
-          secureTextEntry
           value={password}
           onChangeText={setPassword}
           returnKeyType="done"

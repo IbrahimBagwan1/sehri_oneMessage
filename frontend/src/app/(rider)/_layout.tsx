@@ -1,86 +1,58 @@
+// @ts-nocheck
 import React, { useEffect } from 'react';
 import { Tabs, useRouter, useSegments } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, View, Platform } from 'react-native';
 import { useRiderStore } from '../../store/useRiderStore';
+import { colors } from '../../theme';
 
 export default function RiderLayout() {
   const router          = useRouter();
   const segments        = useSegments();
-  const hydrate         = useRiderStore((state) => state.hydrate);
-  const isHydrated      = useRiderStore((state) => state.isHydrated);
-  const isAuthenticated = useRiderStore((state) => state.isAuthenticated);
+  const hydrate         = useRiderStore((s) => s.hydrate);
+  const isHydrated      = useRiderStore((s) => s.isHydrated);
+  const isAuthenticated = useRiderStore((s) => s.isAuthenticated);
 
-  useEffect(() => {
-    hydrate();
-  }, []);
+  useEffect(() => { hydrate(); }, []);
 
   useEffect(() => {
     if (!isHydrated) return;
     const onLoginScreen = segments[segments.length - 1] === 'login';
-    if (!isAuthenticated && !onLoginScreen) {
-      router.replace('/(rider)/login');
-    }
-    if (isAuthenticated && onLoginScreen) {
-      router.replace('/(rider)/map');
-    }
+    if (!isAuthenticated && !onLoginScreen) router.replace('/(rider)/login');
+    if (isAuthenticated && onLoginScreen) router.replace('/(rider)/map');
   }, [isHydrated, isAuthenticated, segments]);
 
   const onLoginScreen = segments[segments.length - 1] === 'login';
 
-  // Show spinner only while hydrating and not already on login screen
   if (!isHydrated && !onLoginScreen) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
-        <ActivityIndicator size="large" color="#0D9488" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.paperSoft }}>
+        <ActivityIndicator size="large" color={colors.teal} />
       </View>
     );
   }
 
-  // Always render Tabs — hide tab bar on login screen to avoid the
-  // "Stack before Root Layout" error when switching navigators dynamically.
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#0D9488',
-        tabBarInactiveTintColor: '#94A3B8',
         headerShown: false,
-        // Hide the tab bar completely on the login screen
+        tabBarActiveTintColor: colors.teal,
+        tabBarInactiveTintColor: colors.inkFaint,
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
         tabBarStyle: onLoginScreen
           ? { display: 'none' }
           : {
-              backgroundColor: '#FFFFFF',
-              borderTopColor: '#E2E8F0',
-              elevation: 8,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: -2 },
-              shadowOpacity: 0.06,
-              shadowRadius: 4,
+              backgroundColor: colors.paper,
+              borderTopColor: colors.ruleSoft,
+              height: Platform.OS === 'ios' ? 84 : 62,
+              paddingTop: 6,
+              paddingBottom: Platform.OS === 'ios' ? 24 : 6,
             },
       }}
     >
-      <Tabs.Screen
-        name="map"
-        options={{
-          title: 'Map',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="map-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="deliveries"
-        options={{
-          title: 'Deliveries',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="list-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="login"
-        options={{ href: null }}
-      />
+      <Tabs.Screen name="map"        options={{ title: 'Map',        tabBarIcon: ({ color, size }) => <Ionicons name="map-outline"  size={size} color={color} /> }} />
+      <Tabs.Screen name="deliveries" options={{ title: 'Deliveries', tabBarIcon: ({ color, size }) => <Ionicons name="list-outline" size={size} color={color} /> }} />
+      <Tabs.Screen name="login"      options={{ href: null }} />
     </Tabs>
   );
 }

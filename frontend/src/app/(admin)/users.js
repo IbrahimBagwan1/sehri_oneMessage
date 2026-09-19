@@ -4,8 +4,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
-  ActivityIndicator,
+  Pressable,
   Alert,
   RefreshControl,
 } from 'react-native';
@@ -13,29 +12,35 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { adminApi } from '../../api/admin';
+import {
+  Avatar,
+  Button,
+  Card,
+  Chip,
+  EmptyState,
+  ErrorState,
+  Header,
+  LoadingState,
+} from '../../components/ui';
+import { colors, radius, space, type } from '../../theme';
 
-// Filter tabs
 const TABS = [
   { key: 'pending',  label: 'Pending'  },
   { key: 'approved', label: 'Approved' },
   { key: 'rejected', label: 'Rejected' },
 ];
 
-const STATUS_CONFIG = {
-  pending:  { color: '#D97706', bg: '#FEF3C7' },
-  approved: { color: '#16A34A', bg: '#DCFCE7' },
-  rejected: { color: '#DC2626', bg: '#FEE2E2' },
+const STATUS_TONE = {
+  pending:  'warn',
+  approved: 'success',
+  rejected: 'danger',
 };
 
-// Resolve zone name from the nested location chain
+// Walk the eager-loaded location chain to find the zone name.
 const resolveZoneName = (location) => {
-  let current = location;
-  let hops = 0;
-  while (current && current.type !== 'zone' && hops < 10) {
-    current = current.parent || null;
-    hops++;
-  }
-  return current?.type === 'zone' ? current.name : null;
+  let cur = location; let hops = 0;
+  while (cur && cur.type !== 'zone' && hops < 10) { cur = cur.parent || null; hops += 1; }
+  return cur?.type === 'zone' ? cur.name : null;
 };
 
 export default function AdminUsersScreen() {
@@ -43,50 +48,44 @@ export default function AdminUsersScreen() {
   const [users,       setUsers]       = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [refreshing,  setRefreshing]  = useState(false);
-  const [actioningId, setActioningId] = useState(null); // id of user being approved/rejected
+  const [error,       setError]       = useState(null);
+  const [actioningId, setActioningId] = useState(null);
 
-  // ---------------------------------------------------------------------------
-  // Fetch users for the active tab
-  // ---------------------------------------------------------------------------
-  const fetchUsers = useCallback(async (tab = activeTab, isRefresh = false) => {
+  const load = useCallback(async (tab = activeTab, isRefresh = false) => {
+    isRefresh ? setRefreshing(true) : setLoading(true);
+    setError(null);
     try {
-      isRefresh ? setRefreshing(true) : setLoading(true);
-      const result = await adminApi.getUsers(tab);
-      if (result.success) setUsers(result.data);
+      const res = await adminApi.getUsers(tab);
+      if (res.success) setUsers(res.data);
     } catch (err) {
-      Alert.alert('Error', err.response?.data?.message || 'Could not load users.');
+      setError(err?.response?.data?.message || "Couldn't load users. Try again in a moment.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [activeTab]);
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchUsers(activeTab);
-    }, [activeTab])
-  );
+  useFocusEffect(useCallback(() => { load(activeTab); }, [activeTab]));
 
-  // ---------------------------------------------------------------------------
-  // Approve / Reject handler
-  // ---------------------------------------------------------------------------
-  const handleAction = async (userId, status, userName) => {
+  const handleAction = (userId, status, name) => {
+    const verb = status === 'approved' ? 'approve' : 'reject';
     Alert.alert(
-      `${status === 'approved' ? 'Approve' : 'Reject'} User`,
-      `Are you sure you want to ${status} ${userName}?`,
+      `${verb.charAt(0).toUpperCase() + verb.slice(1)} ${name}?`,
+      status === 'approved'
+        ? `${name} will be able to sign in and vote.`
+        : `${name} won't be able to sign in until you approve them.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: status === 'approved' ? 'Approve' : 'Reject',
+          text: verb.charAt(0).toUpperCase() + verb.slice(1),
           style: status === 'rejected' ? 'destructive' : 'default',
           onPress: async () => {
+            setActioningId(userId);
             try {
-              setActioningId(userId);
               await adminApi.updateUserStatus(userId, status);
-              // Remove from list immediately for snappy UX
               setUsers((prev) => prev.filter((u) => u.id !== userId));
             } catch (err) {
-              Alert.alert('Error', err.response?.data?.message || 'Action failed.');
+              Alert.alert("Couldn't save", err?.response?.data?.message || 'Try again.');
             } finally {
               setActioningId(null);
             }
@@ -96,142 +95,112 @@ export default function AdminUsersScreen() {
     );
   };
 
-  // ---------------------------------------------------------------------------
-  // Render a single user card
-  // ---------------------------------------------------------------------------
   const renderUser = ({ item }) => {
-    const zoneName   = resolveZoneName(item.location);
-    const statusCfg  = STATUS_CONFIG[item.status] || STATUS_CONFIG.pending;
+    const zone = resolveZoneName(item.location);
     const isActioning = actioningId === item.id;
 
     return (
-      <View style={styles.userCard}>
-        {/* Top row: name + status badge */}
-        <View style={styles.userCardTop}>
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarText}>
-              {item.name?.charAt(0).toUpperCase() || '?'}
-            </Text>
-          </View>
-          <View style={styles.userInfo}>
+      <Card>
+        <View style={styles.headRow}>
+          <Avatar name={item.name} size={40} />
+          <View style={{ flex: 1 }}>
             <Text style={styles.userName}>{item.name}</Text>
             <Text style={styles.userPhone}>{item.phone}</Text>
           </View>
-          <View style={[styles.statusBadge, { backgroundColor: statusCfg.bg }]}>
-            <Text style={[styles.statusText, { color: statusCfg.color }]}>
-              {item.status}
-            </Text>
-          </View>
+          <Chip label={item.status} tone={STATUS_TONE[item.status] || 'neutral'} />
         </View>
 
-        {/* Details row */}
-        <View style={styles.detailsRow}>
-          {zoneName && (
-            <View style={styles.detailChip}>
-              <Ionicons name="location-outline" size={12} color="#64748B" />
-              <Text style={styles.detailChipText}>{zoneName}</Text>
-            </View>
-          )}
-          {item.gender && (
-            <View style={styles.detailChip}>
-              <Ionicons name="person-outline" size={12} color="#64748B" />
-              <Text style={styles.detailChipText}>{item.gender}</Text>
-            </View>
-          )}
-          {item.occupation && (
-            <View style={styles.detailChip}>
-              <Ionicons name="briefcase-outline" size={12} color="#64748B" />
-              <Text style={styles.detailChipText}>{item.occupation}</Text>
-            </View>
-          )}
+        <View style={styles.metaRow}>
+          {zone ? <MetaChip icon="location-outline" text={zone} /> : null}
+          {item.gender ? <MetaChip icon="person-outline" text={item.gender} /> : null}
+          {item.occupation ? <MetaChip icon="briefcase-outline" text={item.occupation} /> : null}
         </View>
 
         {item.address ? (
-          <Text style={styles.userAddress} numberOfLines={1}>
-            <Ionicons name="home-outline" size={12} color="#94A3B8" /> {item.address}
-          </Text>
+          <View style={styles.addressRow}>
+            <Ionicons name="home-outline" size={13} color={colors.inkFaint} />
+            <Text style={styles.addressText} numberOfLines={2}>{item.address}</Text>
+          </View>
         ) : null}
 
-        {/* Action buttons — only shown for pending users */}
         {item.status === 'pending' && (
-          <View style={styles.actionRow}>
-            {isActioning ? (
-              <ActivityIndicator color="#2563EB" style={{ marginVertical: 8 }} />
-            ) : (
-              <>
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.approveBtn]}
-                  onPress={() => handleAction(item.id, 'approved', item.name)}
-                >
-                  <Ionicons name="checkmark" size={16} color="#FFF" />
-                  <Text style={styles.actionBtnText}>Approve</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.rejectBtn]}
-                  onPress={() => handleAction(item.id, 'rejected', item.name)}
-                >
-                  <Ionicons name="close" size={16} color="#FFF" />
-                  <Text style={styles.actionBtnText}>Reject</Text>
-                </TouchableOpacity>
-              </>
-            )}
+          <View style={styles.actions}>
+            <Button
+              label="Approve"
+              onPress={() => handleAction(item.id, 'approved', item.name)}
+              loading={isActioning}
+              size="sm"
+              icon="checkmark"
+              style={{ flex: 1 }}
+            />
+            <Button
+              label="Reject"
+              onPress={() => handleAction(item.id, 'rejected', item.name)}
+              loading={isActioning}
+              variant="secondary"
+              size="sm"
+              icon="close"
+              style={{ flex: 1 }}
+            />
           </View>
         )}
-      </View>
+      </Card>
     );
   };
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>Users</Text>
-        <TouchableOpacity onPress={() => fetchUsers(activeTab, true)}>
-          <Ionicons name="refresh-outline" size={22} color="#2563EB" />
-        </TouchableOpacity>
-      </View>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <Header
+        title="Users"
+        trailing={
+          <Pressable onPress={() => load(activeTab, true)} hitSlop={8} accessibilityLabel="Refresh">
+            <Ionicons name="refresh" size={22} color={colors.teal} />
+          </Pressable>
+        }
+      />
 
-      {/* Filter tabs */}
+      {/* Tabs */}
       <View style={styles.tabRow}>
-        {TABS.map((tab) => (
-          <TouchableOpacity
-            key={tab.key}
-            style={[styles.tab, activeTab === tab.key && styles.tabActive]}
-            onPress={() => setActiveTab(tab.key)}
-          >
-            <Text style={[styles.tabText, activeTab === tab.key && styles.tabTextActive]}>
-              {tab.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {TABS.map((t) => {
+          const active = activeTab === t.key;
+          return (
+            <Pressable
+              key={t.key}
+              onPress={() => setActiveTab(t.key)}
+              style={[styles.tab, active && styles.tabActive]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{t.label}</Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      {/* List */}
       {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#2563EB" />
-        </View>
+        <LoadingState message={`Loading ${activeTab} users…`} />
+      ) : error ? (
+        <ErrorState message={error} onRetry={() => load(activeTab)} />
       ) : (
         <FlatList
           data={users}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(u) => u.id}
           renderItem={renderUser}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={styles.list}
+          ItemSeparatorComponent={() => <View style={{ height: space[2] }} />}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => fetchUsers(activeTab, true)}
-              colors={['#2563EB']}
-            />
+            <RefreshControl refreshing={refreshing} onRefresh={() => load(activeTab, true)} colors={[colors.teal]} tintColor={colors.teal} />
           }
           ListEmptyComponent={
-            <View style={styles.centered}>
-              <Ionicons name="people-outline" size={48} color="#CBD5E1" />
-              <Text style={styles.emptyText}>No {activeTab} users</Text>
-            </View>
+            <EmptyState
+              icon="people-outline"
+              title={`No ${activeTab} users`}
+              message={
+                activeTab === 'pending'
+                  ? "Nobody's waiting for approval right now."
+                  : `Nobody is currently ${activeTab}.`
+              }
+            />
           }
         />
       )}
@@ -239,111 +208,60 @@ export default function AdminUsersScreen() {
   );
 }
 
-// ============================================================================
-// STYLES
-// ============================================================================
+function MetaChip({ icon, text }) {
+  return (
+    <View style={styles.metaChip}>
+      <Ionicons name={icon} size={11} color={colors.inkFaint} />
+      <Text style={styles.metaChipText} numberOfLines={1}>{text}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: '#F8FAFC' },
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
 
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#FFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  title: { fontSize: 20, fontWeight: '700', color: '#0F172A' },
-
-  // Tabs
   tabRow: {
     flexDirection: 'row',
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
+    paddingHorizontal: space[3],
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    paddingHorizontal: 16,
+    borderBottomColor: colors.ruleSoft,
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: space[3],
     alignItems: 'center',
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
   },
-  tabActive:     { borderBottomColor: '#2563EB' },
-  tabText:       { fontSize: 14, fontWeight: '600', color: '#94A3B8' },
-  tabTextActive: { color: '#2563EB' },
+  tabActive:      { borderBottomColor: colors.teal },
+  tabLabel:       { ...type.body, fontWeight: '600', color: colors.inkFaint },
+  tabLabelActive: { color: colors.teal, fontWeight: '700' },
 
-  listContent: { padding: 16, paddingBottom: 30 },
+  list: { padding: space[4], paddingBottom: space[8] },
 
-  // User card
-  userCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
+  headRow: { flexDirection: 'row', alignItems: 'center', gap: space[3], marginBottom: space[3] },
+  userName:  { ...type.h3 },
+  userPhone: { ...type.meta, marginTop: 2 },
+
+  metaRow: { flexDirection: 'row', gap: space[2], flexWrap: 'wrap', marginBottom: space[2] },
+  metaChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: space[2], paddingVertical: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.ruleFaint,
   },
-  userCardTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  avatarCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#DBEAFE',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  avatarText:  { fontSize: 18, fontWeight: '700', color: '#2563EB' },
-  userInfo:    { flex: 1 },
-  userName:    { fontSize: 15, fontWeight: '700', color: '#0F172A' },
-  userPhone:   { fontSize: 13, color: '#64748B', marginTop: 2 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  statusText:  { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  metaChipText: { ...type.micro, color: colors.inkMuted, textTransform: 'capitalize' },
 
-  // Details
-  detailsRow:    { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
-  detailChip: {
+  addressRow: { flexDirection: 'row', gap: 6, alignItems: 'flex-start', marginTop: space[1] },
+  addressText: { flex: 1, ...type.meta },
+
+  actions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  detailChipText: { fontSize: 12, color: '#475569', textTransform: 'capitalize' },
-  userAddress:    { fontSize: 12, color: '#94A3B8', marginTop: 2, marginBottom: 6 },
-
-  // Action buttons
-  actionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
+    gap: space[2],
+    marginTop: space[3],
+    paddingTop: space[3],
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingTop: 12,
+    borderTopColor: colors.ruleFaint,
   },
-  actionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-    gap: 6,
-  },
-  approveBtn:     { backgroundColor: '#16A34A' },
-  rejectBtn:      { backgroundColor: '#DC2626' },
-  actionBtnText:  { color: '#FFF', fontSize: 14, fontWeight: '600' },
-
-  // States
-  centered:  { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
-  emptyText: { fontSize: 15, color: '#94A3B8', marginTop: 12 },
 });

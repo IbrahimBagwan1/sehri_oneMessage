@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0D9488" />
+  <title>Donate · OneMessage</title>
+  <style>
+    :root {
+      --ink:       #0F172A;
+      --ink-muted: #334155;
+      --ink-faint: #64748B;
+      --paper:     #FFFFFF;
+      --paper-soft:#F8FAFC;
+      --teal:      #0D9488;
+      --teal-dark: #0F766E;
+      --teal-soft: #F0FDF9;
+      --gold:      #B8860B;
+      --gold-soft: #FAF4E6;
+      --gold-line: #E8D8A8;
+      --rule:      #E2E8F0;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--paper-soft);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .frame {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Wordmark */
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    .brand-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--teal);
+    }
+    .brand-name {
+      font-size: 15px; font-weight: 800; letter-spacing: -0.2px;
+    }
+    /* Divider ornament */
+    .ornament {
+      display: flex; align-items: center; gap: 8px;
+      margin: 4px 0 32px;
+    }
+    .ornament .rule { flex: 1; height: 1px; background: var(--gold-line); opacity: .6; }
+    .ornament .star {
+      color: var(--gold); font-size: 14px; line-height: 1;
+    }
+    /* Card */
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 14px;
+      padding: 24px 20px;
+      margin-bottom: 20px;
+    }
+    .eyebrow {
+      font-size: 11px; font-weight: 700; color: var(--gold);
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-size: 22px; line-height: 28px; font-weight: 800;
+      margin: 0 0 8px;
+    }
+    p.lede {
+      font-size: 15px; line-height: 22px; color: var(--ink-muted);
+      margin: 0 0 20px;
+    }
+    /* Contact block */
+    .contact-label {
+      font-size: 11px; font-weight: 700; color: var(--ink-faint);
+      margin-bottom: 6px; letter-spacing: 0.2px;
+    }
+    .contact-number {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      background: var(--teal-soft);
+      border: 1px solid #CCFBF1;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .contact-number span {
+      font-size: 22px; font-weight: 700; color: var(--teal-dark);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.4px;
+    }
+    .copy-btn {
+      background: var(--teal);
+      color: var(--paper);
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px; font-weight: 700;
+      cursor: pointer;
+      min-height: 36px;
+    }
+    .copy-btn:active { background: var(--teal-dark); }
+    .copy-hint {
+      font-size: 12px; color: var(--ink-faint);
+    }
+    /* Steps */
+    ol.steps {
+      margin: 0; padding: 0 0 0 20px;
+      color: var(--ink-muted);
+    }
+    ol.steps li {
+      margin-bottom: 8px;
+      line-height: 22px;
+      font-size: 14px;
+    }
+    /* Footer */
+    footer {
+      margin-top: auto;
+      padding-top: 32px;
+      text-align: center;
+      color: var(--ink-faint);
+      font-size: 12px;
+    }
+    footer .ornament { margin: 0 0 12px; }
+    /* Return-to-app hint */
+    .return {
+      background: var(--gold-soft);
+      border: 1px solid var(--gold-line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 20px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+    }
+    .return-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--gold);
+      margin-top: 6px;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div class="brand-name">OneMessage</div>
+    </div>
+
+    <div class="ornament">
+      <div class="rule"></div>
+      <span class="star">۞</span>
+      <div class="rule"></div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Payment details</div>
+      <h1>Send to this number</h1>
+      <p class="lede">Open any UPI app (Google&nbsp;Pay, PhonePe, Paytm) and send your donation to the number below.</p>
+
+      <div class="contact-label">UPI / phone number</div>
+      <div class="contact-number">
+        <span id="contact-number" data-fallback="+91 XXXXXXXXXX">+91 XXXXXXXXXX</span>
+        <button class="copy-btn" id="copy-btn" type="button">Copy</button>
+      </div>
+      <div class="copy-hint" id="copy-hint">&nbsp;</div>
+    </div>
+
+    <div class="return">
+      <div class="return-dot"></div>
+      <div>
+        <strong>After paying,</strong> return to the OneMessage app and upload
+        your payment screenshot so a super admin can verify it.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Steps</div>
+      <ol class="steps">
+        <li>Copy the number above.</li>
+        <li>Open your UPI app and paste it as the recipient.</li>
+        <li>Enter the amount and complete the payment.</li>
+        <li>Take a screenshot of the successful payment.</li>
+        <li>Return to OneMessage and upload the screenshot.</li>
+      </ol>
+    </div>
+
+    <footer>
+      <div class="ornament">
+        <div class="rule"></div>
+        <span class="star">۞</span>
+        <div class="rule"></div>
+      </div>
+      OneMessage · Beyond Sehri. Together for every need.
+    </footer>
+  </main>
+
+  <script>
+    // The number is fetched from the same-origin /api/payment/info endpoint
+    // so the operator can rotate it without a redeploy. Falls back to the
+    // placeholder if the fetch fails.
+    (async function () {
+      const el = document.getElementById('contact-number');
+      try {
+        const res = await fetch('/api/payment/info');
+        if (res.ok) {
+          const body = await res.json();
+          if (body && body.data && body.data.contact_number) {
+            el.textContent = body.data.contact_number;
+          }
+        }
+      } catch (_) { /* ignore — fallback text stays */ }
+    })();
+
+    // Copy handler with a graceful degradation.
+    document.getElementById('copy-btn').addEventListener('click', async function () {
+      const hint = document.getElementById('copy-hint');
+      const el = document.getElementById('contact-number');
+      const text = el.textContent.replace(/\s+/g, '');
+      try {
+        await navigator.clipboard.writeText(text);
+        hint.textContent = 'Copied to clipboard';
+      } catch (_) {
+        // Fallback for browsers without the async clipboard API.
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); hint.textContent = 'Copied to clipboard'; }
+        catch { hint.textContent = 'Long-press the number to copy manually.'; }
+        document.body.removeChild(ta);
+      }
+      setTimeout(function () { hint.innerHTML = '&nbsp;'; }, 3000);
+    });
+  </script>
+</body>
+</html>

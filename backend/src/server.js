@@ -15,15 +15,23 @@ const prayerRoutes = require('./routes/prayers');
 const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
 const trackingRoutes = require('./routes/tracking');   // rider management + live tracking
 const chatRoutes = require('./routes/chat');           // group chat + Socket.IO backed messaging
-const donationsRoutes = require('./routes/donations'); // user donations + admin verification
+const donationsRoutes = require('./routes/donations'); // user-facing donation submit + history
+const adminDonationsRoutes = require('./routes/adminDonations'); // super-admin donation review
 const feedbackRoutes = require('./routes/feedback');   // user feedback + admin review
 const quranRoutes = require('./routes/quran');         // Quran chapters + verses (served from our DB)
 const duaRoutes = require('./routes/dua');             // Dua categories + entries (served from our DB)
+const paymentRoutes = require('./routes/payment');     // payment contact + hosted page URL
+const path = require('path');
 const { initSocket } = require('./services/socketService');
 const logger = require('./utils/logger');
 const { error } = require('./utils/response');
 
 const app = express();
+
+// Trust the first reverse proxy (ngrok / nginx / cloud load balancer) so
+// req.protocol reflects the original https instead of http-behind-lb. This
+// makes payment.js return correct https:// URLs.
+app.set('trust proxy', 1);
 
 // ---------------------------------------------------------------------------
 // Security & observability middleware — must come first
@@ -67,10 +75,20 @@ app.use('/api/prayers', prayerRoutes);
 app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
 app.use('/api/tracking', trackingRoutes);    // rider login, live tracking, rider management
 app.use('/api/chat', chatRoutes);            // group chat rooms + REST message history
-app.use('/api/donations', donationsRoutes);  // resident donations + admin verification workflow
-app.use('/api/feedback', feedbackRoutes);    // user feedback submission + admin review
-app.use('/api/quran', quranRoutes);          // 114 surahs, verses + translation (from our DB)
-app.use('/api/dua', duaRoutes);              // dua categories + entries + featured-today
+app.use('/api/donations', donationsRoutes);         // user donation submit + own history
+app.use('/api/admin/donations', adminDonationsRoutes); // super-admin donation review
+app.use('/api/feedback', feedbackRoutes);           // user feedback submission + admin review
+app.use('/api/quran', quranRoutes);                 // 114 surahs, verses + translation (from our DB)
+app.use('/api/dua', duaRoutes);                     // dua categories + entries + featured-today
+app.use('/api/payment', paymentRoutes);             // payment contact + hosted page URL (public)
+
+// Static public/ folder — hosts /payment.html (opened by iOS Safari from
+// the Donate screen) plus any future static assets. Kept AFTER the /api
+// routes and BEFORE the 404 handler so it can't shadow an API route.
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  maxAge: '1h',
+  extensions: ['html'],
+}));
 
 // ---------------------------------------------------------------------------
 // 404 for unmatched API routes — hit before the error handler

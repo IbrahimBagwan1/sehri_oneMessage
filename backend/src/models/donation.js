@@ -18,11 +18,18 @@ module.exports = (sequelize, DataTypes) => {
       amount: {
         type: DataTypes.DECIMAL(10, 2),
         allowNull: false,
-        validate: {
-          min: 1, // reject non-positive amounts at the model layer
-        },
+        validate: { min: 1 },
       },
+      // Optional free-form note (kept for backwards compatibility; the
+      // frontend no longer surfaces it but existing rows may have one).
       note: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      // Cloudinary secure URL for the payment screenshot. Required on
+      // fresh submissions (enforced in the controller) but nullable at
+      // the DB layer so legacy rows without a screenshot still validate.
+      screenshot_url: {
         type: DataTypes.TEXT,
         allowNull: true,
       },
@@ -31,7 +38,13 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'pending',
       },
-      // admin.id of the verifier — nullable until reviewed.
+      // Only set when status = 'rejected'. Optional short explanation
+      // shown to the user in their history.
+      rejection_reason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      // super_admin.id of the reviewer — nullable until reviewed.
       verified_by: {
         type: DataTypes.UUID,
         allowNull: true,

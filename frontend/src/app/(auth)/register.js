@@ -2,147 +2,75 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Pressable,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { authApi, locationsApi } from '../../api/auth';
+import PasswordInput from '../../components/PasswordInput';
+import ResendOtpButton from '../../components/ResendOtpButton';
+import { Button, Card, Chip, Header, Input, LoadingState } from '../../components/ui';
+import { colors, radius, space, type } from '../../theme';
 
-// ─── Small reusable components ───────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// One-screen registration: phone → OTP → identity → location.
+// -----------------------------------------------------------------------------
 
-function Dropdown({ label, value, placeholder, options, onSelect, disabled }) {
-  const [open, setOpen] = useState(false);
+const GENDERS = [
+  { value: 'male',   label: 'Male'   },
+  { value: 'female', label: 'Female' },
+];
 
-  if (disabled) {
-    return (
-      <>
-        <Text style={styles.label}>{label}</Text>
-        <View style={[styles.dropdownPicker, styles.disabledInput]}>
-          <Text style={styles.placeholderText}>{placeholder}</Text>
-        </View>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <Text style={styles.label}>{label} *</Text>
-      <TouchableOpacity
-        style={styles.dropdownPicker}
-        onPress={() => setOpen((o) => !o)}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-      >
-        <Text style={value ? styles.pickerText : styles.placeholderText}>
-          {value || placeholder}
-        </Text>
-      </TouchableOpacity>
-      {open && (
-        <View style={styles.dropdownMenu}>
-          {options.length === 0 ? (
-            <View style={styles.dropdownOption}>
-              <Text style={styles.placeholderText}>No options available</Text>
-            </View>
-          ) : (
-            options.map((opt) => (
-              <TouchableOpacity
-                key={opt.id}
-                style={styles.dropdownOption}
-                onPress={() => {
-                  onSelect(opt);
-                  setOpen(false);
-                }}
-              >
-                <Text style={styles.optionText}>{opt.name}</Text>
-              </TouchableOpacity>
-            ))
-          )}
-        </View>
-      )}
-    </>
-  );
-}
-
-function RadioGroup({ label, options, value, onChange }) {
-  return (
-    <>
-      <Text style={styles.label}>{label} *</Text>
-      <View style={styles.radioRow}>
-        {options.map((opt) => (
-          <TouchableOpacity
-            key={opt.value}
-            style={[styles.radioButton, value === opt.value && styles.radioButtonActive]}
-            onPress={() => onChange(opt.value)}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: value === opt.value }}
-          >
-            <Text style={[styles.radioText, value === opt.value && styles.radioTextActive]}>
-              {opt.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </>
-  );
-}
-
-// ─── Main screen ─────────────────────────────────────────────────────────────
+const OCCUPATIONS = [
+  { value: 'student',  label: 'Student'  },
+  { value: 'employee', label: 'Employee' },
+  { value: 'others',   label: 'Other'    },
+];
 
 export default function RegisterScreen() {
   const router = useRouter();
 
-  // ── Form fields (matching backend contract exactly) ──
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [name, setName]         = useState('');
+  const [phone, setPhone]       = useState('');
   const [password, setPassword] = useState('');
-  const [gender, setGender] = useState('');           // 'male' | 'female'
-  const [occupation, setOccupation] = useState('');   // 'student' | 'employee' | 'others'
+  const [gender, setGender]         = useState('');
+  const [occupation, setOccupation] = useState('');
   const [otp, setOtp] = useState('');
-  const city = 'Bangalore';                           // fixed, non-editable
+  const city = 'Bangalore';
 
-  // ── Location picker state ──
-  const [zones, setZones] = useState([]);
-  const [addresses, setAddresses] = useState([]);
-  const [selectedZone, setSelectedZone] = useState(null);   // { id, name }
-  const [selectedAddress, setSelectedAddress] = useState(null); // { id, name } | null
-
-  // Zones that have address children (Stanza Living) need the user to pick
-  // a specific address; others use the zone itself as location_id.
+  const [zones, setZones]                     = useState([]);
+  const [addresses, setAddresses]             = useState([]);
+  const [selectedZone, setSelectedZone]       = useState(null);
+  const [selectedAddress, setSelectedAddress] = useState(null);
   const zoneHasAddresses = addresses.length > 0;
-
-  // Derived: what gets sent as location_id
-  const locationId = zoneHasAddresses ? selectedAddress?.id : selectedZone?.id;
-  // address field = the human-readable name of the picked address or zone
+  const locationId  = zoneHasAddresses ? selectedAddress?.id : selectedZone?.id;
   const addressLabel = zoneHasAddresses ? selectedAddress?.name : selectedZone?.name;
 
-  // ── UI state ──
-  const [otpSent, setOtpSent] = useState(false);
-  const [loadingOtp, setLoadingOtp] = useState(false);
-  const [loadingZones, setLoadingZones] = useState(true);
+  const [otpSent, setOtpSent]                 = useState(false);
+  const [loadingOtp, setLoadingOtp]           = useState(false);
+  const [loadingZones, setLoadingZones]       = useState(true);
   const [loadingAddresses, setLoadingAddresses] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting]           = useState(false);
 
-  // ── Load zones on mount ──
   useEffect(() => {
     (async () => {
       try {
         const res = await locationsApi.getLocations({ type: 'zone' });
         setZones(res.data || []);
       } catch {
-        Alert.alert('Error', 'Could not load locations. Please restart the app.');
+        Alert.alert("Couldn't load zones", 'Restart the app and try again.');
       } finally {
         setLoadingZones(false);
       }
     })();
   }, []);
 
-  // ── When zone changes, load its address children (if any) ──
   const handleZoneSelect = async (zone) => {
     setSelectedZone(zone);
     setSelectedAddress(null);
@@ -152,284 +80,282 @@ export default function RegisterScreen() {
       const res = await locationsApi.getLocations({ type: 'address', parent_id: zone.id });
       setAddresses(res.data || []);
     } catch {
-      Alert.alert('Error', 'Could not load addresses for this zone.');
+      Alert.alert("Couldn't load addresses", 'Try picking a different zone or restart the app.');
     } finally {
       setLoadingAddresses(false);
     }
   };
 
-  // ── Send OTP ──
   const handleSendOtp = async () => {
     if (!/^[6-9]\d{9}$/.test(phone)) {
-      Alert.alert('Error', 'Please enter a valid 10-digit Indian mobile number.');
-      return;
+      return Alert.alert('Check the number', 'That doesn\'t look like a valid 10-digit Indian mobile number.');
     }
     setLoadingOtp(true);
     try {
       await authApi.sendOtp(phone, 'registration');
       setOtpSent(true);
-      Alert.alert('OTP Sent', 'Enter the OTP sent to your phone number.');
+      Alert.alert('OTP sent', 'Enter the 6-digit code we just sent to your phone.');
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to send OTP. Try again.';
-      Alert.alert('Error', msg);
+      Alert.alert("Couldn't send OTP", err?.response?.data?.message || 'Try again in a moment.');
     } finally {
       setLoadingOtp(false);
     }
   };
 
-  // ── Submit registration ──
   const handleRegister = async () => {
     if (!name || !phone || !password || !gender || !occupation || !otp || !locationId) {
-      Alert.alert('Error', 'Please fill in all required fields and select a location.');
-      return;
+      return Alert.alert('A few things missing', 'Fill in every field and pick your location.');
     }
-    if (!otpSent) {
-      Alert.alert('Error', 'Please send and enter the OTP first.');
-      return;
-    }
+    if (!otpSent) return Alert.alert('OTP first', 'Send and enter the OTP before registering.');
 
     setSubmitting(true);
     try {
       await authApi.register({
-        name,
-        phone,
-        password,
-        gender,
-        occupation,
-        city,
-        location_id: locationId,
-        address: addressLabel,
-        otp,
+        name, phone, password, gender, occupation, city,
+        location_id: locationId, address: addressLabel, otp,
       });
-
-      Alert.alert('Success', 'Account registered! Please wait for admin approval.', [
-        { text: 'Go to Login', onPress: () => router.replace('/(auth)/login') },
-      ]);
+      Alert.alert(
+        'Account created',
+        'Your account is pending admin approval. You\'ll be able to sign in once it\'s approved.',
+        [{ text: 'Go to sign-in', onPress: () => router.replace('/(auth)/login') }]
+      );
     } catch (err) {
-      const msg = err.response?.data?.message || 'Registration failed. Please try again.';
-      Alert.alert('Error', msg);
+      Alert.alert("Couldn't create account", err?.response?.data?.message || 'Try again in a moment.');
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Create Account</Text>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <Header title="Create account" onBack={() => router.back()} />
 
-        {/* Name */}
-        <Text style={styles.label}>Full Name *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter your full name"
-          value={name}
-          onChangeText={setName}
-        />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          {/* Identity */}
+          <SectionTitle>Your identity</SectionTitle>
+          <View style={styles.field}>
+            <Text style={styles.label}>Full name</Text>
+            <Input value={name} onChangeText={setName} placeholder="e.g. Ayesha Siddiqua" icon="person-outline" />
+          </View>
 
-        {/* Phone + Send OTP */}
-        <Text style={styles.label}>Phone Number *</Text>
-        <View style={styles.phoneRow}>
-          <TextInput
-            style={[styles.input, styles.phoneInput]}
-            placeholder="10-digit mobile number"
-            keyboardType="phone-pad"
-            value={phone}
-            onChangeText={(t) => { setPhone(t); setOtpSent(false); }}
-            maxLength={10}
-            editable={!otpSent}
-          />
-          <TouchableOpacity
-            style={[styles.otpButton, otpSent && styles.otpButtonSent]}
-            onPress={handleSendOtp}
-            disabled={loadingOtp || otpSent}
-          >
-            {loadingOtp ? (
-              <ActivityIndicator color="#FFF" size="small" />
-            ) : (
-              <Text style={styles.otpButtonText}>{otpSent ? 'Sent ✓' : 'Send OTP'}</Text>
+          <View style={styles.field}>
+            <Text style={styles.label}>Phone number</Text>
+            <View style={styles.phoneRow}>
+              <View style={{ flex: 1 }}>
+                <Input
+                  placeholder="10-digit mobile"
+                  keyboardType="phone-pad"
+                  value={phone}
+                  onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setOtpSent(false); }}
+                  maxLength={10}
+                  editable={!otpSent}
+                  icon="call-outline"
+                />
+              </View>
+              <Button
+                label={otpSent ? 'Sent' : 'Send OTP'}
+                onPress={handleSendOtp}
+                loading={loadingOtp}
+                variant={otpSent ? 'ghost' : 'primary'}
+                size="sm"
+                disabled={otpSent}
+                style={styles.phoneAction}
+              />
+            </View>
+          </View>
+
+          <View style={styles.field}>
+            <Text style={styles.label}>OTP code</Text>
+            <Input
+              placeholder="6-digit code"
+              keyboardType="number-pad"
+              value={otp}
+              onChangeText={setOtp}
+              maxLength={6}
+              editable={otpSent}
+              icon="lock-closed-outline"
+            />
+            {otpSent && (
+              <ResendOtpButton onResend={() => authApi.sendOtp(phone, 'registration')} />
             )}
-          </TouchableOpacity>
-        </View>
+          </View>
 
-        {/* OTP Code */}
-        <Text style={styles.label}>OTP Code *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter OTP from SMS"
-          keyboardType="number-pad"
-          value={otp}
-          onChangeText={setOtp}
-          maxLength={6}
-          editable={otpSent}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>Password</Text>
+            <PasswordInput placeholder="At least 6 characters" value={password} onChangeText={setPassword} />
+          </View>
 
-        {/* Password */}
-        <Text style={styles.label}>Password *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Minimum 6 characters"
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>Gender</Text>
+            <ChoiceRow options={GENDERS} value={gender} onChange={setGender} />
+          </View>
 
-        {/* Gender */}
-        <RadioGroup
-          label="Gender"
-          value={gender}
-          onChange={setGender}
-          options={[
-            { label: 'Male', value: 'male' },
-            { label: 'Female', value: 'female' },
-          ]}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>Occupation</Text>
+            <ChoiceRow options={OCCUPATIONS} value={occupation} onChange={setOccupation} />
+          </View>
 
-        {/* Occupation */}
-        <RadioGroup
-          label="Occupation"
-          value={occupation}
-          onChange={setOccupation}
-          options={[
-            { label: 'Student', value: 'student' },
-            { label: 'Employee', value: 'employee' },
-            { label: 'Others', value: 'others' },
-          ]}
-        />
+          {/* Location */}
+          <SectionTitle style={{ marginTop: space[6] }}>Where you'll receive Sehri</SectionTitle>
+          <Text style={styles.helper}>Delivery is coordinated by zone. Pick yours below.</Text>
 
-        {/* City (fixed) */}
-        <Text style={styles.label}>City</Text>
-        <TextInput
-          style={[styles.input, styles.disabledInput]}
-          value={city}
-          editable={false}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>City</Text>
+            <View style={styles.readonlyBox}>
+              <Ionicons name="location-outline" size={16} color={colors.inkFaint} />
+              <Text style={styles.readonlyText}>{city}</Text>
+            </View>
+          </View>
 
-        {/* Zone picker */}
-        {loadingZones ? (
-          <ActivityIndicator style={{ marginTop: 16 }} color="#2563EB" />
-        ) : (
-          <Dropdown
-            label="Zone"
-            value={selectedZone?.name}
-            placeholder="Select your zone"
-            options={zones}
-            onSelect={handleZoneSelect}
-          />
-        )}
+          <View style={styles.field}>
+            <Text style={styles.label}>Zone</Text>
+            {loadingZones ? (
+              <LoadingState message="Loading zones…" compact />
+            ) : (
+              <View style={styles.chipWrap}>
+                {zones.map((z) => (
+                  <Chip
+                    key={z.id}
+                    label={z.name}
+                    tone={selectedZone?.id === z.id ? 'teal' : 'neutral'}
+                    selected={selectedZone?.id === z.id}
+                    onPress={() => handleZoneSelect(z)}
+                    style={styles.pickChip}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
 
-        {/* Address picker — only shown when the selected zone has addresses */}
-        {selectedZone && loadingAddresses && (
-          <ActivityIndicator style={{ marginTop: 12 }} color="#2563EB" />
-        )}
-        {selectedZone && !loadingAddresses && zoneHasAddresses && (
-          <Dropdown
-            label="PG / Hostel"
-            value={selectedAddress?.name}
-            placeholder="Select your PG or hostel"
-            options={addresses}
-            onSelect={setSelectedAddress}
-          />
-        )}
-
-        {/* Submit */}
-        <TouchableOpacity
-          style={styles.submitButton}
-          onPress={handleRegister}
-          disabled={submitting}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.submitText}>Register</Text>
+          {selectedZone && (
+            <View style={styles.field}>
+              <Text style={styles.label}>PG or hostel</Text>
+              {loadingAddresses ? (
+                <LoadingState message="Loading options…" compact />
+              ) : addresses.length === 0 ? (
+                <Text style={styles.hint}>No sub-address needed for {selectedZone.name}.</Text>
+              ) : (
+                <View style={styles.chipWrap}>
+                  {addresses.map((a) => (
+                    <Chip
+                      key={a.id}
+                      label={a.name}
+                      tone={selectedAddress?.id === a.id ? 'teal' : 'neutral'}
+                      selected={selectedAddress?.id === a.id}
+                      onPress={() => setSelectedAddress(a)}
+                      style={styles.pickChip}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
           )}
-        </TouchableOpacity>
 
-        <TouchableOpacity style={styles.backLink} onPress={() => router.back()}>
-          <Text style={styles.backText}>Already have an account? Login</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <Button
+            label="Create account"
+            onPress={handleRegister}
+            loading={submitting}
+            fullWidth
+            style={styles.submitBtn}
+          />
+
+          <Pressable
+            onPress={() => router.replace('/(auth)/login')}
+            hitSlop={8}
+            style={({ pressed }) => [styles.footer, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={styles.footerText}>
+              Already have an account? <Text style={styles.footerAction}>Sign in</Text>
+            </Text>
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// Local helpers
+// -----------------------------------------------------------------------------
+
+function SectionTitle({ children, style }) {
+  return <Text style={[styles.sectionTitle, style]}>{children}</Text>;
+}
+
+function ChoiceRow({ options, value, onChange }) {
+  return (
+    <View style={styles.choiceRow}>
+      {options.map((opt) => {
+        const active = value === opt.value;
+        return (
+          <Pressable
+            key={opt.value}
+            onPress={() => onChange(opt.value)}
+            style={({ pressed }) => [
+              styles.choice,
+              active && styles.choiceActive,
+              pressed && !active && styles.choicePressed,
+            ]}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: active }}
+          >
+            <Text style={[styles.choiceLabel, active && styles.choiceLabelActive]}>{opt.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
-  scrollContent: { padding: 24, paddingBottom: 48 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#1E293B', textAlign: 'center', marginBottom: 20 },
-  label: { fontSize: 14, fontWeight: '600', color: '#334155', marginBottom: 6, marginTop: 16 },
-  input: {
-    backgroundColor: '#FFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    color: '#0F172A',
-  },
-  disabledInput: { backgroundColor: '#E2E8F0', color: '#64748B' },
-  phoneRow: { flexDirection: 'row', gap: 8 },
-  phoneInput: { flex: 1 },
-  otpButton: {
-    backgroundColor: '#2563EB',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    justifyContent: 'center',
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
+  scroll: { padding: space[5], paddingBottom: space[10] },
+
+  sectionTitle: { ...type.h2, marginBottom: space[3] },
+  helper:       { ...type.meta, marginBottom: space[4], marginTop: -space[2] },
+  hint:         { ...type.meta, fontStyle: 'italic' },
+
+  field: { marginBottom: space[4] },
+  label: { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
+
+  phoneRow:    { flexDirection: 'row', gap: space[2], alignItems: 'stretch' },
+  phoneAction: { minWidth: 92 },
+
+  readonlyBox: {
+    flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 90,
+    gap: space[2],
+    backgroundColor: colors.ruleFaint,
+    paddingHorizontal: space[3],
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.ruleSoft,
   },
-  otpButtonSent: { backgroundColor: '#16A34A' },
-  otpButtonText: { color: '#FFF', fontWeight: '600', fontSize: 13 },
-  radioRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  radioButton: {
+  readonlyText: { ...type.body, color: colors.inkMuted },
+
+  choiceRow: { flexDirection: 'row', gap: space[2] },
+  choice: {
     flex: 1,
     paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.paper,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
+    borderColor: colors.ruleSoft,
     alignItems: 'center',
-    minWidth: 80,
   },
-  radioButtonActive: { backgroundColor: '#2563EB', borderColor: '#2563EB' },
-  radioText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
-  radioTextActive: { color: '#FFF' },
-  dropdownPicker: {
-    backgroundColor: '#FFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    padding: 12,
-  },
-  pickerText: { fontSize: 16, color: '#0F172A' },
-  placeholderText: { fontSize: 16, color: '#94A3B8' },
-  dropdownMenu: {
-    backgroundColor: '#FFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    marginTop: 4,
-    maxHeight: 220,
-  },
-  dropdownOption: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  optionText: { fontSize: 15, color: '#334155' },
-  submitButton: {
-    backgroundColor: '#2563EB',
-    padding: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 28,
-  },
-  submitText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  backLink: { marginTop: 16, alignItems: 'center' },
-  backText: { color: '#64748B', fontSize: 14, fontWeight: '500' },
+  choiceActive:  { backgroundColor: colors.teal, borderColor: colors.teal },
+  choicePressed: { backgroundColor: colors.tealSoft },
+  choiceLabel:   { ...type.body, fontWeight: '600', color: colors.inkMuted },
+  choiceLabelActive: { color: colors.paper },
+
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  pickChip: { paddingHorizontal: space[3], paddingVertical: 6 },
+
+  submitBtn: { marginTop: space[4] },
+
+  footer:       { alignItems: 'center', paddingVertical: space[4] },
+  footerText:   { ...type.body, color: colors.inkFaint },
+  footerAction: { color: colors.teal, fontWeight: '700' },
 });

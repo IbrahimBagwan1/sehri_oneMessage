@@ -1,110 +1,157 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  Alert,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../store/useAuthStore';
+import {
+  Avatar,
+  Chip,
+  Header,
+  Hero,
+  SectionHeader,
+} from '../../components/ui';
+import { colors, radius, space, type } from '../../theme';
 
-export default function AdminDashboard() {
+const MENU = [
+  { title: 'Users & zones',    icon: 'people-outline',           route: '/super-admin/users',    hint: 'Approve, promote, or remove members' },
+  { title: 'Profile requests', icon: 'document-text-outline',    route: '/super-admin/requests', hint: 'Review profile change requests' },
+  { title: 'Donations',        icon: 'wallet-outline',           route: '/super-admin/donations',hint: 'Verify contributions' },
+  { title: 'Feedback',         icon: 'chatbubble-outline',       route: '/super-admin/feedback', hint: 'Read what the community is saying' },
+  { title: 'Poll history',     icon: 'stats-chart-outline',      route: '/super-admin/polls',    hint: 'Past polls and per-zone breakdown' },
+  { title: 'Zone admins',      icon: 'shield-checkmark-outline', route: '/super-admin/admins',   hint: 'Add or remove zone admins' },
+  { title: 'Group chat',       icon: 'chatbubbles-outline',      route: '/super-admin/chat',     hint: 'Manage broadcast groups' },
+];
+
+export default function SuperAdminDashboard() {
   const router          = useRouter();
-  const switchRole      = useAuthStore((state) => state.switchRole);
-  const available_roles = useAuthStore((state) => state.available_roles);
+  const user            = useAuthStore((s) => s.user);
+  const available_roles = useAuthStore((s) => s.available_roles);
+  const switchRole      = useAuthStore((s) => s.switchRole);
 
-  const handleSwitchToUser = async () => {
+  const firstName = (user?.name || 'Super admin').trim().split(/\s+/)[0];
+
+  const handleSwitch = async (role) => {
     try {
-      await switchRole('user');
-      router.replace('/(user)');
+      await switchRole(role);
+      if (role === 'user')  router.replace('/(user)');
+      if (role === 'admin') router.replace('/(admin)');
     } catch (err) {
-      Alert.alert('Switch Failed', err.response?.data?.message || 'Could not switch role.');
+      Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
     }
   };
 
-  // List of all Super Admin buttons and their navigation routes
-  const menuItems = [
-    { title: 'Users & Zone Classification', icon: 'people', route: '/super-admin/users' },
-    { title: 'Requests Approval', icon: 'checkbox', route: '/super-admin/requests' },
-    { title: 'Donations History', icon: 'card', route: '/super-admin/donations' },
-    { title: 'User Feedback', icon: 'chatbubbles', route: '/super-admin/feedback' },
-    { title: 'Poll History', icon: 'bar-chart', route: '/super-admin/polls' },
-    { title: 'Manage Zone Admins', icon: 'shield-checkmark', route: '/super-admin/admins' },
-    { title: 'Chatbox & Broadcast', icon: 'paper-plane', route: '/super-admin/chat' },
-  ];
-
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Super Admin Dashboard</Text>
-        {available_roles.includes('user') && (
-          <TouchableOpacity style={styles.switchBtn} onPress={handleSwitchToUser}>
-            <Ionicons name="person-outline" size={14} color="#0369A1" />
-            <Text style={styles.switchBtnText}>User</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <Header
+        leading={<Wordmark />}
+        trailing={
+          <Avatar name={user?.name} size={38} onPress={() => router.push('/profile')} accessibilityLabel="Open profile" />
+        }
+      />
 
-      <ScrollView contentContainerStyle={styles.grid}>
-        {menuItems.map((item, index) => (
-          <TouchableOpacity 
-            key={index} 
-            style={styles.card} 
-            onPress={() => router.push(item.route)}
-          >
-            <Ionicons name={item.icon} size={32} color="#0D9488" />
-            <Text style={styles.cardText}>{item.title}</Text>
-          </TouchableOpacity>
-        ))}
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <Hero
+          greeting="Super admin"
+          name={firstName}
+          dateLine={new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' })}
+        />
+
+        {available_roles.length > 1 && (
+          <View style={styles.roleRow}>
+            <Text style={styles.roleLabel}>Switch to</Text>
+            <View style={styles.roleChips}>
+              {available_roles.includes('user') && (
+                <Chip label="User" tone="teal" icon="person-outline" onPress={() => handleSwitch('user')} />
+              )}
+              {available_roles.includes('admin') && (
+                <Chip label="Zone admin" tone="teal" icon="shield-outline" onPress={() => handleSwitch('admin')} />
+              )}
+            </View>
+          </View>
+        )}
+
+        <View style={styles.section}>
+          <SectionHeader title="Manage community" ornament="star" />
+          <View style={styles.list}>
+            {MENU.map((item, i) => (
+              <React.Fragment key={item.route}>
+                {i > 0 && <View style={styles.rowRule} />}
+                <Pressable
+                  style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                  onPress={() => router.push(item.route)}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.title}
+                >
+                  <View style={styles.rowIcon}>
+                    <Ionicons name={item.icon} size={20} color={colors.tealDark} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowTitle}>{item.title}</Text>
+                    <Text style={styles.rowHint} numberOfLines={1}>{item.hint}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.inkGhost} />
+                </Pressable>
+              </React.Fragment>
+            ))}
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
+function Wordmark() {
+  return (
+    <View style={styles.wordmarkRow}>
+      <View style={styles.wordmarkDot} />
+      <Text style={styles.wordmark}>OneMessage</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F4F6' },
-  header: { 
-    padding: 20, 
-    backgroundColor: '#fff', 
-    borderBottomWidth: 1, 
-    borderBottomColor: '#E5E7EB', 
-    alignItems: 'center',
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
+  scroll: { paddingBottom: space[8] },
+
+  wordmarkRow: { flexDirection: 'row', alignItems: 'center' },
+  wordmarkDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.teal, marginRight: space[2] },
+  wordmark:    { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
+
+  roleRow:    { paddingHorizontal: space[5], paddingBottom: space[3], gap: space[2] },
+  roleLabel:  { ...type.meta, color: colors.inkFaint },
+  roleChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+
+  section: { paddingHorizontal: space[4], paddingTop: space[4] },
+
+  list: {
+    backgroundColor: colors.paper,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.ruleSoft,
+    overflow: 'hidden',
+  },
+  row: {
     flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1F2937', flex: 1, textAlign: 'center' },
-  switchBtn: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#E0F2FE',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    position: 'absolute',
-    right: 16,
+    gap: space[3],
+    paddingHorizontal: space[4],
+    paddingVertical: space[3],
   },
-  switchBtnText: { fontSize: 12, fontWeight: '700', color: '#0369A1' },
-  grid: { 
-    padding: 16, 
-    flexDirection: 'row', 
-    flexWrap: 'wrap', 
-    justifyContent: 'space-between' 
+  rowPressed: { backgroundColor: colors.tealSoft },
+  rowRule: { height: 1, backgroundColor: colors.ruleFaint, marginLeft: space[4] + 40 + space[3] },
+  rowIcon: {
+    width: 40, height: 40, borderRadius: radius.md,
+    backgroundColor: colors.tealSoft,
+    alignItems: 'center', justifyContent: 'center',
   },
-  card: { 
-    width: '48%', 
-    backgroundColor: '#fff', 
-    borderRadius: 12, 
-    padding: 20, 
-    marginBottom: 16, 
-    alignItems: 'center', 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 4, 
-    elevation: 2 
-  },
-  cardText: { 
-    marginTop: 10, 
-    fontSize: 14, 
-    fontWeight: '600', 
-    color: '#374151', 
-    textAlign: 'center' 
-  }
+  rowTitle: { ...type.bodyStrong },
+  rowHint:  { ...type.meta, marginTop: 2 },
 });

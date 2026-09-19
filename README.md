@@ -24,6 +24,8 @@ prepares zone-by-zone, and a rider delivers with live GPS tracking.
 | Chat | `GET /groups`, `POST /groups`, `GET /admins`, `GET /groups/:id`, `DELETE /groups/:id`, `GET /groups/:id/messages`, `POST /groups/:id/messages`, `POST /groups/:id/read`, `POST /groups/:id/members`, `DELETE /groups/:id/messages/:msgId`, `DELETE /groups/:id/members/:userId` |
 | Donations | `POST /submit`, `GET /history`, `GET /all`, `GET /summary`, `PATCH /:id/status` |
 | Feedback | `POST /`, `GET /my`, `GET /`, `PATCH /:id/read` |
+| Quran | `GET /chapters`, `GET /:surah`, `POST /sync` (super_admin) |
+| Dua | `GET /categories`, `GET /featured`, `GET /:categorySlug`, `POST /sync` (super_admin) |
 | Prayers | `GET /`, `POST /refresh` |
 | Locations | `GET /` (public — cascading picker) |
 | Admin management | `POST /create-admin`, `POST /create-super-admin`, `GET /list-admins`, `DELETE /admins/:id`, `PATCH /admins/:id/link-user` |
@@ -39,6 +41,22 @@ Server-side reverse-geocode fallback fires (fire-and-forget) when the
 rider push omits `current_address`. `GET /api/tracking/eta` returns
 driving ETA from the assigned rider to the calling user's address using
 Distance Matrix. Set `GOOGLE_MAPS_API_KEY` in `.env` — see `.env.example`.
+
+### Quran + Dua content sync
+Quran and dua content lives in our own DB so the app never depends on a
+third-party at request time. Populate the tables once (and refresh
+whenever you want the latest translations):
+
+```bash
+cd backend
+node scripts/sync-quran.js     # ~30–60s, pulls 114 surahs + verses
+node scripts/sync-duas.js      # pulls all categories + entries
+```
+
+Super admins can also trigger the sync at runtime via
+`POST /api/quran/sync` and `POST /api/dua/sync` (fire-and-forget). The
+upstream base URL is configurable — see `ISLAMIC_API_BASE_URL` in
+`.env.example`.
 
 ### Database
 Sequelize migrations under `src/migrations/`. Run:
@@ -61,7 +79,8 @@ npm run dev                # nodemon
 | User — Home (poll + phases + prayer times) | Live |
 | User — Track (live rider map) | Live |
 | User — Donate (submit + history) | Live |
-| User — Dua, Quran | Placeholders |
+| User — Quran (114 surah list + search + full-surah reader with RTL) | Live |
+| User — Dua (categories + featured-today + expandable dua cards) | Live |
 | User — Feedback (submit + history) | Live (reached from Profile) |
 | User — Profile (edit-request workflow + delete account) | Live |
 | Admin — Dashboard, Users approval | Live |

@@ -3,109 +3,106 @@
 /**
  * donationController.js
  *
- * Endpoints:
- *   POST  /api/donations/submit           submitDonation      (user)
- *   GET   /api/donations/history          getMyHistory        (user)
- *   GET   /api/donations/all              getAllDonations     (admin zone-scoped, super_admin all)
- *   GET   /api/donations/summary          getDonationSummary  (admin zone-scoped, super_admin all)
- *   PATCH /api/donations/:id/status       updateStatus        (admin zone-scoped, super_admin any)
+ * User-facing endpoints:
+ *   POST /api/donations               submitDonation        (auth + multipart)
+ *   GET  /api/donations/my            getMyHistory
  *
- * Zone scoping mirrors the pattern used across the codebase:
- *  • Eager-load user + full location chain in one JOIN.
- *  • Walk the chain in memory (resolveZoneFromLoaded) to find the zone.
- *  • Admin sees only donations whose donor resolves to their zone.
+ * Super-admin-facing endpoints:
+ *   GET   /api/admin/donations              listAll
+ *   PATCH /api/admin/donations/:id/verify   verifyDonation
+ *   PATCH /api/admin/donations/:id/reject   rejectDonation
+ *   GET   /api/admin/donations/summary      getSummary
  *
- * Amounts are stored + returned as DECIMAL(10,2) so no FP rounding.
- * The frontend sends amount as a string or number; we cast + validate here.
+ * Flow:
+ *   1. User pays externally, uploads a screenshot via POST /api/donations.
+ *   2. Row is created with status='pending', screenshot_url = Cloudinary URL.
+ *   3. Super admin reviews via /admin/donations, verifies or rejects.
+ *   4. Only 'verified' donations count toward the community total.
+ *
+ * Rollback: if the Cloudinary upload succeeds but the DB insert fails,
+ * we delete the Cloudinary asset so nothing orphans.
  */
 
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
-const {
-  buildLocationInclude,
-  resolveZoneFromLoaded,
-} = require('../utils/zoneScope');
+const cloudinaryService = require('../services/cloudinaryService');
+const logger = require('../utils/logger');
 
-const { Donation, User, Admin, SuperAdmin } = db;
+const { Donation, User, SuperAdmin } = db;
 
 const MAX_AMOUNT = 9999999.99;
+const CLOUDINARY_FOLDER = 'onemessage/donations';
 
 // ---------------------------------------------------------------------------
-// Helper — resolve the admin.id of the reviewing caller.
-//
-// Verified_by must reference an admins.id (per the schema). When a
-// super_admin reviews, we still need to record who did it. If they have
-// a linked admin row we use that; otherwise we record their super_admin.id
-// and let the shape of the id imply the source table.
-// ---------------------------------------------------------------------------
-const resolveVerifierId = (auth) => {
-  // Both admin and super_admin carry their table PK as `id` in the JWT.
-  // We keep it simple: whichever role acted, that id goes in verified_by.
-  return auth.id;
-};
-
-// ---------------------------------------------------------------------------
-// POST /api/donations/submit
-// Access: requireUserAccess (user, or admin/super_admin with linked user)
-// Body: { amount: number|string, note?: string }
-//
-// Creates a pending donation record. Admin verification happens later.
+// POST /api/donations
+// Access: authenticated user (requireUserAccess populates req.actingUserId).
+// Multipart: field 'screenshot' (image, ≤ 5 MB — enforced by upload middleware).
+// Body:      amount (number, in INR), note? (string, optional).
 // ---------------------------------------------------------------------------
 const submitDonation = async (req, res, next) => {
+  let uploaded = null; // { url, publicId } — kept so we can roll back on DB failure
+
   try {
     const { amount, note } = req.body;
 
+    // 1. Validate the amount before we do anything expensive.
     const parsed = typeof amount === 'string' ? Number.parseFloat(amount) : amount;
     if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed <= 0) {
-      return error(res, {
-        statusCode: 400,
-        message: 'amount must be a positive number (in INR)',
-      });
+      return error(res, { statusCode: 400, message: 'Enter an amount greater than zero.' });
     }
     if (parsed > MAX_AMOUNT) {
       return error(res, {
         statusCode: 400,
-        message: `amount must not exceed ₹${MAX_AMOUNT.toLocaleString('en-IN')}`,
+        message: `Amount must not exceed ₹${MAX_AMOUNT.toLocaleString('en-IN')}.`,
       });
     }
 
-    if (note !== undefined && note !== null && typeof note !== 'string') {
-      return error(res, { statusCode: 400, message: 'note must be a string' });
-    }
-    if (typeof note === 'string' && note.length > 500) {
-      return error(res, { statusCode: 400, message: 'note must be 500 characters or fewer' });
+    // 2. Require the screenshot. Multer put it on req.file if present.
+    if (!req.file || !req.file.buffer) {
+      return error(res, { statusCode: 400, message: 'Attach a payment screenshot before submitting.' });
     }
 
-    // Round to paise so DECIMAL(10,2) stores exactly what the client sees.
+    // 3. Upload the screenshot to Cloudinary FIRST — if this fails, no
+    //    DB row is created and no partial state exists.
+    uploaded = await cloudinaryService.uploadImage(req.file.buffer, {
+      folder: CLOUDINARY_FOLDER,
+    });
+
+    // 4. Create the pending donation row.
     const rounded = Math.round(parsed * 100) / 100;
-
     const donation = await Donation.create({
       user_id: req.actingUserId,
       amount: rounded,
-      note: note?.trim() || null,
+      note: typeof note === 'string' && note.trim() ? note.trim().slice(0, 500) : null,
+      screenshot_url: uploaded.url,
       status: 'pending',
     });
 
     return success(res, {
       statusCode: 201,
-      message: 'Donation submitted. Awaiting admin verification.',
+      message: 'Your donation has been submitted. A super admin will verify it shortly.',
       data: {
         id: donation.id,
         amount: donation.amount,
-        note: donation.note,
         status: donation.status,
+        screenshot_url: donation.screenshot_url,
         created_at: donation.created_at,
       },
     });
   } catch (err) {
+    // If we uploaded a screenshot but never persisted the row, remove it.
+    if (uploaded?.publicId) {
+      await cloudinaryService.deleteImage(uploaded.publicId);
+    }
     next(err);
   }
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/donations/history
-// Access: requireUserAccess (calling user's own donations)
+// GET /api/donations/my
+// Access: authenticated user.
+// Returns the caller's own donation history, newest first.
 // Query: ?page=1&limit=20&status=pending|verified|rejected
 // ---------------------------------------------------------------------------
 const getMyHistory = async (req, res, next) => {
@@ -115,7 +112,7 @@ const getMyHistory = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     const where = { user_id: req.actingUserId };
-    if (req.query.status && ['pending', 'verified', 'rejected'].includes(req.query.status)) {
+    if (['pending', 'verified', 'rejected'].includes(req.query.status)) {
       where.status = req.query.status;
     }
 
@@ -124,17 +121,16 @@ const getMyHistory = async (req, res, next) => {
       order: [['created_at', 'DESC']],
       limit,
       offset,
+      attributes: [
+        'id', 'amount', 'note', 'screenshot_url', 'status',
+        'rejection_reason', 'verified_at', 'created_at',
+      ],
     });
 
     return success(res, {
       statusCode: 200,
-      message: 'Donation history fetched',
-      data: {
-        total: count,
-        page,
-        limit,
-        donations: rows,
-      },
+      message: 'Donation history fetched.',
+      data: { total: count, page, limit, donations: rows },
     });
   } catch (err) {
     next(err);
@@ -142,24 +138,19 @@ const getMyHistory = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/donations/all
-// Access: admin (own zone), super_admin (all zones)
+// GET /api/admin/donations
+// Access: super_admin.
 // Query: ?page=1&limit=20&status=pending|verified|rejected
-//
-// Zone-scoping is done in memory after eager-loading user.location chain.
-// We deliberately fetch a page-sized slice and filter after — the number of
-// donations per day is small enough that this is fine. If volume grows we
-// can push the zone filter into a raw SQL JOIN later.
+// Newest-first paginated list with donor identity + screenshot URL.
 // ---------------------------------------------------------------------------
-const getAllDonations = async (req, res, next) => {
+const listAll = async (req, res, next) => {
   try {
-    const { role, zone_location_id } = req.auth;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
 
     const where = {};
-    if (req.query.status && ['pending', 'verified', 'rejected'].includes(req.query.status)) {
+    if (['pending', 'verified', 'rejected'].includes(req.query.status)) {
       where.status = req.query.status;
     }
 
@@ -170,7 +161,6 @@ const getAllDonations = async (req, res, next) => {
           model: User,
           as: 'user',
           attributes: ['id', 'name', 'phone', 'address'],
-          include: [buildLocationInclude()],
         },
       ],
       order: [['created_at', 'DESC']],
@@ -178,23 +168,10 @@ const getAllDonations = async (req, res, next) => {
       offset,
     });
 
-    let visible = rows;
-    if (role === 'admin') {
-      visible = rows.filter((d) => {
-        const zone = resolveZoneFromLoaded(d.user?.location);
-        return zone && zone.id === zone_location_id;
-      });
-    }
-
     return success(res, {
       statusCode: 200,
-      message: 'Donations fetched',
-      data: {
-        total: count,       // total before zone-filter (used for pagination hints)
-        page,
-        limit,
-        donations: visible,
-      },
+      message: 'Donations fetched.',
+      data: { total: count, page, limit, donations: rows },
     });
   } catch (err) {
     next(err);
@@ -202,142 +179,35 @@ const getAllDonations = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/donations/summary
-// Access: admin (own zone), super_admin (all zones)
-// Query: ?from=YYYY-MM-DD&to=YYYY-MM-DD  (both optional)
-//
-// Returns totals + counts grouped by status. The frontend renders a
-// dashboard card ("₹XX,XXX collected · N pending · M verified").
+// PATCH /api/admin/donations/:id/verify
+// Access: super_admin.
+// Moves a pending donation to 'verified'. Idempotent-friendly: 409 if
+// the donation is already in a terminal state.
 // ---------------------------------------------------------------------------
-const getDonationSummary = async (req, res, next) => {
-  try {
-    const { role, zone_location_id } = req.auth;
-    const { from, to } = req.query;
-
-    const where = {};
-    if (from || to) {
-      where.created_at = {};
-      if (from) where.created_at[Op.gte] = new Date(`${from}T00:00:00.000Z`);
-      if (to) where.created_at[Op.lte] = new Date(`${to}T23:59:59.999Z`);
-    }
-
-    // Pull all matching rows with the user chain so we can zone-filter.
-    // The volume here is bounded by the (from,to) range — for admin
-    // dashboards this is fine.
-    const rows = await Donation.findAll({
-      where,
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'name', 'phone'],
-          include: [buildLocationInclude()],
-        },
-      ],
-    });
-
-    let visible = rows;
-    if (role === 'admin') {
-      visible = rows.filter((d) => {
-        const zone = resolveZoneFromLoaded(d.user?.location);
-        return zone && zone.id === zone_location_id;
-      });
-    }
-
-    const summary = {
-      total_amount: 0,          // sum of verified only — real money in
-      pending_amount: 0,
-      rejected_amount: 0,
-      counts: { pending: 0, verified: 0, rejected: 0 },
-      total_count: visible.length,
-    };
-
-    for (const d of visible) {
-      const amt = Number.parseFloat(d.amount);
-      summary.counts[d.status] += 1;
-      if (d.status === 'verified') summary.total_amount += amt;
-      else if (d.status === 'pending') summary.pending_amount += amt;
-      else if (d.status === 'rejected') summary.rejected_amount += amt;
-    }
-
-    // Round back to paise so the response has clean 2-decimal numbers.
-    summary.total_amount = Math.round(summary.total_amount * 100) / 100;
-    summary.pending_amount = Math.round(summary.pending_amount * 100) / 100;
-    summary.rejected_amount = Math.round(summary.rejected_amount * 100) / 100;
-
-    return success(res, {
-      statusCode: 200,
-      message: 'Donation summary fetched',
-      data: summary,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ---------------------------------------------------------------------------
-// PATCH /api/donations/:id/status
-// Access: admin (own zone), super_admin (any)
-// Body: { status: 'verified' | 'rejected' }
-//
-// Verifier's id + timestamp are recorded on the donation row. A donation
-// can only be moved out of 'pending' once — idempotent re-transitions are
-// rejected with 409.
-// ---------------------------------------------------------------------------
-const updateStatus = async (req, res, next) => {
+const verifyDonation = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
-    const { role, zone_location_id } = req.auth;
-
-    if (!['verified', 'rejected'].includes(status)) {
-      return error(res, {
-        statusCode: 400,
-        message: "status must be 'verified' or 'rejected'",
-      });
-    }
-
-    const donation = await Donation.findByPk(id, {
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'name', 'phone'],
-          include: [buildLocationInclude()],
-        },
-      ],
-    });
+    const donation = await Donation.findByPk(id);
 
     if (!donation) {
-      return error(res, { statusCode: 404, message: 'Donation not found' });
+      return error(res, { statusCode: 404, message: 'Donation not found.' });
     }
-
     if (donation.status !== 'pending') {
       return error(res, {
         statusCode: 409,
-        message: `This donation has already been ${donation.status}`,
+        message: `This donation was already ${donation.status}.`,
       });
     }
 
-    // Admin zone check — must be same zone as the donor.
-    if (role === 'admin') {
-      const zone = resolveZoneFromLoaded(donation.user?.location);
-      if (!zone || zone.id !== zone_location_id) {
-        return error(res, {
-          statusCode: 403,
-          message: 'You can only verify donations from your own zone',
-        });
-      }
-    }
-
-    donation.status = status;
-    donation.verified_by = resolveVerifierId(req.auth);
+    donation.status = 'verified';
+    donation.verified_by = req.auth.id; // super_admin.id
     donation.verified_at = new Date();
+    donation.rejection_reason = null; // clear any leftover, defensive
     await donation.save();
 
     return success(res, {
       statusCode: 200,
-      message: `Donation ${status}`,
+      message: 'Donation verified.',
       data: {
         id: donation.id,
         status: donation.status,
@@ -349,10 +219,114 @@ const updateStatus = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// PATCH /api/admin/donations/:id/reject
+// Access: super_admin.
+// Body: { reason?: string }  — optional short explanation shown to the user.
+// ---------------------------------------------------------------------------
+const rejectDonation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    if (reason !== undefined && reason !== null) {
+      if (typeof reason !== 'string') {
+        return error(res, { statusCode: 400, message: 'reason must be a string.' });
+      }
+      if (reason.length > 500) {
+        return error(res, { statusCode: 400, message: 'reason must be 500 characters or fewer.' });
+      }
+    }
+
+    const donation = await Donation.findByPk(id);
+    if (!donation) {
+      return error(res, { statusCode: 404, message: 'Donation not found.' });
+    }
+    if (donation.status !== 'pending') {
+      return error(res, {
+        statusCode: 409,
+        message: `This donation was already ${donation.status}.`,
+      });
+    }
+
+    donation.status = 'rejected';
+    donation.rejection_reason = (typeof reason === 'string' && reason.trim()) ? reason.trim() : null;
+    donation.verified_by = req.auth.id;
+    donation.verified_at = new Date();
+    await donation.save();
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Donation rejected.',
+      data: {
+        id: donation.id,
+        status: donation.status,
+        rejection_reason: donation.rejection_reason,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/donations/summary
+// Access: super_admin.
+// Query: ?from=YYYY-MM-DD&to=YYYY-MM-DD  (both optional)
+// Returns totals + counts per status.
+// ---------------------------------------------------------------------------
+const getSummary = async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    const where = {};
+    if (from || to) {
+      where.created_at = {};
+      if (from) where.created_at[Op.gte] = new Date(`${from}T00:00:00.000Z`);
+      if (to)   where.created_at[Op.lte] = new Date(`${to}T23:59:59.999Z`);
+    }
+
+    const rows = await Donation.findAll({
+      where,
+      attributes: ['status', 'amount'],
+      raw: true,
+    });
+
+    const summary = {
+      total_amount:    0,   // sum of verified — real money in
+      pending_amount:  0,
+      rejected_amount: 0,
+      counts: { pending: 0, verified: 0, rejected: 0 },
+      total_count: rows.length,
+    };
+
+    for (const r of rows) {
+      const amt = Number.parseFloat(r.amount) || 0;
+      if (summary.counts[r.status] !== undefined) summary.counts[r.status] += 1;
+      if (r.status === 'verified')      summary.total_amount    += amt;
+      else if (r.status === 'pending')  summary.pending_amount  += amt;
+      else if (r.status === 'rejected') summary.rejected_amount += amt;
+    }
+
+    // Clean 2-decimal rounding for the response.
+    summary.total_amount    = Math.round(summary.total_amount    * 100) / 100;
+    summary.pending_amount  = Math.round(summary.pending_amount  * 100) / 100;
+    summary.rejected_amount = Math.round(summary.rejected_amount * 100) / 100;
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Donation summary fetched.',
+      data: summary,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   submitDonation,
   getMyHistory,
-  getAllDonations,
-  getDonationSummary,
-  updateStatus,
+  listAll,
+  verifyDonation,
+  rejectDonation,
+  getSummary,
 };

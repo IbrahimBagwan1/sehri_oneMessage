@@ -2,240 +2,156 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { authApi } from '../../api/auth';
+import PasswordInput from '../../components/PasswordInput';
+import ResendOtpButton from '../../components/ResendOtpButton';
+import { Button, Header, Input } from '../../components/ui';
+import { colors, space, type } from '../../theme';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
 
-  // Form States
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [phone, setPhone]                       = useState('');
+  const [otp, setOtp]                           = useState('');
+  const [newPassword, setNewPassword]           = useState('');
+  const [confirmPassword, setConfirmPassword]   = useState('');
+  const [otpSent, setOtpSent]                   = useState(false);
+  const [loading, setLoading]                   = useState(false);
 
-  // UI States
-  const [otpSent, setOtpSent] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  // Send OTP Handler
   const handleSendOtp = async () => {
-    if (!phone || phone.length < 10) {
-      Alert.alert('Error', 'Please enter a valid 10-digit phone number');
-      return;
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      return Alert.alert('Check the number', "That doesn't look like a valid 10-digit Indian mobile number.");
     }
-
     setLoading(true);
     try {
       await authApi.sendOtp(phone, 'forgot_password');
       setOtpSent(true);
-      Alert.alert('Success', 'OTP sent to your phone number');
-    } catch (error) {
-      const msg = error.response?.data?.message || 'Failed to send OTP';
-      Alert.alert('Error', msg);
+      Alert.alert('OTP sent', 'Enter the 6-digit code we just sent to your phone.');
+    } catch (err) {
+      Alert.alert("Couldn't send OTP", err?.response?.data?.message || 'Try again in a moment.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Reset Password Handler
-  const handleResetPassword = async () => {
+  const handleReset = async () => {
     if (!phone || !otp || !newPassword || !confirmPassword) {
-      Alert.alert('Error', 'Please fill in all fields');
-      return;
+      return Alert.alert('A few things missing', 'Fill in every field to reset your password.');
     }
-
     if (newPassword !== confirmPassword) {
-      Alert.alert('Error', 'Passwords do not match');
-      return;
+      return Alert.alert("Passwords don't match", 'Re-enter your new password so they match.');
     }
-
     if (newPassword.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters long');
-      return;
+      return Alert.alert('Password too short', 'Use at least 6 characters.');
     }
 
     setLoading(true);
     try {
-      // Calls your endpoint: apiClient.post('/auth/forgot-password/verify-otp', ...)
-      await authApi.verifyOtp({
-        phone,
-        otp,
-        newPassword,
-      });
-
-      Alert.alert('Success', 'Password updated successfully!', [
-        {
-          text: 'OK',
-          onPress: () => router.replace('/(auth)/login'),
-        },
-      ]);
-    } catch (error) {
-      const msg = error.response?.data?.message || 'Failed to reset password';
-      Alert.alert('Reset Failed', msg);
+      await authApi.verifyOtp({ phone, otp, newPassword });
+      Alert.alert(
+        'Password updated',
+        'You can now sign in with your new password.',
+        [{ text: 'Go to sign-in', onPress: () => router.replace('/(auth)/login') }]
+      );
+    } catch (err) {
+      Alert.alert("Couldn't reset password", err?.response?.data?.message || 'Check your OTP and try again.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.title}>Reset Password</Text>
-        <Text style={styles.subtitle}>Enter your details to change your password</Text>
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <Header title="Reset password" onBack={() => router.back()} />
 
-        {/* Phone Input */}
-        <Text style={styles.label}>Phone Number</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter 10-digit mobile number"
-          keyboardType="phone-pad"
-          value={phone}
-          onChangeText={setPhone}
-          maxLength={10}
-        />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <Text style={styles.intro}>
+            Enter the phone number on your account. We'll send you a one-time code to verify it.
+          </Text>
 
-        {/* OTP Input Section */}
-        <View style={styles.otpHeader}>
-          <Text style={styles.label}>OTP Code</Text>
-          {!otpSent && (
-            <TouchableOpacity onPress={handleSendOtp} disabled={loading}>
-              <Text style={styles.sendOtpLink}>Send OTP</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter 6-digit OTP"
-          keyboardType="number-pad"
-          value={otp}
-          onChangeText={setOtp}
-          maxLength={6}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>Phone number</Text>
+            <Input
+              placeholder="10-digit mobile"
+              keyboardType="phone-pad"
+              value={phone}
+              onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setOtpSent(false); }}
+              maxLength={10}
+              icon="call-outline"
+              editable={!otpSent}
+            />
+          </View>
 
-        {/* New Password */}
-        <Text style={styles.label}>New Password</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter new password"
-          secureTextEntry
-          value={newPassword}
-          onChangeText={setNewPassword}
-        />
+          <View style={styles.field}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>OTP code</Text>
+              {!otpSent && (
+                <Button label="Send OTP" onPress={handleSendOtp} loading={loading} variant="ghost" size="sm" />
+              )}
+            </View>
+            <Input
+              placeholder="6-digit code"
+              keyboardType="number-pad"
+              value={otp}
+              onChangeText={setOtp}
+              maxLength={6}
+              icon="lock-closed-outline"
+              editable={otpSent}
+            />
+            {otpSent && (
+              <ResendOtpButton onResend={() => authApi.sendOtp(phone, 'forgot_password')} />
+            )}
+          </View>
 
-        {/* Confirm Password */}
-        <Text style={styles.label}>Confirm New Password</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Re-enter new password"
-          secureTextEntry
-          value={confirmPassword}
-          onChangeText={setConfirmPassword}
-        />
+          <View style={styles.field}>
+            <Text style={styles.label}>New password</Text>
+            <PasswordInput
+              placeholder="At least 6 characters"
+              value={newPassword}
+              onChangeText={setNewPassword}
+            />
+          </View>
 
-        {/* Submit Button */}
-        <TouchableOpacity
-          style={styles.submitButton}
-          onPress={handleResetPassword}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.submitText}>Update Password</Text>
-          )}
-        </TouchableOpacity>
+          <View style={styles.field}>
+            <Text style={styles.label}>Confirm new password</Text>
+            <PasswordInput
+              placeholder="Re-enter new password"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+            />
+          </View>
 
-        {/* Back to Login */}
-        <TouchableOpacity
-          style={styles.backLink}
-          onPress={() => router.back()}
-        >
-          <Text style={styles.backText}>Back to Login</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <Button
+            label="Update password"
+            onPress={handleReset}
+            loading={loading}
+            fullWidth
+            style={styles.submit}
+          />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F9FA',
-  },
-  scrollContent: {
-    padding: 24,
-    justifyContent: 'center',
-    flexGrow: 1,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#1E293B',
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    marginBottom: 24,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#334155',
-    marginBottom: 6,
-    marginTop: 12,
-  },
-  input: {
-    backgroundColor: '#FFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-  },
-  otpHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  sendOtpLink: {
-    color: '#2563EB',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  submitButton: {
-    backgroundColor: '#2563EB',
-    padding: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 24,
-  },
-  submitText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  backLink: {
-    marginTop: 16,
-    alignItems: 'center',
-  },
-  backText: {
-    color: '#64748B',
-    fontSize: 14,
-    fontWeight: '500',
-  },
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
+  scroll: { padding: space[5], paddingBottom: space[8] },
+
+  intro: { ...type.body, marginBottom: space[5] },
+
+  field:    { marginBottom: space[4] },
+  label:    { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
+  labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+
+  submit: { marginTop: space[3] },
 });

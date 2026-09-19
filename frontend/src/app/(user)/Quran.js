@@ -13,24 +13,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { quranApi } from '../../api/quran';
+import { colors, fonts } from '../../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
 // Quran chapter list.
 //
-// One-shot load from our own DB (GET /api/quran/chapters) — no upstream
-// calls, no pagination (only 114 rows). Search filters by surah number,
-// Arabic name, English name, or English meaning.
+// One-shot load from our own DB (GET /api/quran/chapters). Search filters
+// by surah number, Arabic name, English name, or English meaning. No
+// pagination — 114 rows is well within a FlatList's comfort zone.
 // -----------------------------------------------------------------------------
-const REVELATION_LABEL = {
-  meccan:  'Meccan',
-  medinan: 'Medinan',
-};
-
-const revelationStyle = (place) =>
-  place === 'medinan'
-    ? { color: '#0369A1', bg: '#E0F2FE' }
-    : { color: '#0D9488', bg: '#F0FDF9' };
-
 export default function QuranChapterList() {
   const router = useRouter();
 
@@ -47,7 +38,7 @@ export default function QuranChapterList() {
       const res = await quranApi.getChapters();
       if (res.success) setChapters(res.data.chapters || []);
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not load Quran chapters');
+      setError("Couldn't load the chapter list — check your connection and pull to refresh.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -70,51 +61,36 @@ export default function QuranChapterList() {
   }, [chapters, query]);
 
   const renderChapter = ({ item }) => {
-    const rev = revelationStyle(item.revelation_place);
+    const revealedIn =
+      item.revelation_place === 'medinan' ? 'Madinah' : 'Makkah';
+
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={styles.row}
         onPress={() =>
           router.push({ pathname: '/quran-reader', params: { surah: item.id } })
         }
         accessibilityRole="button"
-        accessibilityLabel={`${item.name_simple}, surah ${item.id}, ${item.verses_count} verses`}
+        accessibilityLabel={`Surah ${item.id}, ${item.name_simple}, ${item.verses_count} verses, revealed in ${revealedIn}`}
       >
-        <View style={styles.numberBox}>
+        {/* Number medallion — subtle gold ring, plain teal numeral */}
+        <View style={styles.numberMedallion}>
           <Text style={styles.numberText}>{item.id}</Text>
         </View>
 
-        <View style={styles.cardBody}>
-          <View style={styles.titleRow}>
-            <Text style={styles.nameEnglish}>{item.name_simple}</Text>
-            <Text style={styles.nameArabic}>{item.name_arabic}</Text>
-          </View>
-
-          <View style={styles.metaRow}>
-            {item.translated_name ? (
-              <Text style={styles.meaning}>{item.translated_name}</Text>
-            ) : null}
-          </View>
-
-          <View style={styles.badgeRow}>
-            <View style={[styles.badge, { backgroundColor: rev.bg }]}>
-              <Ionicons
-                name={item.revelation_place === 'medinan' ? 'business-outline' : 'sunny-outline'}
-                size={11}
-                color={rev.color}
-              />
-              <Text style={[styles.badgeText, { color: rev.color }]}>
-                {REVELATION_LABEL[item.revelation_place] || item.revelation_place}
-              </Text>
-            </View>
-            <View style={styles.badgeNeutral}>
-              <Ionicons name="reader-outline" size={11} color="#64748B" />
-              <Text style={styles.badgeTextNeutral}>{item.verses_count} verses</Text>
-            </View>
-          </View>
+        <View style={styles.rowBody}>
+          <Text style={styles.nameEnglish}>{item.name_simple}</Text>
+          {item.translated_name ? (
+            <Text style={styles.meaning}>{item.translated_name}</Text>
+          ) : null}
+          <Text style={styles.meta}>
+            {item.verses_count} verses · Revealed in {revealedIn}
+          </Text>
         </View>
 
-        <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+        <Text style={styles.nameArabic} accessibilityLanguage="ar">
+          {item.name_arabic}
+        </Text>
       </TouchableOpacity>
     );
   };
@@ -127,13 +103,13 @@ export default function QuranChapterList() {
       </View>
 
       <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={16} color="#94A3B8" />
+        <Ionicons name="search-outline" size={16} color={colors.inkGhost} />
         <TextInput
           style={styles.searchInput}
           value={query}
           onChangeText={setQuery}
           placeholder="Search by number, Arabic or English name"
-          placeholderTextColor="#94A3B8"
+          placeholderTextColor={colors.inkGhost}
           returnKeyType="search"
           autoCapitalize="none"
           autoCorrect={false}
@@ -147,12 +123,12 @@ export default function QuranChapterList() {
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#0D9488" />
+          <ActivityIndicator size="large" color={colors.teal} />
           <Text style={styles.loadingText}>Loading chapters…</Text>
         </View>
       ) : error ? (
         <View style={styles.centered}>
-          <Ionicons name="alert-circle-outline" size={40} color="#DC2626" />
+          <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={() => load()}>
             <Text style={styles.retryText}>Try again</Text>
@@ -164,20 +140,21 @@ export default function QuranChapterList() {
           keyExtractor={(item) => String(item.id)}
           renderItem={renderChapter}
           contentContainerStyle={styles.listContent}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={() => load(true)}
-              colors={['#0D9488']}
+              colors={[colors.teal]}
             />
           }
           ListEmptyComponent={
             <View style={styles.centered}>
-              <Ionicons name="book-outline" size={40} color="#CBD5E1" />
+              <Ionicons name="search-outline" size={36} color={colors.inkGhost} />
               <Text style={styles.emptyText}>
                 {query
                   ? 'No chapters match your search.'
-                  : 'No chapters yet — the Quran sync may still be running.'}
+                  : "This library is empty. Ask the coordinator to run the Quran sync."}
               </Text>
             </View>
           }
@@ -188,17 +165,17 @@ export default function QuranChapterList() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: colors.paperSoft },
   header: {
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 14,
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
-  headerTitle:    { fontSize: 22, fontWeight: '800', color: '#0F172A' },
-  headerSubtitle: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  headerTitle:    { fontSize: 22, fontWeight: '800', color: colors.ink },
+  headerSubtitle: { fontSize: 12, color: colors.inkFaint, marginTop: 2 },
 
   searchBar: {
     flexDirection: 'row',
@@ -206,79 +183,59 @@ const styles = StyleSheet.create({
     gap: 8,
     marginHorizontal: 14,
     marginTop: 12,
-    marginBottom: 6,
+    marginBottom: 4,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  searchInput: { flex: 1, fontSize: 14, color: '#0F172A', paddingVertical: 2 },
+  searchInput: { flex: 1, fontSize: 14, color: colors.ink, paddingVertical: 2 },
 
-  listContent: { padding: 14, paddingTop: 8 },
+  listContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 24 },
+  separator:   { height: 1, backgroundColor: colors.ruleFaint, marginLeft: 60 },
 
-  card: {
+  // Row: deliberately flat (no card shadow) so the list reads like an
+  // index rather than a stack of hero cards.
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFF',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    gap: 12,
   },
-  numberBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: '#F0FDF9',
+  numberMedallion: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    // Subtle gold ring — echoes the traditional muṣḥaf sura-marker
+    // roundel without shouting.
     borderWidth: 1,
-    borderColor: '#CCFBF1',
+    borderColor: colors.goldBorder,
+    backgroundColor: colors.goldSoft,
   },
-  numberText:   { fontSize: 15, fontWeight: '800', color: '#0D9488' },
-  cardBody:     { flex: 1 },
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: 2,
-  },
-  nameEnglish:  { fontSize: 15, fontWeight: '700', color: '#0F172A' },
-  nameArabic:   { fontSize: 18, color: '#0D9488', fontWeight: '700', textAlign: 'right' },
-  metaRow:      { marginBottom: 6 },
-  meaning:      { fontSize: 12, color: '#64748B', fontStyle: 'italic' },
-  badgeRow:     { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  badgeText:    { fontSize: 10, fontWeight: '700' },
-  badgeNeutral: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 10,
-    backgroundColor: '#F1F5F9',
-  },
-  badgeTextNeutral: { fontSize: 10, fontWeight: '700', color: '#64748B' },
+  numberText: { fontSize: 13, fontWeight: '700', color: colors.tealDark },
 
-  centered:    { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 8 },
-  loadingText: { fontSize: 13, color: '#64748B' },
-  errorText:   { fontSize: 13, color: '#DC2626', textAlign: 'center' },
-  emptyText:   { fontSize: 13, color: '#94A3B8', textAlign: 'center' },
-  retryBtn:    { marginTop: 8, backgroundColor: '#0D9488', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
-  retryText:   { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  rowBody:     { flex: 1 },
+  nameEnglish: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  meaning:     { fontSize: 12, color: colors.inkFaint, fontStyle: 'italic', marginTop: 1 },
+  meta:        { fontSize: 11, color: colors.inkGhost, marginTop: 4 },
+
+  nameArabic: {
+    fontFamily: fonts.arabicBold,
+    fontSize: 22,
+    color: colors.ink,
+    // Small nudge so the Arabic name sits vertically centered on the row.
+    marginLeft: 4,
+  },
+
+  centered:    { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 10 },
+  loadingText: { fontSize: 13, color: colors.inkFaint },
+  errorText:   { fontSize: 14, color: colors.inkMuted, textAlign: 'center', lineHeight: 22 },
+  emptyText:   { fontSize: 14, color: colors.inkFaint, textAlign: 'center', lineHeight: 22 },
+  retryBtn:    { marginTop: 4, backgroundColor: colors.teal, paddingHorizontal: 22, paddingVertical: 10, borderRadius: 8 },
+  retryText:   { color: colors.paper, fontWeight: '700', fontSize: 14 },
 });

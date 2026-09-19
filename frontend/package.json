@@ -11,13 +11,16 @@
     "lint": "expo lint"
   },
   "dependencies": {
+    "@expo-google-fonts/amiri": "^0.4.1",
     "@expo/vector-icons": "^15.0.3",
     "axios": "^1.19.0",
     "expo": "^57.0.24",
+    "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.17",
     "expo-font": "~57.0.3",
     "expo-haptics": "~57.0.2",
     "expo-image": "~57.0.4",
+    "expo-image-picker": "~57.0.19",
     "expo-linking": "~57.0.9",
     "expo-location": "~57.0.16",
     "expo-notifications": "~57.0.17",
