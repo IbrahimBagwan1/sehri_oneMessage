@@ -20,6 +20,7 @@ import {
   Button,
   Card,
   Chip,
+  GuestGate,
   Header,
   Input,
   LoadingState,
@@ -42,7 +43,27 @@ const resolveChain = (location) => {
   return chain;
 };
 
+// Wrapper — guests see GuestGate; signed-in users see the real profile.
+// Splitting keeps rules-of-hooks intact even when guest state flips.
 export default function ProfileScreen() {
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const router  = useRouter();
+  if (isGuest) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top']}>
+        <Header title="Profile" onBack={() => router.back()} />
+        <GuestGate
+          icon="person-add-outline"
+          title="You're browsing as guest"
+          message="Sign in to see your profile, donation history, feedback, and role settings."
+        />
+      </SafeAreaView>
+    );
+  }
+  return <ProfileScreenAuthed />;
+}
+
+function ProfileScreenAuthed() {
   const router  = useRouter();
   const user    = useAuthStore((s) => s.user);
   const logout  = useAuthStore((s) => s.logout);

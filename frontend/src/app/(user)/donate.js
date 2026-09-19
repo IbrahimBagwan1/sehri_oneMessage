@@ -22,12 +22,14 @@ import {
   Card,
   Chip,
   ErrorState,
+  GuestGate,
   Header,
   Input,
   LoadingState,
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { useAuthStore } from '../../store/useAuthStore';
 
 // -----------------------------------------------------------------------------
 // DonateScreen — external UPI donation flow, platform-branched.
@@ -50,7 +52,25 @@ const formatINR = (n) => {
   return `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 };
 
+// Guest wrapper — see comment in track.js. Keeps rules-of-hooks clean.
 export default function DonateScreen() {
+  const isGuest = useAuthStore((s) => s.isGuest);
+  if (isGuest) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <Header title="Donate" />
+        <GuestGate
+          icon="heart-outline"
+          title="Donations are for members"
+          message="Sign in so we can verify your donation, credit it correctly, and show it in your history."
+        />
+      </SafeAreaView>
+    );
+  }
+  return <DonateScreenAuthed />;
+}
+
+function DonateScreenAuthed() {
   const router = useRouter();
   const [amount, setAmount]         = useState('');
   const [note, setNote]             = useState('');

@@ -10,8 +10,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { trackingApi } from '../../api/tracking';
-import { Card, Chip, EmptyState, ErrorState, Header, LoadingState } from '../../components/ui';
+import { Card, Chip, EmptyState, ErrorState, GuestGate, Header, LoadingState } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { useAuthStore } from '../../store/useAuthStore';
 
 // Lazy-load react-native-maps so it doesn't crash Expo Go on import.
 let MapView = null;
@@ -40,7 +41,27 @@ const STATUS = {
   done:       { label: 'Delivery complete',  tone: 'success' },
 };
 
+// Guest gate is a sibling to the real screen (not an early return inside
+// it), so React's rules-of-hooks stay honored: the real screen only
+// mounts — and its hooks only run — when the caller is signed in.
 export default function TrackScreen() {
+  const isGuest = useAuthStore((s) => s.isGuest);
+  if (isGuest) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <Header title="Live tracking" />
+        <GuestGate
+          icon="location-outline"
+          title="Live tracking is for members"
+          message="Sign in to see today's rider on the map with live ETA to your address."
+        />
+      </SafeAreaView>
+    );
+  }
+  return <TrackScreenAuthed />;
+}
+
+function TrackScreenAuthed() {
   const mapRef = useRef(null);
 
   const [rider,   setRider]   = useState(null);

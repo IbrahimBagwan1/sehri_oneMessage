@@ -11,19 +11,15 @@ const {
 } = require('../controllers/duaController');
 
 // ---------------------------------------------------------------------------
-// Route order — literal (/categories, /featured, /sync) before /:categorySlug
-// so a slug named "categories" or "featured" can never collide.
+// Route order — literal (/categories, /featured, /sync) before /:categorySlug.
 //
-// Safe order:
-//   1. GET  /categories
-//   2. GET  /featured
-//   3. POST /sync
-//   4. GET  /:categorySlug
+// Auth stance — Dua content is public read-only, same as the Quran routes.
+// The sync trigger stays super_admin-only.
 // ---------------------------------------------------------------------------
 
-router.get('/categories', verifyToken, listCategories);
-router.get('/featured', verifyToken, getFeatured);
+router.get('/categories', listCategories);                                          // PUBLIC
+router.get('/featured',   getFeatured);                                             // PUBLIC
 router.post('/sync', verifyToken, requireRole('super_admin'), triggerSync);
-router.get('/:categorySlug', verifyToken, getCategory);
+router.get('/:categorySlug', getCategory);                                          // PUBLIC
 
 module.exports = router;

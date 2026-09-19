@@ -18,12 +18,18 @@ import PasswordInput from '../../components/PasswordInput';
 import { colors, space, type } from '../../theme';
 
 export default function LoginScreen() {
-  const router  = useRouter();
-  const setAuth = useAuthStore((s) => s.setAuth);
+  const router          = useRouter();
+  const setAuth         = useAuthStore((s) => s.setAuth);
+  const continueAsGuest = useAuthStore((s) => s.continueAsGuest);
 
   const [phone,    setPhone]    = useState('');
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
+
+  const handleGuest = async () => {
+    await continueAsGuest();
+    router.replace('/(user)');
+  };
 
   const handleLogin = async () => {
     if (!phone) return Alert.alert('Missing phone', 'Enter your phone number to sign in.');
@@ -123,6 +129,19 @@ export default function LoginScreen() {
               onPress={() => router.push('/(rider)/login')}
               fullWidth
             />
+
+            <Button
+              label="Continue as guest"
+              variant="ghost"
+              icon="footsteps-outline"
+              onPress={handleGuest}
+              fullWidth
+              style={styles.guestBtn}
+            />
+            <Text style={styles.guestHint}>
+              Guests can read Qur&apos;an, Duas, and prayer times.
+              Sign in to vote on the Sehri poll or track deliveries.
+            </Text>
           </View>
 
           {/* Footer link */}
@@ -174,6 +193,9 @@ const styles = StyleSheet.create({
   dividerRow:  { flexDirection: 'row', alignItems: 'center', gap: space[3], marginVertical: space[5] },
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.ruleSoft },
   dividerText: { ...type.meta, color: colors.inkFaint },
+
+  guestBtn:     { marginTop: space[2] },
+  guestHint:    { ...type.meta, textAlign: 'center', marginTop: space[2], color: colors.inkFaint, lineHeight: 18 },
 
   footer:       { alignItems: 'center', paddingVertical: space[3] },
   footerText:   { ...type.body, color: colors.inkFaint },

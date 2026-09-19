@@ -184,6 +184,7 @@ const useCountdown = (targetMs) => {
 export default function HomeScreen() {
   const router          = useRouter();
   const user            = useAuthStore((s) => s.user);
+  const isGuest         = useAuthStore((s) => s.isGuest);
   const available_roles = useAuthStore((s) => s.available_roles);
   const switchRole      = useAuthStore((s) => s.switchRole);
 
@@ -196,7 +197,10 @@ export default function HomeScreen() {
   const [submittingVote, setSubmitting] = useState(false);
   const [refreshing,    setRefreshing]  = useState(false);
 
-  const firstName = useMemo(() => (user?.name || 'Friend').trim().split(/\s+/)[0], [user?.name]);
+  const firstName = useMemo(() => {
+    if (isGuest) return 'friend';
+    return (user?.name || 'Friend').trim().split(/\s+/)[0];
+  }, [user?.name, isGuest]);
 
   // ---- Data loaders ----------------------------------------------------
   const loadPrayer = useCallback(async () => {
@@ -212,6 +216,10 @@ export default function HomeScreen() {
   }, []);
 
   const loadPoll = useCallback(async () => {
+    // Guests don't call the poll endpoint — it requires an authenticated
+    // user id to attach voter identity. We render a sign-in invite in
+    // place of the poll card instead.
+    if (isGuest) { setLoadingV(false); return; }
     setPollErr(null);
     try {
       const res = await pollsApi.getActive();
@@ -221,20 +229,21 @@ export default function HomeScreen() {
     } finally {
       setLoadingV(false);
     }
-  }, []);
+  }, [isGuest]);
 
   useFocusEffect(useCallback(() => {
     loadPrayer();
     loadPoll();
+    if (isGuest) return undefined;   // no polling for guests
     const t = setInterval(loadPoll, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, [loadPrayer, loadPoll]));
+  }, [loadPrayer, loadPoll, isGuest]));
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadPrayer(), loadPoll()]);
+    await Promise.all([loadPrayer(), isGuest ? Promise.resolve() : loadPoll()]);
     setRefreshing(false);
-  }, [loadPrayer, loadPoll]);
+  }, [loadPrayer, loadPoll, isGuest]);
 
   // ---- Actions ---------------------------------------------------------
   const handleVote = async (vote) => {
@@ -271,12 +280,22 @@ export default function HomeScreen() {
       <Header
         leading={<Wordmark />}
         trailing={
-          <Avatar
-            name={user?.name}
-            size={38}
-            onPress={() => router.push('/profile')}
-            accessibilityLabel="Open profile"
-          />
+          isGuest ? (
+            <Button
+              label="Sign in"
+              variant="ghost"
+              size="sm"
+              icon="log-in-outline"
+              onPress={() => router.push('/(auth)/login')}
+            />
+          ) : (
+            <Avatar
+              name={user?.name}
+              size={38}
+              onPress={() => router.push('/profile')}
+              accessibilityLabel="Open profile"
+            />
+          )
         }
       />
 
@@ -293,8 +312,8 @@ export default function HomeScreen() {
         }
       >
         <Hero
-          greeting="Assalamu alaikum"
-          name={firstName}
+          greeting={isGuest ? 'Assalamu alaikum — welcome' : 'Assalamu alaikum'}
+          name={isGuest ? 'to OneMessage' : firstName}
           dateLine={
             prayerData?.date_hijri
               ? `${prayerData.date_hijri} · ${gregorianLine()}`
@@ -347,10 +366,12 @@ export default function HomeScreen() {
         <View style={styles.section}>
           <SectionHeader
             title="Today's Sehri poll"
-            trailing={<PhaseChip phase={pollData?.phase} />}
+            trailing={!isGuest ? <PhaseChip phase={pollData?.phase} /> : null}
           />
 
-          {loadingPoll ? (
+          {isGuest ? (
+            <GuestPollInvite onSignIn={() => router.push('/(auth)/login')} />
+          ) : loadingPoll ? (
             <Card><LoadingState message="Loading today's poll…" compact /></Card>
           ) : pollError ? (
             <Card><ErrorState message={pollError} onRetry={loadPoll} /></Card>
@@ -481,6 +502,35 @@ function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
           <Text style={styles.calcHintText}>Calculated locally — the online almanac was unreachable.</Text>
         </View>
       )}
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------------------
+// GuestPollInvite — shown in the poll slot when browsing without an
+// account. Warm parchment tint + gold ornament so it reads as an
+// invitation rather than a restriction.
+// -------------------------------------------------------------------------
+function GuestPollInvite({ onSignIn }) {
+  return (
+    <Card tone="warm">
+      <View style={styles.inviteOrnamentRow}>
+        <View style={styles.inviteOrnamentRule} />
+        <RubStar size={12} />
+        <View style={styles.inviteOrnamentRule} />
+      </View>
+      <Text style={styles.inviteTitle}>Join today's Sehri poll</Text>
+      <Text style={styles.inviteBody}>
+        Sign in to tell your zone whether you'll be having Sehri tomorrow —
+        the kitchen prepares food for exactly the count they get from the poll.
+      </Text>
+      <Button
+        label="Sign in to vote"
+        onPress={onSignIn}
+        icon="log-in-outline"
+        fullWidth
+        style={{ marginTop: space[4] }}
+      />
     </Card>
   );
 }
@@ -806,4 +856,10 @@ const styles = StyleSheet.create({
   outcomeApproved: { backgroundColor: colors.successSoft },
   outcomeRejected: { backgroundColor: colors.dangerSoft },
   outcomeText:     { ...type.meta, fontWeight: '700' },
+
+  // Guest poll invite
+  inviteOrnamentRow:  { flexDirection: 'row', alignItems: 'center', gap: space[2], marginBottom: space[3] },
+  inviteOrnamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
+  inviteTitle:        { ...type.h3, color: colors.ink, marginBottom: space[2] },
+  inviteBody:         { ...type.body, color: colors.inkMuted, lineHeight: 22 },
 });

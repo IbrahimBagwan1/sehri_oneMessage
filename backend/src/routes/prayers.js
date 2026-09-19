@@ -7,9 +7,9 @@ const { verifyToken, requireRole } = require('../middleware/auth');
 const { getTodayPrayers, forceRefresh } = require('../controllers/prayerController');
 
 // GET /api/prayers
-// Returns today's prayer schedule with Hijri date, Tahajjud, and Imsak.
-// All authenticated roles can call this.
-router.get('/', verifyToken, getTodayPrayers);
+// PUBLIC — read-only content, identical for every viewer of the day.
+// Guests (unsigned users browsing the app) hit this endpoint too.
+router.get('/', getTodayPrayers);
 
 // POST /api/prayers/refresh
 // Force-fetches from AlAdhan API, bypassing the DB cache.
