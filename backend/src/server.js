@@ -1,4 +1,5 @@
 require('dotenv').config();
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,6 +13,9 @@ const pollRoutes = require('./routes/polls');
 const locationRoutes = require('./routes/locations');
 const prayerRoutes = require('./routes/prayers');
 const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
+const chatRoutes = require('./routes/chat');           // community group chat
+const trackingRoutes = require('./routes/tracking');   // rider tracking
+const { initSocket } = require('./services/socketService');
 const logger = require('./utils/logger');
 const { error } = require('./utils/response');
 
@@ -46,6 +50,8 @@ app.use('/api/polls', pollRoutes);
 app.use('/api/locations', locationRoutes);   // public — used by registration screen
 app.use('/api/prayers', prayerRoutes);
 app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
+app.use('/api/chat', chatRoutes);            // community group chat
+app.use('/api/tracking', trackingRoutes);   // rider tracking
 
 // ---------------------------------------------------------------------------
 // Global error handler
@@ -81,10 +87,18 @@ app.use((err, req, res, next) => {
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 5000;
 
+// Wrap Express in a plain Node HTTP server so Socket.IO can share the same
+// port. app.listen() internally does this too, but we need the httpServer
+// reference before listening so we can pass it to initSocket().
+const httpServer = http.createServer(app);
+
 testConnection()
   .then(() => {
+    // Attach Socket.IO to the HTTP server (must happen before listen)
+    initSocket(httpServer);
+
     // Bind to 0.0.0.0 so phones on the same network (or via ngrok) can reach the server
-    app.listen(PORT, '0.0.0.0', () => {
+    httpServer.listen(PORT, '0.0.0.0', () => {
       logger.info(`Server running on port ${PORT}`);
     });
   })
