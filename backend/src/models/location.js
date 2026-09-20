@@ -29,6 +29,23 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
+      // Geographic pin — populated once per address by the super admin
+      // via the coordinate-picker screen. Nullable for city/area/zone
+      // rows (they don't need pins) and for any address row that hasn't
+      // been geocoded yet. ETA calculator silently skips destinations
+      // without coordinates so the feature degrades gracefully.
+      latitude: {
+        type: DataTypes.DECIMAL(10, 7),
+        allowNull: true,
+      },
+      longitude: {
+        type: DataTypes.DECIMAL(10, 7),
+        allowNull: true,
+      },
+      geocoded_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       tableName: 'locations',

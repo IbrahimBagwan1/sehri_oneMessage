@@ -11,6 +11,7 @@ const {
   reviewProfileEditRequest,
   deleteMyAccount,
   deleteUserById,
+  setPushToken,
 } = require('../controllers/userController');
 
 const router = express.Router();
@@ -37,6 +38,10 @@ router.get('/me', verifyToken, requireUserAccess, getMe);
 
 // DELETE /api/users/me — self-delete (soft, anonymized)
 router.delete('/me', verifyToken, requireUserAccess, deleteMyAccount);
+
+// PATCH /api/users/me/push-token — register/clear Expo push token
+// Body: { token: 'ExponentPushToken[...]' | null }
+router.patch('/me/push-token', verifyToken, requireUserAccess, setPushToken);
 
 // POST /api/users/request-profile-edit — submit a profile change for approval
 // Body: { requested_changes: { name?, gender?, occupation?, city?, location_id?, address? } }

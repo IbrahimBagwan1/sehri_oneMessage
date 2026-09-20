@@ -7,6 +7,7 @@ const { success, error } = require('../utils/response');
 const { signAccessToken, signRefreshToken } = require('../utils/jwt');
 const { resolveZone } = require('../utils/resolveZone');
 const googleMapsService = require('../services/googleMapsService');
+const etaComputationService = require('../services/etaComputationService');
 const logger = require('../utils/logger');
 
 const { Rider, Poll, PollResponse, User, Location } = db;
@@ -464,6 +465,8 @@ const pushLocation = async (req, res, next) => {
       });
     }
 
+    const prevStatus = rider.status;
+
     rider.latitude = lat;
     rider.longitude = lng;
     if (current_address !== undefined) rider.current_address = current_address;
@@ -471,6 +474,18 @@ const pushLocation = async (req, res, next) => {
     if (status) rider.status = status;
 
     await rider.save();
+
+    // ETA recompute — fire-and-forget so the hot-path response stays fast.
+    // The service is internally throttled (100m OR 30s) so we can call
+    // it on every push without burning Distance Matrix quota.
+    if (rider.status === 'delivering') {
+      etaComputationService
+        .updateETAsForRider(rider, lat, lng)
+        .catch((err) => logger.warn(`[tracking] eta recompute error: ${err.message}`));
+    } else if (prevStatus === 'delivering' && rider.status === 'done') {
+      // Rider just wrapped up — clear throttle state + notify open maps.
+      etaComputationService.onRiderStopped(rider);
+    }
 
     // Server-side reverse-geocode fallback: the rider app already tries to
     // resolve an address on-device, but if the device can't (offline
@@ -594,6 +609,13 @@ const getEta = async (req, res, next) => {
           latitude: Number(rider.latitude),
           longitude: Number(rider.longitude),
           status: rider.status,
+        },
+        // Destination coords so the frontend can drop a "your home" marker
+        // and draw a polyline between the rider and the user without a
+        // second geocode round-trip.
+        destination: {
+          latitude:  destination.lat,
+          longitude: destination.lng,
         },
         eta: {
           distance_meters: result.distanceMeters,

@@ -496,6 +496,50 @@ const deleteUserById = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// PATCH /api/users/me/push-token
+// Access: requireUserAccess.
+// Body: { token: 'ExponentPushToken[...]' | null }
+//
+// Registers (or clears) the calling user's Expo push token so the
+// backend can send them proximity notifications during delivery.
+// Passing null unregisters (e.g. on logout or when permission is
+// revoked in the device settings).
+// ---------------------------------------------------------------------------
+const { isExpoPushToken } = require('../services/expoPushService');
+
+const setPushToken = async (req, res, next) => {
+  try {
+    const { token } = req.body || {};
+
+    // null → clear. Any other value must match the Expo token pattern.
+    if (token !== null && token !== undefined && !isExpoPushToken(token)) {
+      return error(res, {
+        statusCode: 400,
+        message: 'token must be a valid Expo push token (or null to unregister).',
+      });
+    }
+
+    const user = await User.findByPk(req.actingUserId);
+    if (!user || user.status === 'deleted') {
+      return error(res, { statusCode: 404, message: 'User not found' });
+    }
+
+    user.fcm_token = token || null;
+    // Anonymized rows fail phone validation, so we save without validators.
+    // For a normal token save, `validate: true` is fine — the anonymization
+    // path is inside softDeleteUser, not here.
+    await user.save({ hooks: false });
+
+    return success(res, {
+      statusCode: 200,
+      message: token ? 'Push token registered.' : 'Push token cleared.',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   listUsers,
   updateUserStatus,
@@ -505,4 +549,5 @@ module.exports = {
   reviewProfileEditRequest,
   deleteMyAccount,
   deleteUserById,
+  setPushToken,
 };

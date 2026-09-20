@@ -54,4 +54,11 @@ export const usersApi = {
     const response = await apiClient.delete(`/users/${id}`);
     return response.data;
   },
+
+  // PATCH /api/users/me/push-token — register/clear Expo push token.
+  // Called by services/pushService.js; exposed here for symmetry.
+  setPushToken: async (token) => {
+    const response = await apiClient.patch('/users/me/push-token', { token });
+    return response.data;
+  },
 };

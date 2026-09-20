@@ -21,6 +21,7 @@ const feedbackRoutes = require('./routes/feedback');   // user feedback + admin 
 const quranRoutes = require('./routes/quran');         // Quran chapters + verses (served from our DB)
 const duaRoutes = require('./routes/dua');             // Dua categories + entries (served from our DB)
 const paymentRoutes = require('./routes/payment');     // payment contact + hosted page URL
+const broadcastRoutes = require('./routes/broadcasts'); // super-admin push broadcasts
 const path = require('path');
 const { initSocket } = require('./services/socketService');
 const logger = require('./utils/logger');
@@ -81,6 +82,7 @@ app.use('/api/feedback', feedbackRoutes);           // user feedback submission 
 app.use('/api/quran', quranRoutes);                 // 114 surahs, verses + translation (from our DB)
 app.use('/api/dua', duaRoutes);                     // dua categories + entries + featured-today
 app.use('/api/payment', paymentRoutes);             // payment contact + hosted page URL (public)
+app.use('/api/broadcasts', broadcastRoutes);        // super-admin — send push to a zone or all users
 
 // Static public/ folder — hosts /payment.html (opened by iOS Safari from
 // the Donate screen) plus any future static assets. Kept AFTER the /api

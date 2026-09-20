@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 import apiClient from '../api/client';
+import { registerForPushNotifications, unregisterPushNotifications } from '../services/pushService';
+import { connect as connectSocket, disconnect as disconnectSocket } from '../services/socket';
 
 // -----------------------------------------------------------------------------
 // Auth store — three mutually exclusive states:
@@ -48,6 +50,10 @@ export const useAuthStore = create((set, get) => ({
           active_role: roleData || 'user',
           available_roles: rolesData ? JSON.parse(rolesData) : [],
         });
+        // Re-open the persistent socket connection + refresh the
+        // Expo push token on cold start. Both are fire-and-forget.
+        connectSocket().catch(() => {});
+        registerForPushNotifications().catch(() => {});
       } else if (guestFlag === 'true') {
         set({ isGuest: true, isAuthenticated: false });
       }
@@ -78,6 +84,12 @@ export const useAuthStore = create((set, get) => ({
       active_role,
       available_roles,
     });
+
+    // Post-login side effects: open the socket + register push token.
+    // Both are fire-and-forget — a socket-connect or push-permission
+    // failure must NEVER block the sign-in flow itself.
+    connectSocket().catch(() => {});
+    registerForPushNotifications().catch(() => {});
   },
 
   // ---------------------------------------------------------------------------
@@ -135,6 +147,12 @@ export const useAuthStore = create((set, get) => ({
   // Logout — clears everything, including any guest flag.
   // ---------------------------------------------------------------------------
   logout: async () => {
+    // Clear the push token on the server FIRST while the JWT is still
+    // valid — otherwise the /users/me/push-token PATCH would 401 after
+    // we drop the token below.
+    try { await unregisterPushNotifications(); } catch (_) { /* noop */ }
+    disconnectSocket();
+
     await SecureStore.deleteItemAsync('access_token');
     await SecureStore.deleteItemAsync('refresh_token');
     await SecureStore.deleteItemAsync('user_data');

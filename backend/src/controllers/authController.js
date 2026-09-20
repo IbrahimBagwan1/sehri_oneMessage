@@ -453,11 +453,14 @@ const refreshToken = async (req, res, next) => {
     // Rebuild the payload, carrying forward every field that was in the original.
     const payload = { id: decoded.id, role: decoded.role };
 
-    if (decoded.role === 'admin' && decoded.zone_location_id) {
+    // Admin and rider tokens both carry zone_location_id — admins strictly,
+    // riders optionally (null = serves every zone). Carrying it forward is
+    // what lets Socket.IO's subscribe_tracking auto-scope survive refreshes.
+    if ((decoded.role === 'admin' || decoded.role === 'rider') && decoded.zone_location_id) {
       payload.zone_location_id = decoded.zone_location_id;
     }
 
-    // Preserve user_id so admin/super_admin keep their user-side identity
+    // Preserve user_id so admin/super_admin/rider keep their user-side identity
     // across silent token refreshes.
     if (decoded.user_id) {
       payload.user_id = decoded.user_id;

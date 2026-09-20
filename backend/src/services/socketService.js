@@ -7,7 +7,8 @@ const logger = require('../utils/logger');
 // ---------------------------------------------------------------------------
 // Module-level Socket.IO instance.
 // Initialised once in server.js via initSocket(httpServer).
-// Controllers import getIO() to emit events without passing io around.
+// Controllers + services import the emitter helpers to publish events
+// without passing the io instance around.
 // ---------------------------------------------------------------------------
 let io = null;
 
@@ -30,16 +31,12 @@ const initSocket = (httpServer) => {
   });
 
   // ---------------------------------------------------------------------------
-  // JWT authentication middleware for Socket.IO
-  // The client must send:   { auth: { token: '<access_token>' } }
-  // when calling io.connect().  We verify the token and attach the decoded
-  // payload as socket.user so handlers know who is connected.
+  // JWT authentication middleware
+  // Client sends { auth: { token: '<access_token>' } } on io.connect().
   // ---------------------------------------------------------------------------
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
-    if (!token) {
-      return next(new Error('Authentication token missing'));
-    }
+    if (!token) return next(new Error('Authentication token missing'));
     try {
       const decoded = verifyAccessToken(token);
       socket.user = decoded; // { id, role, zone_location_id?, user_id? }
@@ -53,103 +50,124 @@ const initSocket = (httpServer) => {
   // Connection handler
   // ---------------------------------------------------------------------------
   io.on('connection', (socket) => {
-    const { id: accountId, role, user_id } = socket.user;
+    const { id: accountId, role, user_id, zone_location_id } = socket.user;
     // The effective user identity (same logic as requireUserAccess middleware).
-    const effectiveId = role === 'user' ? accountId : (user_id || accountId);
+    const effectiveUserId = role === 'user' ? accountId : (user_id || accountId);
 
-    logger.info(`[Socket] connected  role=${role}  id=${effectiveId}  socketId=${socket.id}`);
+    logger.info(`[socket] connect  role=${role}  user=${effectiveUserId}  socket=${socket.id}`);
+
+    // Every connected user joins their own user room so per-user events
+    // (eta_update, direct notifications) can target them.
+    socket.join(`user:${effectiveUserId}`);
 
     // -----------------------------------------------------------------------
-    // join_group  — client joins a Socket.IO room for a chat group.
-    // The controller already validates membership before letting the client
-    // fetch messages via REST.  Here we trust the client knows which groups
-    // it belongs to (it got the list from GET /api/chat/groups).
-    // A malicious join attempt to a group the user isn't in will simply
-    // result in them never receiving events (the controller emits only to
-    // verified members).
-    //
-    // Payload: { group_id: '<uuid>' }
+    // Chat rooms — existing pattern, unchanged.
     // -----------------------------------------------------------------------
     socket.on('join_group', ({ group_id } = {}) => {
       if (!group_id) return;
       socket.join(`group:${group_id}`);
-      logger.info(`[Socket] ${effectiveId} joined room group:${group_id}`);
     });
 
-    // -----------------------------------------------------------------------
-    // leave_group  — client leaves a room (e.g. navigates away from chat).
-    // Payload: { group_id: '<uuid>' }
-    // -----------------------------------------------------------------------
     socket.on('leave_group', ({ group_id } = {}) => {
       if (!group_id) return;
       socket.leave(`group:${group_id}`);
-      logger.info(`[Socket] ${effectiveId} left room group:${group_id}`);
+    });
+
+    // -----------------------------------------------------------------------
+    // Live tracking — client subscribes when the track screen mounts.
+    //
+    // Payload (optional): { zone_id }. If the client sends a zone id,
+    // we join that zone room. Otherwise we fall back to the zone the
+    // JWT carries (admins have zone_location_id in the token).
+    //
+    // Emitters that publish tracking events:
+    //   • emitRiderPosition(zoneId, payload) → `zone:{zoneId}` room
+    //   • emitEtaUpdate(userId, payload)     → `user:{userId}` room
+    // -----------------------------------------------------------------------
+    socket.on('subscribe_tracking', ({ zone_id } = {}) => {
+      const zone = zone_id || zone_location_id;
+      if (zone) {
+        socket.join(`zone:${zone}`);
+        logger.info(`[socket] ${effectiveUserId} joined zone:${zone}`);
+      }
+    });
+
+    socket.on('unsubscribe_tracking', ({ zone_id } = {}) => {
+      const zone = zone_id || zone_location_id;
+      if (zone) socket.leave(`zone:${zone}`);
     });
 
     socket.on('disconnect', (reason) => {
-      logger.info(`[Socket] disconnected  id=${effectiveId}  reason=${reason}`);
+      logger.info(`[socket] disconnect user=${effectiveUserId}  reason=${reason}`);
     });
 
     socket.on('error', (err) => {
-      logger.error(`[Socket] error  id=${effectiveId}  ${err.message}`);
+      logger.error(`[socket] error user=${effectiveUserId}  ${err.message}`);
     });
   });
 
-  logger.info('[Socket] Socket.IO initialised');
+  logger.info('[socket] Socket.IO initialised');
   return io;
 };
 
 /**
- * Returns the Socket.IO server instance.
- * Throws if initSocket() has not been called yet.
+ * Returns the Socket.IO server instance. Throws if initSocket() hasn't
+ * been called yet.
  */
 const getIO = () => {
-  if (!io) {
-    throw new Error('Socket.IO has not been initialised. Call initSocket(httpServer) first.');
-  }
+  if (!io) throw new Error('Socket.IO has not been initialised. Call initSocket(httpServer) first.');
   return io;
 };
 
 // ---------------------------------------------------------------------------
-// Emitter helpers used by chatController
+// Chat emitters (kept as-is for chatController)
+// ---------------------------------------------------------------------------
+
+const emitNewMessage = (groupId, payload) => {
+  if (!io) return;
+  io.to(`group:${groupId}`).emit('new_message', payload);
+};
+
+const emitMessageDeleted = (groupId, messageId) => {
+  if (!io) return;
+  io.to(`group:${groupId}`).emit('message_deleted', { message_id: messageId });
+};
+
+const emitMemberUpdate = (groupId, event, payload) => {
+  if (!io) return;
+  io.to(`group:${groupId}`).emit(event, payload);
+};
+
+// ---------------------------------------------------------------------------
+// Tracking emitters
 // ---------------------------------------------------------------------------
 
 /**
- * Broadcast a new message to every socket in a group room.
- * Called after the message has been saved to the DB.
- *
- * @param {string} groupId
- * @param {object} messagePayload  — the shaped message object returned to REST callers too
+ * Broadcast a rider's new position to every user in that zone.
+ * Consumed by the user track screen to move the marker in real time.
  */
-const emitNewMessage = (groupId, messagePayload) => {
-  getIO().to(`group:${groupId}`).emit('new_message', messagePayload);
+const emitRiderPosition = (zoneId, payload) => {
+  if (!io || !zoneId) return;
+  io.to(`zone:${zoneId}`).emit('rider_position', payload);
 };
 
 /**
- * Broadcast a message deletion event to the group room.
- *
- * @param {string} groupId
- * @param {string} messageId
+ * Send an ETA update to a specific user. The track screen renders
+ * "Arriving in X min" from this event.
  */
-const emitMessageDeleted = (groupId, messageId) => {
-  getIO().to(`group:${groupId}`).emit('message_deleted', { message_id: messageId });
-};
-
-/**
- * Notify group members that the member list changed (someone added/removed).
- *
- * @param {string} groupId
- * @param {'member_added'|'member_removed'} event
- * @param {object} payload
- */
-const emitMemberUpdate = (groupId, event, payload) => {
-  getIO().to(`group:${groupId}`).emit(event, payload);
+const emitEtaUpdate = (userId, payload) => {
+  if (!io || !userId) return;
+  io.to(`user:${userId}`).emit('eta_update', payload);
 };
 
 module.exports = {
   initSocket,
   getIO,
+  // chat
   emitNewMessage,
   emitMessageDeleted,
   emitMemberUpdate,
+  // tracking
+  emitRiderPosition,
+  emitEtaUpdate,
 };

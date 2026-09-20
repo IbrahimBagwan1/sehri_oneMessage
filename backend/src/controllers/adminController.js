@@ -1,5 +1,6 @@
 'use strict';
 const bcrypt = require('bcryptjs');
+const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const { User, Admin, SuperAdmin, Location } = db;
@@ -342,7 +343,7 @@ const linkUserToAdmin = async (req, res, next) => {
       }
       // Make sure no other admin is already linked to this user.
       const conflict = await Admin.findOne({
-        where: { user_id, id: { [db.Sequelize.Op.ne]: id } },
+        where: { user_id, id: { [Op.ne]: id } },
       });
       if (conflict) {
         return error(res, {

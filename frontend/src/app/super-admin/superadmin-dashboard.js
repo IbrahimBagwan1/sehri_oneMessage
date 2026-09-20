@@ -27,7 +27,9 @@ const MENU = [
   { title: 'Feedback',         icon: 'chatbubble-outline',       route: '/super-admin/feedback', hint: 'Read what the community is saying' },
   { title: 'Poll history',     icon: 'stats-chart-outline',      route: '/super-admin/polls',    hint: 'Past polls and per-zone breakdown' },
   { title: 'Zone admins',      icon: 'shield-checkmark-outline', route: '/super-admin/admins',   hint: 'Add or remove zone admins' },
+  { title: 'PG coordinates',   icon: 'location-outline',         route: '/super-admin/locations',hint: 'Set map pins for delivery ETAs' },
   { title: 'Group chat',       icon: 'chatbubbles-outline',      route: '/super-admin/chat',     hint: 'Manage broadcast groups' },
+  { title: 'Send broadcast',   icon: 'megaphone-outline',        route: '/super-admin/broadcast',hint: 'Push a notification to a zone' },
 ];
 
 export default function SuperAdminDashboard() {

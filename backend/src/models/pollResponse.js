@@ -61,6 +61,27 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM('approved', 'rejected'),
         allowNull: true,
       },
+
+      // ---- Live delivery ETA (during the delivery window) ------------
+      // Updated by etaComputationService as the assigned rider's
+      // location comes in. Null when the rider hasn't started, when
+      // the destination has no coordinates, or when a Distance Matrix
+      // call fails.
+      current_eta_minutes: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      current_eta_updated_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      // Set the first time we send a "rider arriving in ~5 min"
+      // notification for this delivery. Prevents duplicate pushes as
+      // the ETA ticks around the threshold.
+      proximity_notified_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       tableName: 'poll_responses',

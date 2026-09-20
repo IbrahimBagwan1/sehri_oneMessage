@@ -40,6 +40,8 @@ export default function RootLayout() {
         <Stack.Screen name="quran-reader" options={{ headerShown: false }} />
         <Stack.Screen name="dua-detail" options={{ headerShown: false }} />
         <Stack.Screen name="donation-history" options={{ headerShown: false }} />
+        <Stack.Screen name="chat-room" options={{ headerShown: false }} />
+        <Stack.Screen name="chat-create-group" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
     </>

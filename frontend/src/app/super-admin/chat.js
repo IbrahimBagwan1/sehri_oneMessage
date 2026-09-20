@@ -143,7 +143,7 @@ export default function SuperAdminChatScreen() {
         title="Group chat"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => Alert.alert('Create group', 'The group-creation UI is coming next. For now, use the backend API to create a group.')} hitSlop={8} accessibilityLabel="Create group">
+          <Pressable onPress={() => router.push('/chat-create-group')} hitSlop={8} accessibilityLabel="Create group">
             <Ionicons name="add" size={24} color={colors.teal} />
           </Pressable>
         }
