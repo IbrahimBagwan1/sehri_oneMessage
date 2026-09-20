@@ -8,6 +8,7 @@ const { signAccessToken, signRefreshToken } = require('../utils/jwt');
 const { resolveZone } = require('../utils/resolveZone');
 const googleMapsService = require('../services/googleMapsService');
 const etaComputationService = require('../services/etaComputationService');
+const socketService = require('../services/socketService');
 const logger = require('../utils/logger');
 
 const { Rider, Poll, PollResponse, User, Location } = db;
@@ -474,6 +475,29 @@ const pushLocation = async (req, res, next) => {
     if (status) rider.status = status;
 
     await rider.save();
+
+    // Broadcast the raw position to every subscribed user IMMEDIATELY —
+    // this is what moves the marker on the user's tracking map. It's
+    // deliberately decoupled from the ETA compute path below because
+    // etaComputationService is heavily throttled (Distance Matrix
+    // quota) and short-circuits when there are no destinations with
+    // GPS coords. Users at un-geocoded PGs still deserve to see the
+    // rider marker even without an ETA number.
+    if (rider.status === 'delivering') {
+      try {
+        socketService.emitRiderPosition(rider.zone_location_id, {
+          rider_id:   rider.id,
+          name:       rider.name,
+          latitude:   lat,
+          longitude:  lng,
+          status:     rider.status,
+          eta_minutes: rider.eta_minutes ?? null,
+          at:         new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.warn(`[tracking] emitRiderPosition failed: ${err.message}`);
+      }
+    }
 
     // ETA recompute — fire-and-forget so the hot-path response stays fast.
     // The service is internally throttled (100m OR 30s) so we can call

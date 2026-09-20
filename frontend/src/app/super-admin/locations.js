@@ -28,17 +28,11 @@ import { colors, radius, space, type } from '../../theme';
 // hit the same address. The ETA calculator uses these pins.
 // -----------------------------------------------------------------------------
 
-// Lazy-load react-native-maps — Expo Go doesn't ship it.
-let MapView = null, Marker = null, UrlTile = null, PROVIDER_GOOGLE = null;
-try {
-  const maps = require('react-native-maps');
-  MapView         = maps.default;
-  Marker          = maps.Marker;
-  UrlTile         = maps.UrlTile;
-  PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
-} catch (_) { /* not installed in Expo Go */ }
-
-const MAPS_AVAILABLE = MapView != null;
+// Same reason as track.js / rider map.tsx — see LeafletMap.js. React
+// Native Maps 1.x on Android renders black without a fully-configured
+// Google Maps API key + billing + prebuilt APK, so we use a
+// WebView + Leaflet + OSM map that works everywhere with no key.
+import LeafletMap from '../../components/LeafletMap';
 
 // Bangalore center — pin defaults here if the PG doesn't have coords yet.
 const BANGALORE_CENTER = { latitude: 12.9716, longitude: 77.5946 };
@@ -226,39 +220,23 @@ export default function LocationsCoordScreen() {
             onBack={closePicker}
           />
 
-          {MAPS_AVAILABLE && pickCoord ? (
+          {pickCoord ? (
             <View style={styles.mapWrap}>
-              <MapView
-                style={styles.map}
-                initialRegion={{
-                  latitude:      pickCoord.latitude,
-                  longitude:     pickCoord.longitude,
-                  latitudeDelta:  0.02,
-                  longitudeDelta: 0.02,
-                }}
-                onPress={(e) => setPickCoord(e.nativeEvent.coordinate)}
-                showsUserLocation
-              >
-                {UrlTile && (
-                  <UrlTile
-                    urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    maximumZ={19}
-                    shouldReplaceMapContent
-                  />
-                )}
-                <Marker
-                  coordinate={pickCoord}
-                  draggable
-                  onDragEnd={(e) => setPickCoord(e.nativeEvent.coordinate)}
-                  anchor={{ x: 0.5, y: 1 }}
-                >
-                  <View style={styles.pickerPin}>
-                    <Ionicons name="location" size={22} color={colors.paper} />
-                  </View>
-                </Marker>
-              </MapView>
+              <LeafletMap
+                center={pickCoord}
+                zoom={16}
+                markers={[{
+                  id: 'pin',
+                  latitude:  pickCoord.latitude,
+                  longitude: pickCoord.longitude,
+                  kind:      'home',
+                  label:     '📍',
+                  title:     picking?.name || 'Selected location',
+                }]}
+                onPress={(c) => setPickCoord(c)}
+              />
               <View style={styles.pickerCoords}>
-                <Text style={styles.pickerCoordsLabel}>Selected</Text>
+                <Text style={styles.pickerCoordsLabel}>Selected · tap to move</Text>
                 <Text style={styles.pickerCoordsValue}>
                   {pickCoord.latitude.toFixed(5)}, {pickCoord.longitude.toFixed(5)}
                 </Text>
@@ -267,9 +245,7 @@ export default function LocationsCoordScreen() {
           ) : (
             <View style={styles.mapPlaceholder}>
               <Ionicons name="map-outline" size={40} color={colors.inkGhost} />
-              <Text style={styles.placeholderText}>
-                Map unavailable in Expo Go. Use a development build to pick coordinates.
-              </Text>
+              <Text style={styles.placeholderText}>Loading map…</Text>
             </View>
           )}
 
@@ -279,7 +255,7 @@ export default function LocationsCoordScreen() {
               label="Save pin"
               onPress={handleSave}
               loading={saving}
-              disabled={!MAPS_AVAILABLE || !pickCoord}
+              disabled={!pickCoord}
               icon="checkmark"
               style={{ flex: 1 }}
             />

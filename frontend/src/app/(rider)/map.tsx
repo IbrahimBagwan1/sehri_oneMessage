@@ -1,11 +1,10 @@
 // @ts-nocheck
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   Alert,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -13,29 +12,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useRiderStore } from '../../store/useRiderStore';
 import { Button, Chip, Header, LoadingState } from '../../components/ui';
+import LeafletMap from '../../components/LeafletMap';
 import { colors, radius, space, type } from '../../theme';
 
-// Lazy-load react-native-maps — not present in Expo Go.
-let MapView = null;
-let Marker = null;
-let UrlTile = null;
-let PROVIDER_GOOGLE = null;
-try {
-  const maps = require('react-native-maps');
-  MapView         = maps.default;
-  Marker          = maps.Marker;
-  UrlTile         = maps.UrlTile;
-  PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
-} catch (_) {}
+// Historical note: this screen used to render `react-native-maps` with a
+// Google provider. On Android react-native-maps 1.x always uses Google as
+// the base tile source, and the map rendered as a solid black rectangle
+// whenever the Google Maps API key wasn't fully wired (Expo Go, or a
+// dev-client built before the plugin config was added, or a Google Cloud
+// project with billing / Maps SDK for Android not enabled). We switched
+// to LeafletMap (WebView + OpenStreetMap) so tiles render everywhere
+// without any external cloud dependency.
 
-const MAPS_AVAILABLE = MapView != null;
-
-const DEFAULT_REGION = {
-  latitude:      12.9716,
-  longitude:     77.5946,
-  latitudeDelta:  0.01,
-  longitudeDelta: 0.01,
-};
+const DEFAULT_CENTER = { latitude: 12.9716, longitude: 77.5946 };
 
 export default function RiderMapScreen() {
   const router         = useRouter();
@@ -77,7 +66,7 @@ export default function RiderMapScreen() {
         (newLoc) => {
           const coords = { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude };
           setCurrentLocation(coords);
-          mapRef.current?.animateToRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 }, 500);
+          mapRef.current?.animateTo({ latitude: coords.latitude, longitude: coords.longitude });
         }
       );
     })();
@@ -126,43 +115,20 @@ export default function RiderMapScreen() {
           <View style={styles.mapPlaceholder}>
             <LoadingState message="Getting your location…" />
           </View>
-        ) : MAPS_AVAILABLE ? (
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            // Use the default provider on both platforms. On Android that's
-            // the AOSP MapView, which draws nothing on its own — we overlay
-            // OpenStreetMap tiles via <UrlTile> below so map tiles render
-            // in Expo Go without needing a Google Maps API key.
-            initialRegion={currentLocation
-              ? { ...currentLocation, latitudeDelta: 0.01, longitudeDelta: 0.01 }
-              : DEFAULT_REGION}
-          >
-            {UrlTile && (
-              <UrlTile
-                urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                maximumZ={19}
-                shouldReplaceMapContent
-              />
-            )}
-            {currentLocation && (
-              <Marker coordinate={currentLocation} title={rider?.name || 'You'} description={currentAddress || ''}>
-                <View style={styles.marker}>
-                  <Ionicons name="bicycle" size={24} color={isDelivering ? colors.teal : colors.inkFaint} />
-                </View>
-              </Marker>
-            )}
-          </MapView>
         ) : (
-          <View style={styles.mapPlaceholder}>
-            <Ionicons name="map-outline" size={40} color={colors.inkGhost} />
-            <Text style={styles.placeholderTitle}>Map unavailable in Expo Go</Text>
-            {currentLocation && (
-              <Text style={styles.coords}>
-                {currentLocation.latitude.toFixed(5)}, {currentLocation.longitude.toFixed(5)}
-              </Text>
-            )}
-          </View>
+          <LeafletMap
+            ref={mapRef}
+            center={currentLocation || DEFAULT_CENTER}
+            zoom={16}
+            markers={currentLocation ? [{
+              id: 'self',
+              latitude:  currentLocation.latitude,
+              longitude: currentLocation.longitude,
+              kind:      'rider',
+              label:     isDelivering ? '●' : '',
+              title:     rider?.name || 'You',
+            }] : []}
+          />
         )}
       </View>
 

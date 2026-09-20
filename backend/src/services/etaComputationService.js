@@ -257,21 +257,12 @@ const updateETAsForRider = async (rider, lat, lng) => {
       }
     }
 
-    // Zone-wide broadcast — every user in the rider's zone sees the
-    // rider marker glide in real time.
-    if (rider.zone_location_id) {
-      try {
-        socketService.emitRiderPosition(rider.zone_location_id, {
-          rider_id:   rider.id,
-          name:       rider.name,
-          latitude:   lat,
-          longitude:  lng,
-          status:     rider.status,
-          eta_minutes: rider.eta_minutes ?? null,
-          at:         now.toISOString(),
-        });
-      } catch (_) { /* noop */ }
-    }
+    // NOTE: we deliberately do NOT emit rider_position here anymore.
+    // trackingController.pushLocation now broadcasts every push
+    // unconditionally, so users' maps update even when this service
+    // short-circuits (throttled window, no destinations with coords,
+    // etc.). Emitting again here would be a duplicate event on the
+    // slow path.
 
     if (pushes.length > 0) {
       // Fire-and-forget — do not block the rest of the response.

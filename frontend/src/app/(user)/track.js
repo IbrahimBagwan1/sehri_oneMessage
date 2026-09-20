@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Platform,
   Pressable,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -13,11 +13,11 @@ import { trackingApi } from '../../api/tracking';
 import {
   Card, Chip, EmptyState, ErrorState, GuestGate, Header, LoadingState,
 } from '../../components/ui';
+import LeafletMap from '../../components/LeafletMap';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
 import {
   connect as connectSocket,
-  getSocket,
   subscribeTracking,
   unsubscribeTracking,
 } from '../../services/socket';
@@ -36,27 +36,14 @@ import {
 //      updates whenever the backend recomputes.
 //
 // Guest wrapper — see comment in wrapper. Rules-of-hooks stay clean.
+//
+// Map rendering — LeafletMap (WebView + OpenStreetMap), not
+// react-native-maps. See LeafletMap.js for why: RN Maps 1.x on Android
+// requires a working Google Cloud Maps SDK setup or the map is a black
+// rectangle. Leaflet + OSM works everywhere without a key.
 // -----------------------------------------------------------------------------
 
-// Lazy-load react-native-maps so Expo Go doesn't crash on import.
-let MapView = null, Marker = null, Polyline = null, UrlTile = null, PROVIDER_GOOGLE = null;
-try {
-  const maps = require('react-native-maps');
-  MapView         = maps.default;
-  Marker          = maps.Marker;
-  Polyline        = maps.Polyline;
-  UrlTile         = maps.UrlTile;
-  PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
-} catch (_) { /* not installed in Expo Go */ }
-
-const MAPS_AVAILABLE = MapView != null;
-
-const DEFAULT_REGION = {
-  latitude:      12.9082,
-  longitude:     77.5484,
-  latitudeDelta:  0.02,
-  longitudeDelta: 0.02,
-};
+const DEFAULT_CENTER = { latitude: 12.9082, longitude: 77.5484 };
 
 const STATUS = {
   idle:       { label: 'Rider is idle',       tone: 'neutral' },
@@ -165,15 +152,10 @@ function TrackScreenAuthed() {
         }));
         // Recenter map on the new rider position.
         if (mapRef.current && payload.latitude != null && payload.longitude != null) {
-          mapRef.current.animateToRegion(
-            {
-              latitude:      Number(payload.latitude),
-              longitude:     Number(payload.longitude),
-              latitudeDelta:  0.02,
-              longitudeDelta: 0.02,
-            },
-            600
-          );
+          mapRef.current.animateTo({
+            latitude:  Number(payload.latitude),
+            longitude: Number(payload.longitude),
+          });
         }
       });
 
@@ -200,6 +182,32 @@ function TrackScreenAuthed() {
 
   const hasRiderLocation = rider?.latitude != null && rider?.longitude != null;
   const statusCfg = STATUS[rider?.status] || STATUS.idle;
+
+  // Build the marker set for LeafletMap. Kept in a memo so the WebView
+  // isn't hammered with re-injects unless the actual coords change.
+  const mapMarkers = useMemo(() => {
+    const list = [];
+    if (hasRiderLocation) {
+      list.push({
+        id: 'rider',
+        latitude:  Number(rider.latitude),
+        longitude: Number(rider.longitude),
+        kind:      'rider',
+        label:     '🚴',
+        title:     rider.name || 'Rider',
+      });
+    }
+    if (userPin) {
+      list.push({
+        id: 'home',
+        latitude:  userPin.latitude,
+        longitude: userPin.longitude,
+        kind:      'home',
+        title:     'Your home',
+      });
+    }
+    return list;
+  }, [hasRiderLocation, rider?.latitude, rider?.longitude, rider?.name, userPin]);
 
   // -------------------- Render states --------------------
   if (loading) {
@@ -243,111 +251,38 @@ function TrackScreenAuthed() {
     <SafeAreaView style={styles.screen} edges={['top']}>
       <TrackHeader live />
 
-      {/* Map — Google provider on Android, Apple Maps on iOS. */}
-      {MAPS_AVAILABLE ? (
-        <View style={styles.mapContainer}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            // Default provider + OpenStreetMap UrlTile overlay so tiles
-            // render in Expo Go (which doesn't honor app.json's Google
-            // Maps API key). In a dev build with a valid key, you can
-            // switch back to PROVIDER_GOOGLE and drop the UrlTile.
-            initialRegion={
-              hasRiderLocation
-                ? {
-                    latitude:      Number(rider.latitude),
-                    longitude:     Number(rider.longitude),
-                    latitudeDelta:  0.02,
-                    longitudeDelta: 0.02,
-                  }
-                : DEFAULT_REGION
-            }
-            showsUserLocation
-            showsMyLocationButton={false}
-          >
-            {UrlTile && (
-              <UrlTile
-                urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                maximumZ={19}
-                shouldReplaceMapContent
-              />
-            )}
-            {hasRiderLocation && (
-              <Marker
-                coordinate={{
-                  latitude:  Number(rider.latitude),
-                  longitude: Number(rider.longitude),
-                }}
-                title={rider.name}
-                description={rider.current_address || ''}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <View style={styles.riderMarker}>
-                  <Ionicons name="bicycle" size={20} color={colors.paper} />
-                </View>
-              </Marker>
-            )}
-            {userPin && (
-              <Marker
-                coordinate={userPin}
-                title="Your home"
-                anchor={{ x: 0.5, y: 1 }}
-              >
-                <View style={styles.homeMarker}>
-                  <Ionicons name="home" size={16} color={colors.gold} />
-                </View>
-              </Marker>
-            )}
-            {hasRiderLocation && userPin && Polyline && (
-              // Simple straight polyline — a real route from Directions
-              // API is a future upgrade; for now this shows "who's where".
-              <Polyline
-                coordinates={[
-                  { latitude: Number(rider.latitude), longitude: Number(rider.longitude) },
-                  userPin,
-                ]}
-                strokeColor={colors.teal}
-                strokeWidth={3}
-              />
-            )}
-          </MapView>
+      {/* Map — Leaflet + OSM inside a WebView. See LeafletMap.js. */}
+      <View style={styles.mapContainer}>
+        <LeafletMap
+          ref={mapRef}
+          center={
+            hasRiderLocation
+              ? { latitude: Number(rider.latitude), longitude: Number(rider.longitude) }
+              : DEFAULT_CENTER
+          }
+          zoom={15}
+          markers={mapMarkers}
+          polyline={hasRiderLocation && userPin
+            ? [{ latitude: Number(rider.latitude), longitude: Number(rider.longitude) }, userPin]
+            : null}
+        />
 
-          {/* Recenter button — small overlay, top-right */}
-          <Pressable
-            onPress={() => {
-              if (!hasRiderLocation || !mapRef.current) return;
-              mapRef.current.animateToRegion(
-                {
-                  latitude:      Number(rider.latitude),
-                  longitude:     Number(rider.longitude),
-                  latitudeDelta:  0.02,
-                  longitudeDelta: 0.02,
-                },
-                500
-              );
-            }}
-            style={({ pressed }) => [styles.recenterBtn, pressed && styles.recenterBtnPressed]}
-            accessibilityLabel="Recenter map on rider"
-            accessibilityRole="button"
-          >
-            <Ionicons name="locate" size={20} color={colors.tealDark} />
-          </Pressable>
-        </View>
-      ) : (
-        <View style={styles.mapFallback}>
-          <Ionicons name="map-outline" size={40} color={colors.inkGhost} />
-          <Text style={styles.fallbackTitle}>Map unavailable in Expo Go</Text>
-          <Text style={styles.fallbackHint}>Use a development build to see the live map.</Text>
-          {hasRiderLocation && (
-            <View style={styles.coordsBox}>
-              <Text style={styles.coordsText}>
-                {Number(rider.latitude).toFixed(5)}, {Number(rider.longitude).toFixed(5)}
-              </Text>
-            </View>
-          )}
-        </View>
-      )}
+        {/* Recenter button — small overlay, top-right */}
+        <Pressable
+          onPress={() => {
+            if (!hasRiderLocation || !mapRef.current) return;
+            mapRef.current.animateTo({
+              latitude:  Number(rider.latitude),
+              longitude: Number(rider.longitude),
+            });
+          }}
+          style={({ pressed }) => [styles.recenterBtn, pressed && styles.recenterBtnPressed]}
+          accessibilityLabel="Recenter map on rider"
+          accessibilityRole="button"
+        >
+          <Ionicons name="locate" size={20} color={colors.tealDark} />
+        </Pressable>
+      </View>
 
       {/* -------- Bottom info panel — status + ETA + rider identity -------- */}
       <View style={styles.panel}>

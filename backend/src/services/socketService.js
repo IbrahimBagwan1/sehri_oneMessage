@@ -2,6 +2,7 @@
 
 const { Server } = require('socket.io');
 const { verifyAccessToken } = require('../utils/jwt');
+const { resolveZone } = require('../utils/resolveZone');
 const logger = require('../utils/logger');
 
 // ---------------------------------------------------------------------------
@@ -76,25 +77,65 @@ const initSocket = (httpServer) => {
     // -----------------------------------------------------------------------
     // Live tracking — client subscribes when the track screen mounts.
     //
-    // Payload (optional): { zone_id }. If the client sends a zone id,
-    // we join that zone room. Otherwise we fall back to the zone the
-    // JWT carries (admins have zone_location_id in the token).
+    // Payload (optional): { zone_id }.
+    //   1. If the client sends a zone id, we join that zone room.
+    //   2. Else if the JWT already carries `zone_location_id` (admin or
+    //      rider tokens), fall back to that.
+    //   3. Else (role='user' — JWTs for plain users deliberately do NOT
+    //      carry zone_location_id), look up the user's linked User row
+    //      and walk their location parent chain to find the zone.
+    //
+    // Every zone-tracking client also joins a `tracking:global` room so
+    // riders serving all zones (rider.zone_location_id == null) can
+    // broadcast without knowing individual zones.
     //
     // Emitters that publish tracking events:
     //   • emitRiderPosition(zoneId, payload) → `zone:{zoneId}` room
+    //     (or → `tracking:global` when zoneId is null)
     //   • emitEtaUpdate(userId, payload)     → `user:{userId}` room
     // -----------------------------------------------------------------------
-    socket.on('subscribe_tracking', ({ zone_id } = {}) => {
-      const zone = zone_id || zone_location_id;
-      if (zone) {
-        socket.join(`zone:${zone}`);
-        logger.info(`[socket] ${effectiveUserId} joined zone:${zone}`);
+    const joinZoneRoom = (zoneId) => {
+      if (!zoneId) return;
+      socket.join(`zone:${zoneId}`);
+      logger.info(`[socket] ${effectiveUserId} joined zone:${zoneId}`);
+    };
+
+    socket.on('subscribe_tracking', async ({ zone_id } = {}) => {
+      try {
+        // Always join the fallback global tracking room.
+        socket.join('tracking:global');
+
+        if (zone_id)           return joinZoneRoom(zone_id);
+        if (zone_location_id)  return joinZoneRoom(zone_location_id);
+
+        // Plain user — resolve their zone lazily from the users table.
+        if (role === 'user' || (user_id && role !== 'admin' && role !== 'rider')) {
+          const db = require('../models');
+          const user = await db.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
+          if (user && user.location_id) {
+            const zone = await resolveZone(user.location_id, db);
+            if (zone) joinZoneRoom(zone.id);
+          }
+        }
+      } catch (err) {
+        logger.warn(`[socket] subscribe_tracking failed: ${err.message}`);
       }
     });
 
-    socket.on('unsubscribe_tracking', ({ zone_id } = {}) => {
-      const zone = zone_id || zone_location_id;
-      if (zone) socket.leave(`zone:${zone}`);
+    socket.on('unsubscribe_tracking', async ({ zone_id } = {}) => {
+      try {
+        socket.leave('tracking:global');
+        if (zone_id) { socket.leave(`zone:${zone_id}`); return; }
+        if (zone_location_id) { socket.leave(`zone:${zone_location_id}`); return; }
+        if (role === 'user' || (user_id && role !== 'admin' && role !== 'rider')) {
+          const db = require('../models');
+          const user = await db.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
+          if (user && user.location_id) {
+            const zone = await resolveZone(user.location_id, db);
+            if (zone) socket.leave(`zone:${zone.id}`);
+          }
+        }
+      } catch (_) { /* noop */ }
     });
 
     socket.on('disconnect', (reason) => {
@@ -143,12 +184,17 @@ const emitMemberUpdate = (groupId, event, payload) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Broadcast a rider's new position to every user in that zone.
+ * Broadcast a rider's new position.
+ *   • If zoneId is provided → emit to that zone room.
+ *   • If zoneId is null (rider serves every zone) → emit to
+ *     `tracking:global` so every subscribed user receives it.
+ *
  * Consumed by the user track screen to move the marker in real time.
  */
 const emitRiderPosition = (zoneId, payload) => {
-  if (!io || !zoneId) return;
-  io.to(`zone:${zoneId}`).emit('rider_position', payload);
+  if (!io) return;
+  const room = zoneId ? `zone:${zoneId}` : 'tracking:global';
+  io.to(room).emit('rider_position', payload);
 };
 
 /**
