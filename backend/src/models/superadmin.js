@@ -41,12 +41,25 @@ module.exports = (sequelize, DataTypes) => {
           key: 'id',
         },
       },
+      // Promotion audit — set when this super admin row was created by
+      // POST /api/admin/users/:id/promote (an existing super admin
+      // promoted a user). Nullable — standalone super admins leave
+      // these blank.
+      promoted_by: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      promoted_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       tableName: 'super_admins',
       indexes: [
         { unique: true, fields: ['phone'] },
         { fields: ['user_id'] },
+        { fields: ['promoted_by'] },
       ],
       defaultScope: {
         attributes: { exclude: ['password'] },

@@ -18,11 +18,13 @@ import { colors, radius, space, type } from '../../theme';
 // Lazy-load react-native-maps — not present in Expo Go.
 let MapView = null;
 let Marker = null;
+let UrlTile = null;
 let PROVIDER_GOOGLE = null;
 try {
   const maps = require('react-native-maps');
   MapView         = maps.default;
   Marker          = maps.Marker;
+  UrlTile         = maps.UrlTile;
   PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
 } catch (_) {}
 
@@ -128,11 +130,21 @@ export default function RiderMapScreen() {
           <MapView
             ref={mapRef}
             style={styles.map}
-            provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+            // Use the default provider on both platforms. On Android that's
+            // the AOSP MapView, which draws nothing on its own — we overlay
+            // OpenStreetMap tiles via <UrlTile> below so map tiles render
+            // in Expo Go without needing a Google Maps API key.
             initialRegion={currentLocation
               ? { ...currentLocation, latitudeDelta: 0.01, longitudeDelta: 0.01 }
               : DEFAULT_REGION}
           >
+            {UrlTile && (
+              <UrlTile
+                urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maximumZ={19}
+                shouldReplaceMapContent
+              />
+            )}
             {currentLocation && (
               <Marker coordinate={currentLocation} title={rider?.name || 'You'} description={currentAddress || ''}>
                 <View style={styles.marker}>

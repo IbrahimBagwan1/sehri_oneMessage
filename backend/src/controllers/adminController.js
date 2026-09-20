@@ -3,7 +3,18 @@ const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
+const {
+  buildLocationInclude,
+  resolveZoneFromLoaded,
+} = require('../utils/zoneScope');
+const logger = require('../utils/logger');
 const { User, Admin, SuperAdmin, Location } = db;
+
+// ---------------------------------------------------------------------------
+// Valid promote-to roles. Extended from here if we ever add rider or other
+// promotable roles through this flow.
+// ---------------------------------------------------------------------------
+const PROMOTABLE_ROLES = ['admin', 'super_admin'];
 
 // ---------------------------------------------------------------------------
 // Internal helper — resolves a zone-type location from any location_id.
@@ -366,10 +377,271 @@ const linkUserToAdmin = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// GET /api/admin/users/search?q=<name-or-phone>&page=&limit=
+// Access: super_admin only
+//
+// Free-text search across the users table by NAME (case-insensitive
+// substring) or PHONE (substring; non-digit characters in the query
+// are stripped so "+91 96327 16392" and "9632716392" both match).
+//
+// Standard pagination envelope (page/limit/total). Soft-deleted rows
+// are excluded. Each row includes `existing_roles` so the frontend can
+// decide whether promoting to admin/super_admin is still available.
+// ---------------------------------------------------------------------------
+const searchUsers = async (req, res, next) => {
+  try {
+    const rawQ = (req.query.q || '').toString().trim();
+    if (!rawQ || rawQ.length < 2) {
+      return error(res, {
+        statusCode: 400,
+        message: 'Type at least 2 characters to search (name or phone digits).',
+      });
+    }
+
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    // Case-insensitive substring on name; digits-only substring on phone.
+    const digits = rawQ.replace(/\D/g, '');
+    const nameLike = { [Op.like]: `%${rawQ.toLowerCase()}%` };
+    const orClauses = [
+      // MySQL is case-insensitive on VARCHAR by default (utf8mb4 CI collation).
+      // sequelize.where + fn LOWER would be safer on other engines, but this
+      // codebase is MySQL-only per config/database.js.
+      { name:  nameLike },
+    ];
+    if (digits.length >= 3) {
+      orClauses.push({ phone: { [Op.like]: `%${digits}%` } });
+    }
+
+    const { count, rows } = await User.findAndCountAll({
+      where: {
+        status: { [Op.ne]: 'deleted' },
+        [Op.or]: orClauses,
+      },
+      include: [buildLocationInclude()],
+      order: [['name', 'ASC']],
+      limit,
+      offset,
+    });
+
+    // Enrich with the roles this phone/user already holds so the UI
+    // can gray out disallowed promotions.
+    const userIds  = rows.map((u) => u.id);
+    const phones   = rows.map((u) => u.phone);
+    const [linkedAdmins, linkedSuperAdmins, phoneAdmins, phoneSuperAdmins] =
+      userIds.length === 0 ? [[], [], [], []] : await Promise.all([
+        Admin.findAll({      where: { user_id: userIds }, attributes: ['user_id'] }),
+        SuperAdmin.findAll({ where: { user_id: userIds }, attributes: ['user_id'] }),
+        Admin.findAll({      where: { phone:   phones  }, attributes: ['phone'] }),
+        SuperAdmin.findAll({ where: { phone:   phones  }, attributes: ['phone'] }),
+      ]);
+    const adminUserIds       = new Set(linkedAdmins.map((r) => r.user_id));
+    const superAdminUserIds  = new Set(linkedSuperAdmins.map((r) => r.user_id));
+    const adminPhones        = new Set(phoneAdmins.map((r) => r.phone));
+    const superAdminPhones   = new Set(phoneSuperAdmins.map((r) => r.phone));
+
+    const users = rows.map((u) => {
+      const zone = resolveZoneFromLoaded(u.location);
+      const existing_roles = ['user'];
+      if (adminUserIds.has(u.id)      || adminPhones.has(u.phone))      existing_roles.push('admin');
+      if (superAdminUserIds.has(u.id) || superAdminPhones.has(u.phone)) existing_roles.push('super_admin');
+      return {
+        id:         u.id,
+        name:       u.name,
+        phone:      u.phone,
+        status:     u.status,
+        gender:     u.gender,
+        occupation: u.occupation,
+        city:       u.city,
+        address:    u.address,
+        zone: zone ? { id: zone.id, name: zone.name } : null,
+        existing_roles,
+        created_at: u.createdAt,
+      };
+    });
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Users fetched',
+      data: { total: count, page, limit, users },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/users/:id/promote
+// Access: super_admin only
+// Body: { target_role: 'admin' | 'super_admin', zone_location_id?: uuid }
+//
+// Promotes an existing approved user to admin or super_admin. Follows
+// the "Mode A" pattern used by createAdmin/createSuperAdmin — reuses
+// the user's existing bcrypt password hash, and links via user_id so
+// the promoted person can switch roles from a single sign-in.
+//
+// Guarantees:
+//   • Only super_admin may call. Regular admins can't promote anyone.
+//   • The user must exist, be status='approved', and not already hold
+//     the target role or a higher one (super_admin > admin > user).
+//   • Promoting to admin requires zone_location_id → validated as
+//     type='zone' (admin.zone_location_id is NOT NULL in the schema).
+//   • Records who ran the promotion (promoted_by = req.auth.id) and
+//     when (promoted_at). Kept in the new admin/super_admin row.
+// ---------------------------------------------------------------------------
+const promoteUser = async (req, res, next) => {
+  const t = await db.sequelize.transaction();
+  try {
+    const { id } = req.params;
+    const { target_role, zone_location_id } = req.body || {};
+
+    if (!PROMOTABLE_ROLES.includes(target_role)) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 400,
+        message: `target_role must be one of: ${PROMOTABLE_ROLES.join(', ')}`,
+      });
+    }
+
+    // Load the target user.
+    const user = await User.scope('withPassword').findByPk(id, { transaction: t });
+    if (!user) {
+      await t.rollback();
+      return error(res, { statusCode: 404, message: 'User not found' });
+    }
+    if (user.status !== 'approved') {
+      await t.rollback();
+      return error(res, {
+        statusCode: 422,
+        message: `Only approved users can be promoted. This user's status is "${user.status}".`,
+      });
+    }
+
+    // Check existing roles for this person (by user_id AND by phone —
+    // legacy standalone admin rows may not have user_id set).
+    const [existingAdmin, existingSuperAdmin] = await Promise.all([
+      Admin.findOne({
+        where: { [Op.or]: [{ user_id: user.id }, { phone: user.phone }] },
+        transaction: t,
+      }),
+      SuperAdmin.findOne({
+        where: { [Op.or]: [{ user_id: user.id }, { phone: user.phone }] },
+        transaction: t,
+      }),
+    ]);
+
+    if (existingSuperAdmin) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 409,
+        message: `${user.name} is already a super admin — that's the highest role.`,
+      });
+    }
+    if (target_role === 'admin' && existingAdmin) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 409,
+        message: `${user.name} is already an admin.`,
+      });
+    }
+
+    // Additional validation per target role.
+    let zoneLocation = null;
+    if (target_role === 'admin') {
+      if (!zone_location_id) {
+        await t.rollback();
+        return error(res, {
+          statusCode: 400,
+          message: 'zone_location_id is required when promoting to admin.',
+        });
+      }
+      zoneLocation = await Location.findByPk(zone_location_id, { transaction: t });
+      if (!zoneLocation || zoneLocation.type !== 'zone') {
+        await t.rollback();
+        return error(res, {
+          statusCode: 400,
+          message: 'zone_location_id must reference a location of type zone.',
+        });
+      }
+    }
+
+    // Now perform the promotion. Reuse the user's existing bcrypt hash
+    // so they sign in with the same password — same pattern as
+    // createAdmin/createSuperAdmin Mode A.
+    const now = new Date();
+    const auditFields = {
+      promoted_by: req.auth.id,
+      promoted_at: now,
+    };
+
+    if (target_role === 'admin') {
+      const admin = await Admin.create({
+        name:             user.name,
+        phone:            user.phone,
+        password:         user.password,        // already hashed
+        zone_location_id: zone_location_id,
+        user_id:          user.id,
+        ...auditFields,
+      }, { transaction: t });
+
+      await t.commit();
+      logger.info(`[admin] Promoted user ${user.id} to admin (zone=${zoneLocation.name}) by super_admin ${req.auth.id}`);
+      return success(res, {
+        statusCode: 201,
+        message: `${user.name} is now an admin for ${zoneLocation.name}.`,
+        data: {
+          id:               admin.id,
+          role:             'admin',
+          name:             admin.name,
+          phone:            admin.phone,
+          zone_location_id: admin.zone_location_id,
+          zone_name:        zoneLocation.name,
+          user_id:          admin.user_id,
+          promoted_by:      admin.promoted_by,
+          promoted_at:      admin.promoted_at,
+        },
+      });
+    }
+
+    // target_role === 'super_admin'
+    const sa = await SuperAdmin.create({
+      name:     user.name,
+      phone:    user.phone,
+      password: user.password,                  // already hashed
+      user_id:  user.id,
+      ...auditFields,
+    }, { transaction: t });
+
+    await t.commit();
+    logger.info(`[admin] Promoted user ${user.id} to super_admin by super_admin ${req.auth.id}`);
+    return success(res, {
+      statusCode: 201,
+      message: `${user.name} is now a super admin.`,
+      data: {
+        id:          sa.id,
+        role:        'super_admin',
+        name:        sa.name,
+        phone:       sa.phone,
+        user_id:     sa.user_id,
+        promoted_by: sa.promoted_by,
+        promoted_at: sa.promoted_at,
+      },
+    });
+  } catch (err) {
+    try { await t.rollback(); } catch (_) { /* noop */ }
+    next(err);
+  }
+};
+
 module.exports = {
   createAdmin,
   createSuperAdmin,
   listAdmins,
   deleteAdmin,
   linkUserToAdmin,
+  searchUsers,
+  promoteUser,
 };

@@ -39,12 +39,13 @@ import {
 // -----------------------------------------------------------------------------
 
 // Lazy-load react-native-maps so Expo Go doesn't crash on import.
-let MapView = null, Marker = null, Polyline = null, PROVIDER_GOOGLE = null;
+let MapView = null, Marker = null, Polyline = null, UrlTile = null, PROVIDER_GOOGLE = null;
 try {
   const maps = require('react-native-maps');
   MapView         = maps.default;
   Marker          = maps.Marker;
   Polyline        = maps.Polyline;
+  UrlTile         = maps.UrlTile;
   PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
 } catch (_) { /* not installed in Expo Go */ }
 
@@ -248,7 +249,10 @@ function TrackScreenAuthed() {
           <MapView
             ref={mapRef}
             style={styles.map}
-            provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+            // Default provider + OpenStreetMap UrlTile overlay so tiles
+            // render in Expo Go (which doesn't honor app.json's Google
+            // Maps API key). In a dev build with a valid key, you can
+            // switch back to PROVIDER_GOOGLE and drop the UrlTile.
             initialRegion={
               hasRiderLocation
                 ? {
@@ -261,8 +265,14 @@ function TrackScreenAuthed() {
             }
             showsUserLocation
             showsMyLocationButton={false}
-            // Don't skin the tiles — clean Google map, custom markers only.
           >
+            {UrlTile && (
+              <UrlTile
+                urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maximumZ={19}
+                shouldReplaceMapContent
+              />
+            )}
             {hasRiderLocation && (
               <Marker
                 coordinate={{

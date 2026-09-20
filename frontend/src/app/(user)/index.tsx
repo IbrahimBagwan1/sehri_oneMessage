@@ -58,14 +58,76 @@ const PRAYER_TIMELINE = [
 
 // -------------------------------------------------------------------------
 // Pure helpers — deterministic, testable
+//
+// IMPORTANT — timezone strategy:
+// Prayer times are IST wall-clock strings ("05:30") produced by the
+// backend prayerService. The countdown, next-prayer picker, and
+// isPast checks must all reason in IST regardless of the device's
+// local timezone (a traveler in Dubai on an IST community app is a
+// real user segment). We therefore:
+//   1. read "now" as IST wall-clock components via Intl.DateTimeFormat
+//      (matches the safe pattern in backend/utils/pollPhase.js — plain
+//      `toLocaleString(..., { hour12: false })` returns "24" at
+//      midnight on some Node/V8 versions),
+//   2. anchor every prayer's clock time to TODAY's IST calendar date,
+//   3. convert that IST wall-clock instant into a real epoch-based Date
+//      by subtracting the fixed +05:30 IST offset (IST has no DST, so
+//      this is exact),
+//   4. compare using .getTime(), which is UTC-epoch and therefore
+//      device-timezone-independent.
 // -------------------------------------------------------------------------
 
+const IST_TZ = 'Asia/Kolkata';
+const IST_OFFSET_MIN = 5 * 60 + 30;   // +05:30, fixed year-round
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Parse "HH:MM" into { h, m } with range validation. */
 const parseHM = (t) => {
-  if (!t || typeof t !== 'string') return null;
-  const [h, m] = t.split(':').map((n) => Number.parseInt(n, 10));
-  return Number.isFinite(h) && Number.isFinite(m) ? { h, m } : null;
+  if (typeof t !== 'string') return null;
+  const [hs, ms] = t.split(':');
+  const h = Number.parseInt(hs, 10);
+  const m = Number.parseInt(ms, 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return { h, m };
 };
 
+/**
+ * Read the current IST wall clock as { y, m, d, h, min } — device-tz-safe.
+ * `Intl.DateTimeFormat({ hour12: false }).formatToParts()` reliably returns
+ * 0–23 across supported Node/RN versions; we still `% 24` the hour as a
+ * defense against the historical "24 at midnight" quirk.
+ */
+const readIST = () => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: IST_TZ,
+    year:   'numeric',
+    month:  '2-digit',
+    day:    '2-digit',
+    hour:   '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const map: Record<string, string> = {};
+  for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value;
+  return {
+    y:   Number.parseInt(map.year, 10),
+    m:   Number.parseInt(map.month, 10),
+    d:   Number.parseInt(map.day, 10),
+    h:   Number.parseInt(map.hour, 10) % 24,
+    min: Number.parseInt(map.minute, 10),
+  };
+};
+
+/**
+ * Convert IST wall-clock components to an epoch-anchored Date instant.
+ * IST is fixed +05:30 (no DST), so `Date.UTC(y, m-1, d, h-5, min-30)`
+ * yields the exact UTC instant matching that IST moment.
+ */
+const istWallClockToDate = (y: number, m: number, d: number, h: number, min: number) =>
+  new Date(Date.UTC(y, m - 1, d, h, min) - IST_OFFSET_MIN * 60 * 1000);
+
+/** Format an "HH:MM" IST clock string as "h:mm am/pm". */
 const format12h = (t) => {
   const hm = parseHM(t);
   if (!hm) return '—';
@@ -78,12 +140,11 @@ const gregorianLine = () =>
   new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' });
 
 /**
- * Turn the AlAdhan response into the ordered ribbon shape.
- * Each row: { key, label, time, at (Date), isPast, extended }.
+ * Turn the AlAdhan-shaped response into the ordered ribbon rows.
+ * Each row: { key, label, time (raw IST string), at (Date), isPast, extended }.
  */
 const buildTimeline = (data) => {
   if (!data) return [];
-  const now = new Date();
   const t = data.timings || {};
   const source = {
     tahajjud: data.tahajjud_time,
@@ -96,37 +157,59 @@ const buildTimeline = (data) => {
     isha:     t.Isha,
   };
 
+  const nowIST = readIST();
+  const nowMs  = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, nowIST.h, nowIST.min).getTime();
+
   return PRAYER_TIMELINE
     .map((row) => {
       const time = source[row.key];
       const hm = parseHM(time);
       if (!hm) return null;
-      const at = new Date(now);
-      at.setHours(hm.h, hm.m, 0, 0);
-      // Tahajjud typically falls in the last third of the night (2 am-ish),
-      // which the API returns as "02:14" — that's tomorrow's, not today's.
-      // If the resulting timestamp is *before* now AND the label is
-      // tahajjud, treat it as tomorrow so the countdown makes sense.
-      if (row.key === 'tahajjud' && at < now) {
-        at.setDate(at.getDate() + 1);
+      let at = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, hm.h, hm.m);
+      // Tahajjud sits in the last third of the night (~2 AM IST). Once
+      // today's IST clock time for it has passed, the *next* Tahajjud is
+      // tomorrow's — roll the anchor forward one full day so the
+      // countdown and ribbon stay meaningful.
+      if (row.key === 'tahajjud' && at.getTime() < nowMs) {
+        at = new Date(at.getTime() + DAY_MS);
       }
-      return { ...row, time, at, isPast: at < now };
+      return { ...row, time, at, isPast: at.getTime() < nowMs };
     })
     .filter(Boolean);
 };
 
 /**
- * The "next" prayer is the earliest one whose time hasn't passed yet.
- * If everything has passed (late night before Tahajjud rolls over), we
- * roll to tomorrow's Fajr so the countdown never shows a negative gap.
+ * The "next" prayer is the future one with the SMALLEST timestamp.
+ *
+ * Historical bug we must never reintroduce: previous versions did
+ * `timeline.find(r => !r.isPast)`, which returns the first array element
+ * that isn't past — not the earliest in time. Because Tahajjud sits at
+ * index 0 and (once today's has passed) rolls forward to tomorrow's
+ * ~2 AM, it was *always* in the future and *always* won the "next" slot,
+ * regardless of whether Dhuhr, Asr, Maghrib, or Isha were coming up
+ * sooner today. Sort by absolute `at` here — never by array order.
+ *
+ * Verified edge cases:
+ *   • right before Fajr (04:45) → next = Imsak
+ *   • right after Isha (21:30)  → next = Tahajjud (tomorrow ~02:14)
+ *   • during Tahajjud   (02:30) → next = Imsak (later today)
+ *   • right after midnight (00:15) → next = Tahajjud (later today ~02:14)
+ *
+ * Fallback: if for some reason every row is past (missing tahajjud_time
+ * plus everything else has passed), roll tomorrow's Fajr forward so the
+ * countdown never shows a negative gap.
  */
 const findNext = (timeline) => {
-  const upcoming = timeline.find((r) => !r.isPast);
-  if (upcoming) return upcoming;
-  const first = timeline.find((r) => !r.extended) || timeline[0];
-  if (!first) return null;
-  const rollover = new Date(first.at);
-  rollover.setDate(rollover.getDate() + 1);
+  if (!timeline || timeline.length === 0) return null;
+  const future = timeline
+    .filter((r) => !r.isPast)
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
+  if (future.length > 0) return future[0];
+
+  const first = timeline.find((r) => r.key === 'fajr') ||
+                timeline.find((r) => !r.extended) ||
+                timeline[0];
+  const rollover = new Date(first.at.getTime() + DAY_MS);
   return { ...first, at: rollover, isPast: false };
 };
 

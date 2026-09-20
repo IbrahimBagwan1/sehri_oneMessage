@@ -29,11 +29,12 @@ import { colors, radius, space, type } from '../../theme';
 // -----------------------------------------------------------------------------
 
 // Lazy-load react-native-maps — Expo Go doesn't ship it.
-let MapView = null, Marker = null, PROVIDER_GOOGLE = null;
+let MapView = null, Marker = null, UrlTile = null, PROVIDER_GOOGLE = null;
 try {
   const maps = require('react-native-maps');
   MapView         = maps.default;
   Marker          = maps.Marker;
+  UrlTile         = maps.UrlTile;
   PROVIDER_GOOGLE = maps.PROVIDER_GOOGLE;
 } catch (_) { /* not installed in Expo Go */ }
 
@@ -229,7 +230,6 @@ export default function LocationsCoordScreen() {
             <View style={styles.mapWrap}>
               <MapView
                 style={styles.map}
-                provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
                 initialRegion={{
                   latitude:      pickCoord.latitude,
                   longitude:     pickCoord.longitude,
@@ -239,6 +239,13 @@ export default function LocationsCoordScreen() {
                 onPress={(e) => setPickCoord(e.nativeEvent.coordinate)}
                 showsUserLocation
               >
+                {UrlTile && (
+                  <UrlTile
+                    urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    maximumZ={19}
+                    shouldReplaceMapContent
+                  />
+                )}
                 <Marker
                   coordinate={pickCoord}
                   draggable
