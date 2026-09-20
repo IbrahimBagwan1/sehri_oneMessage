@@ -319,10 +319,9 @@ export default function AdminDashboard() {
         <View style={styles.section}>
           <SectionHeader title="Quick actions" />
           <View style={styles.grid}>
-            <QuickAction icon="people-outline"       label="Approve users"    onPress={() => router.push('/(admin)/users')} />
-            <QuickAction icon="alert-circle-outline" label="Special cases"    onPress={() => router.push('/(admin)/special-cases')} />
-            <QuickAction icon="chatbubble-outline"   label="Feedback"         onPress={() => router.push('/(admin)/feedback')} />
-            <QuickAction icon="chatbubbles-outline"  label="Chat"             onPress={() => router.push('/(admin)/chat')} />
+            <QuickAction icon="people-outline"      label="Approve users" onPress={() => router.push('/(admin)/users')} />
+            <QuickAction icon="chatbubble-outline"  label="Feedback"      onPress={() => router.push('/(admin)/feedback')} />
+            <QuickAction icon="chatbubbles-outline" label="Chat"          onPress={() => router.push('/(admin)/chat')} />
           </View>
         </View>
       </ScrollView>

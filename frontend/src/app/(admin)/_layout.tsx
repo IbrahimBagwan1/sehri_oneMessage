@@ -27,11 +27,14 @@ export default function AdminTabLayout() {
         },
       }}
     >
-      <Tabs.Screen name="index"         options={{ title: 'Dashboard', tabBarIcon: ({ color, size }) => <Ionicons name="grid-outline"           size={size} color={color} /> }} />
-      <Tabs.Screen name="users"         options={{ title: 'Users',     tabBarIcon: ({ color, size }) => <Ionicons name="people-outline"         size={size} color={color} /> }} />
-      <Tabs.Screen name="special-cases" options={{ title: 'Special',   tabBarIcon: ({ color, size }) => <Ionicons name="alert-circle-outline"   size={size} color={color} /> }} />
-      <Tabs.Screen name="feedback"      options={{ title: 'Feedback',  tabBarIcon: ({ color, size }) => <Ionicons name="chatbubble-outline"     size={size} color={color} /> }} />
-      <Tabs.Screen name="chat"          options={{ title: 'Chat',      tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles-outline"    size={size} color={color} /> }} />
+      {/* Special-cases review is super-admin only (backend gates
+          GET /api/polls/special-cases and POST .../allot with
+          requireRole('super_admin')). The admin-side screen has been
+          removed entirely — access lives under super-admin. */}
+      <Tabs.Screen name="index"    options={{ title: 'Dashboard', tabBarIcon: ({ color, size }) => <Ionicons name="grid-outline"        size={size} color={color} /> }} />
+      <Tabs.Screen name="users"    options={{ title: 'Users',     tabBarIcon: ({ color, size }) => <Ionicons name="people-outline"      size={size} color={color} /> }} />
+      <Tabs.Screen name="feedback" options={{ title: 'Feedback',  tabBarIcon: ({ color, size }) => <Ionicons name="chatbubble-outline"  size={size} color={color} /> }} />
+      <Tabs.Screen name="chat"     options={{ title: 'Chat',      tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles-outline" size={size} color={color} /> }} />
     </Tabs>
   );
 }
