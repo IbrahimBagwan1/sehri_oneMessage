@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import apiClient from '../api/client';
+import apiClient, { onAuthFailure } from '../api/client';
 import { registerForPushNotifications, unregisterPushNotifications } from '../services/pushService';
 import { connect as connectSocket, disconnect as disconnectSocket } from '../services/socket';
 
@@ -33,6 +33,15 @@ export const useAuthStore = create((set, get) => ({
   // Called once at app startup — reads persisted tokens + role from SecureStore
   // ---------------------------------------------------------------------------
   hydrate: async () => {
+    // Subscribe once — the axios response interceptor fires this when a
+    // 401 arrives and the refresh_token is missing or itself expired.
+    // The listener set is Set-based so re-subscribing is idempotent.
+    onAuthFailure(() => {
+      // logout() from this store; wrap in try to avoid crashing the
+      // interceptor path if the store is torn down for any reason.
+      try { useAuthStore.getState().logout(); } catch (_) { /* noop */ }
+    });
+
     try {
       const token     = await SecureStore.getItemAsync('access_token');
       const userData  = await SecureStore.getItemAsync('user_data');

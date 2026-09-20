@@ -9,6 +9,7 @@ import {
   Pressable,
   Alert,
   Modal,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -72,6 +73,36 @@ export default function AdminDashboard() {
   const [zonesLoading, setZonesLoading] = useState(false);
   const [pickedZoneId, setPickedZoneId] = useState(null);
   const [linking,      setLinking]      = useState(false);
+
+  // Zone-voters drill-down state: which zone name is being inspected
+  // (null = sheet closed) + the list of voters + a loading flag.
+  const [votersZone,    setVotersZone]    = useState(null);
+  const [voters,        setVoters]        = useState([]);
+  const [votersLoading, setVotersLoading] = useState(false);
+  const [votersError,   setVotersError]   = useState(null);
+
+  useEffect(() => {
+    if (!votersZone || !statsData?.poll?.id) return;
+    let alive = true;
+    (async () => {
+      setVotersLoading(true);
+      setVotersError(null);
+      setVoters([]);
+      try {
+        const res = await adminApi.getZoneVoters(statsData.poll.id, votersZone);
+        if (!alive) return;
+        // Backend groups by zone: res.data.voters is { [zone_key]: [...] }
+        const list = res?.data?.voters?.[votersZone] || [];
+        setVoters(list);
+      } catch (err) {
+        if (!alive) return;
+        setVotersError(err?.response?.data?.message || "Couldn't load voters.");
+      } finally {
+        if (alive) setVotersLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [votersZone, statsData?.poll?.id]);
 
   useEffect(() => {
     if (!linkOpen || zones.length > 0) return;
@@ -290,18 +321,28 @@ export default function AdminDashboard() {
                 <TotalCell label="Total" value={grandTotal.total} tone={colors.teal} />
               </View>
 
-              {/* Per-zone breakdown */}
+              {/* Per-zone breakdown — tap a row to open the drill-down
+                  sheet with the list of Yes voters in that zone. */}
               <View style={styles.zoneList}>
                 {Object.entries(byZone).map(([zone, counts], idx, arr) => (
                   <View key={zone}>
-                    <View style={styles.zoneRow}>
+                    <Pressable
+                      onPress={() => statsData?.poll?.id && counts.yes > 0 && setVotersZone(zone)}
+                      style={({ pressed }) => [styles.zoneRow, pressed && counts.yes > 0 && { backgroundColor: colors.tealSoft }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${ZONE_LABELS[zone] || zone}: ${counts.yes} yes voters, tap to view`}
+                      disabled={!statsData?.poll?.id || counts.yes === 0}
+                    >
                       <Text style={styles.zoneName}>{ZONE_LABELS[zone] || zone}</Text>
                       <View style={styles.zoneStats}>
                         <Text style={[styles.zoneNumber, { color: colors.success }]}>{counts.yes}</Text>
                         <Text style={[styles.zoneNumber, { color: colors.danger }]}>{counts.no}</Text>
                         <Text style={[styles.zoneNumber, { color: colors.tealDark }]}>{counts.total}</Text>
                       </View>
-                    </View>
+                      {counts.yes > 0 && (
+                        <Ionicons name="chevron-forward" size={16} color={colors.inkGhost} style={{ marginLeft: space[2] }} />
+                      )}
+                    </Pressable>
                     {idx < arr.length - 1 && <View style={styles.zoneRule} />}
                   </View>
                 ))}
@@ -325,6 +366,69 @@ export default function AdminDashboard() {
           </View>
         </View>
       </ScrollView>
+
+      {/* --------------- Zone voters drill-down sheet --------------- */}
+      <Modal
+        visible={!!votersZone}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setVotersZone(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { maxHeight: '80%' }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>
+              Yes voters — {ZONE_LABELS[votersZone] || votersZone}
+            </Text>
+            <Text style={styles.modalBody}>
+              Everyone in this zone who said yes to Sehri tomorrow.
+            </Text>
+
+            {votersLoading ? (
+              <LoadingState message="Loading voters…" compact />
+            ) : votersError ? (
+              <View style={{ paddingVertical: space[4] }}>
+                <Text style={{ ...type.meta, color: colors.danger, textAlign: 'center' }}>{votersError}</Text>
+              </View>
+            ) : voters.length === 0 ? (
+              <View style={{ paddingVertical: space[6], alignItems: 'center' }}>
+                <Ionicons name="people-outline" size={32} color={colors.inkGhost} />
+                <Text style={{ ...type.meta, marginTop: space[2], color: colors.inkFaint }}>
+                  No yes voters here yet.
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={voters}
+                keyExtractor={(v) => v.response_id}
+                renderItem={({ item }) => (
+                  <View style={styles.voterRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.voterName}>{item.user?.name}</Text>
+                      <Text style={styles.voterPhone}>{item.user?.phone}</Text>
+                    </View>
+                    {item.is_special_case && (
+                      <Chip label="Special case" tone="gold" />
+                    )}
+                    {item.sehri_allowed === 'approved' && (
+                      <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                    )}
+                    {item.sehri_allowed === 'rejected' && (
+                      <Ionicons name="close-circle" size={18} color={colors.danger} />
+                    )}
+                  </View>
+                )}
+                ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.ruleFaint }} />}
+                style={{ marginTop: space[2] }}
+              />
+            )}
+
+            <View style={{ marginTop: space[3] }}>
+              <Button label="Close" variant="secondary" onPress={() => setVotersZone(null)} fullWidth />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* --------------- Link-user-account bottom sheet --------------- */}
       <Modal
@@ -484,6 +588,16 @@ const styles = StyleSheet.create({
   },
   linkCardTitle: { ...type.h3 },
   linkCardBody:  { ...type.body, marginTop: 4 },
+
+  // Voter row (drill-down sheet)
+  voterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    paddingVertical: space[3],
+  },
+  voterName:  { ...type.bodyStrong },
+  voterPhone: { ...type.meta, marginTop: 2 },
 
   // Link-user-account modal
   modalOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },

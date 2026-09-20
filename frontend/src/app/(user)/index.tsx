@@ -277,7 +277,8 @@ export default function HomeScreen() {
   const [loadingPoll,   setLoadingV]    = useState(true);
   const [prayerError,   setPrayerErr]   = useState<string | null>(null);
   const [pollError,     setPollErr]     = useState<string | null>(null);
-  const [submittingVote, setSubmitting] = useState(false);
+  const [submittingVote,    setSubmitting]        = useState(false);
+  const [submittingSpecial, setSubmittingSpecial] = useState(false);
   const [refreshing,    setRefreshing]  = useState(false);
 
   const firstName = useMemo(() => {
@@ -339,6 +340,46 @@ export default function HomeScreen() {
       Alert.alert('Vote not recorded', err?.response?.data?.message || "Couldn't submit your vote. Try again.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // Raise a special case (opt-in "want" if user voted 'no', or
+  // opt-out "dont_want" if user voted 'yes'). Backend enforces window
+  // (10 AM–5 PM IST) and that the user has already voted — we only
+  // render this action when both are true, but the try/catch surfaces
+  // any 4xx cleanly anyway.
+  const handleSpecialCase = async (type) => {
+    if (!pollData?.poll) return;
+    setSubmittingSpecial(true);
+    try {
+      await pollsApi.submitSpecialCase(pollData.poll.id, type);
+      await loadPoll();
+    } catch (err) {
+      Alert.alert(
+        "Couldn't submit special case",
+        err?.response?.data?.message || 'Try again in a moment.'
+      );
+    } finally {
+      setSubmittingSpecial(false);
+    }
+  };
+
+  // Retract a pending special case. Backend rejects if a super admin
+  // has already reviewed it (sehri_allowed !== null) — friendly alert
+  // on that path.
+  const handleUndoSpecial = async () => {
+    if (!pollData?.poll) return;
+    setSubmittingSpecial(true);
+    try {
+      await pollsApi.undoSpecialCase(pollData.poll.id);
+      await loadPoll();
+    } catch (err) {
+      Alert.alert(
+        "Couldn't undo",
+        err?.response?.data?.message || 'Try again in a moment.'
+      );
+    } finally {
+      setSubmittingSpecial(false);
     }
   };
 
@@ -459,7 +500,14 @@ export default function HomeScreen() {
           ) : pollError ? (
             <Card><ErrorState message={pollError} onRetry={loadPoll} /></Card>
           ) : (
-            <PollCard data={pollData} submittingVote={submittingVote} onVote={handleVote} />
+            <PollCard
+              data={pollData}
+              submittingVote={submittingVote}
+              submittingSpecial={submittingSpecial}
+              onVote={handleVote}
+              onSpecialCase={handleSpecialCase}
+              onUndoSpecial={handleUndoSpecial}
+            />
           )}
         </View>
       </ScrollView>
@@ -642,7 +690,7 @@ function PhaseChip({ phase }) {
   return <Chip label={cfg.label} tone={cfg.tone} />;
 }
 
-function PollCard({ data, submittingVote, onVote }) {
+function PollCard({ data, submittingVote, submittingSpecial, onVote, onSpecialCase, onUndoSpecial }) {
   const phase = data?.phase || PHASE.CLOSED;
   const poll = data?.poll;
   const my = data?.my_response;
@@ -679,22 +727,112 @@ function PollCard({ data, submittingVote, onVote }) {
   }
 
   if (phase === PHASE.SPECIAL_CASE) {
+    // 1. User already raised a special case → show status + Undo (if
+    //    still pending — super admin hasn't reviewed yet).
     if (my?.is_special_case) {
+      const requestedLabel = my.special_case_type === 'want'
+        ? 'You asked to be added'
+        : 'You asked to be removed';
+      const notYetReviewed = my.sehri_allowed === null;
+
       return (
         <Card>
           <Text style={styles.pollHeadline}>Your special case is in.</Text>
-          <Text style={styles.pollBody}>
-            The super admin will review it before 6 pm. You'll see the outcome here.
-          </Text>
+          <Text style={styles.pollBody}>{requestedLabel}. The super admin reviews it between 5 pm and 6 pm.</Text>
+
+          {notYetReviewed ? (
+            <View style={styles.voteButtons}>
+              <Button
+                label="Undo request"
+                variant="secondary"
+                icon="arrow-undo-outline"
+                onPress={() => {
+                  Alert.alert(
+                    'Undo special case?',
+                    "You'll go back to your original vote. You can raise a new special case again before 5 pm.",
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Undo', style: 'destructive', onPress: onUndoSpecial },
+                    ]
+                  );
+                }}
+                loading={submittingSpecial}
+                fullWidth
+              />
+            </View>
+          ) : (
+            <View style={[
+              styles.outcomeRow,
+              my.sehri_allowed === 'approved' ? styles.outcomeApproved : styles.outcomeRejected,
+            ]}>
+              <Ionicons
+                name={my.sehri_allowed === 'approved' ? 'checkmark-circle' : 'close-circle'}
+                size={16}
+                color={my.sehri_allowed === 'approved' ? colors.success : colors.danger}
+              />
+              <Text style={[
+                styles.outcomeText,
+                { color: my.sehri_allowed === 'approved' ? colors.success : colors.danger },
+              ]}>
+                Special case {my.sehri_allowed}
+              </Text>
+            </View>
+          )}
         </Card>
       );
     }
+
+    // 2. User voted but hasn't raised a special case → let them opt out
+    //    (if they voted yes) or opt in (if they voted no).
+    if (my?.response) {
+      const isYes = my.response === 'yes';
+      const type       = isYes ? 'dont_want' : 'want';
+      const headline   = isYes
+        ? 'Plans changed? Skip Sehri.'
+        : "Actually, please count me in.";
+      const body       = isYes
+        ? "You said yes, but if you can't make it, tell the kitchen now so food isn't prepared for you."
+        : "You said no, but if you'd like Sehri after all, raise a special case before 5 pm.";
+      const buttonLabel = isYes ? 'Remove me from the list' : 'Add me to the list';
+
+      const confirmAndSubmit = () => {
+        Alert.alert(
+          isYes ? 'Skip Sehri tomorrow?' : 'Add yourself back in?',
+          isYes
+            ? "The kitchen will exclude you if the super admin approves."
+            : "The kitchen will include you if the super admin approves.",
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Send request', onPress: () => onSpecialCase(type) },
+          ]
+        );
+      };
+
+      return (
+        <Card>
+          <Text style={styles.pollHeadline}>{headline}</Text>
+          <Text style={styles.pollBody}>{body}</Text>
+          <View style={styles.voteButtons}>
+            <Button
+              label={buttonLabel}
+              onPress={confirmAndSubmit}
+              icon={isYes ? 'remove-circle-outline' : 'add-circle-outline'}
+              loading={submittingSpecial}
+              variant={isYes ? 'secondary' : 'primary'}
+              fullWidth
+            />
+          </View>
+          <Text style={styles.footnote}>Requests close at 5 pm. Review happens 5–6 pm.</Text>
+        </Card>
+      );
+    }
+
+    // 3. User didn't vote at all — nothing to change.
     return (
       <Card>
-        <Text style={styles.pollHeadline}>Plans changed for Sehri?</Text>
+        <Text style={styles.pollHeadline}>You didn't vote today.</Text>
         <Text style={styles.pollBody}>
-          Special-case requests are open from 10 am to 5 pm. Contact your zone admin
-          if you need to add or drop yourself.
+          Only users who voted can raise a special case. Voting reopens at 10 pm for tomorrow's Sehri.
         </Text>
       </Card>
     );
@@ -939,6 +1077,7 @@ const styles = StyleSheet.create({
   outcomeApproved: { backgroundColor: colors.successSoft },
   outcomeRejected: { backgroundColor: colors.dangerSoft },
   outcomeText:     { ...type.meta, fontWeight: '700' },
+  footnote:        { ...type.micro, color: colors.inkFaint, marginTop: space[3], textAlign: 'center' },
 
   // Guest poll invite
   inviteOrnamentRow:  { flexDirection: 'row', alignItems: 'center', gap: space[2], marginBottom: space[3] },

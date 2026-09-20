@@ -19,4 +19,11 @@ export const quranApi = {
     const response = await apiClient.get(`/quran/${surahId}`);
     return response.data; // { success, data: { chapter, verses[] } }
   },
+
+  // POST /api/quran/sync — super_admin only. Fire-and-forget on the
+  // backend; returns 202. Takes ~30–60s server-side (114 surahs).
+  triggerSync: async () => {
+    const response = await apiClient.post('/quran/sync');
+    return response.data;
+  },
 };

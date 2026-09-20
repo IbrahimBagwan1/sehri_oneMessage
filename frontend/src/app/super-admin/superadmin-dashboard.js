@@ -34,9 +34,11 @@ const MENU = [
   { title: 'Polls',            icon: 'stats-chart-outline',      route: '/super-admin/polls',         hint: "Today's controls + past poll history" },
   { title: 'Special cases',    icon: 'alert-circle-outline',     route: '/super-admin/special-cases', hint: 'Review, approve, or reject requests' },
   { title: 'Zone admins',      icon: 'shield-checkmark-outline', route: '/super-admin/admins',        hint: 'Add or remove zone admins' },
+  { title: 'Riders',           icon: 'bicycle-outline',          route: '/super-admin/riders',        hint: 'Create, assign, or remove riders' },
   { title: 'PG coordinates',   icon: 'location-outline',         route: '/super-admin/locations',     hint: 'Set map pins for delivery ETAs' },
   { title: 'Group chat',       icon: 'chatbubbles-outline',      route: '/super-admin/chat',          hint: 'Manage broadcast groups' },
   { title: 'Send broadcast',   icon: 'megaphone-outline',        route: '/super-admin/broadcast',     hint: 'Push a notification to a zone' },
+  { title: 'Content sync',     icon: 'sync-outline',             route: '/super-admin/content-sync',  hint: "Refresh prayer times, Qur'an, or duas" },
 ];
 
 export default function SuperAdminDashboard() {

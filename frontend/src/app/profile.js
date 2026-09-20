@@ -344,6 +344,8 @@ function ProfileScreenAuthed() {
         {!isEditing && (
           <View style={styles.section}>
             <Card padding={false}>
+              <ActionRow icon="stats-chart-outline" label="Vote history"   color={colors.tealDark} onPress={() => router.push('/vote-history')} />
+              <View style={styles.rowRule} />
               <ActionRow icon="chatbubble-outline"  label="Send feedback"  color={colors.teal}    onPress={() => router.push('/feedback')} />
               <View style={styles.rowRule} />
               <ActionRow icon="log-out-outline"     label="Sign out"       color={colors.danger}  onPress={handleLogout} />

@@ -42,6 +42,7 @@ export default function RootLayout() {
         <Stack.Screen name="donation-history" options={{ headerShown: false }} />
         <Stack.Screen name="chat-room" options={{ headerShown: false }} />
         <Stack.Screen name="chat-create-group" options={{ headerShown: false }} />
+        <Stack.Screen name="vote-history" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
     </>

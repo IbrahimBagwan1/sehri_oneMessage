@@ -24,4 +24,10 @@ export const duaApi = {
     const response = await apiClient.get(`/dua/${encodeURIComponent(slug)}`);
     return response.data; // { success, data: { category, duas[] } }
   },
+
+  // POST /api/dua/sync — super_admin only. Reads bundled duas-seed.json.
+  triggerSync: async () => {
+    const response = await apiClient.post('/dua/sync');
+    return response.data;
+  },
 };
