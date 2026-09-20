@@ -2,7 +2,8 @@
 import React, { useEffect } from 'react';
 import { Tabs, useRouter, useSegments } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { ActivityIndicator, View, Platform } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRiderStore } from '../../store/useRiderStore';
 import { colors } from '../../theme';
 
@@ -24,6 +25,11 @@ export default function RiderLayout() {
 
   const onLoginScreen = segments[segments.length - 1] === 'login';
 
+  // Safe-area-aware bottom padding — see comment in (user)/_layout.tsx.
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
+  const barHeight = 56 + bottomPad;
+
   if (!isHydrated && !onLoginScreen) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.paperSoft }}>
@@ -44,9 +50,9 @@ export default function RiderLayout() {
           : {
               backgroundColor: colors.paper,
               borderTopColor: colors.ruleSoft,
-              height: Platform.OS === 'ios' ? 84 : 62,
+              height: barHeight,
               paddingTop: 6,
-              paddingBottom: Platform.OS === 'ios' ? 24 : 6,
+              paddingBottom: bottomPad,
             },
       }}
     >

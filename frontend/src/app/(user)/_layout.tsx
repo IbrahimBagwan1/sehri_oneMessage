@@ -2,18 +2,28 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
 
 /**
- * User tabs. Track + Donate are member-only; for guests we hide them
- * from the tab bar with `href: null`. The routes still exist so any
- * deep-linked navigation renders GuestGate (defensive).
+ * User tabs. Track + Donate + Chat are member-only; for guests we
+ * hide them from the tab bar with `href: null`. The routes still
+ * exist so any deep-linked navigation renders GuestGate (defensive).
+ *
+ * Layout note — the tab bar's bottom padding uses the device's real
+ * safe-area inset (max with a small minimum) so labels + icons never
+ * sit under Android's 3-button/gesture navigation bar or the iOS
+ * home indicator. A fixed paddingBottom (as we had before) worked on
+ * some devices and got covered by the gesture bar on others.
  */
 export default function UserTabLayout() {
   const isGuest = useAuthStore((s) => s.isGuest);
   const restricted = isGuest ? null : undefined; // null hides the tab
+
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
+  const barHeight = 56 + bottomPad;
 
   return (
     <Tabs
@@ -25,9 +35,9 @@ export default function UserTabLayout() {
         tabBarStyle: {
           backgroundColor: colors.paper,
           borderTopColor: colors.ruleSoft,
-          height: Platform.OS === 'ios' ? 84 : 62,
+          height: barHeight,
           paddingTop: 6,
-          paddingBottom: Platform.OS === 'ios' ? 24 : 6,
+          paddingBottom: bottomPad,
         },
       }}
     >
