@@ -123,7 +123,7 @@ export default function SuperAdminFeedback() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header
         title="Feedback"
         onBack={() => router.back()}

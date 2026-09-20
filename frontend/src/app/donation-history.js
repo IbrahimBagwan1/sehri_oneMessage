@@ -138,7 +138,7 @@ export default function DonationHistoryScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="My donations" onBack={() => router.back()} />
 
       {/* Total */}

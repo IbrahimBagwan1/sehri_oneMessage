@@ -153,7 +153,7 @@ export default function LocationsCoordScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="PG coordinates" onBack={() => router.back()} />
 
       {/* Summary strip */}
@@ -219,7 +219,7 @@ export default function LocationsCoordScreen() {
         transparent={false}
         onRequestClose={closePicker}
       >
-        <SafeAreaView style={styles.pickerScreen} edges={['top']}>
+        <SafeAreaView style={styles.pickerScreen} edges={['top', 'bottom']}>
           <Header
             title={picking?.name || 'Set pin'}
             subtitle="Tap or drag the pin to the exact location"

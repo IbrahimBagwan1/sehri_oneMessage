@@ -240,7 +240,7 @@ export default function AdminDonationsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Donations" onBack={() => router.back()} />
 
       {/* Hero total */}

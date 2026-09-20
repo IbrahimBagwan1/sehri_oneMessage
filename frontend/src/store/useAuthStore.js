@@ -93,6 +93,17 @@ export const useAuthStore = create((set, get) => ({
   },
 
   // ---------------------------------------------------------------------------
+  // Overwrite available_roles — used after self-linking a user account
+  // via POST /api/admin/link-user-account so the "Switch to" chips on
+  // the dashboard become visible immediately without a re-login.
+  // ---------------------------------------------------------------------------
+  setAvailableRoles: async (roles) => {
+    const safe = Array.isArray(roles) ? roles : [];
+    await SecureStore.setItemAsync('available_roles', JSON.stringify(safe));
+    set({ available_roles: safe });
+  },
+
+  // ---------------------------------------------------------------------------
   // Enter guest mode — no backend call, no token issued. The app just
   // opens with restricted features hidden. Prayer/Quran/Dua endpoints
   // are public so they still work.

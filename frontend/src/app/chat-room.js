@@ -56,7 +56,7 @@ export default function ChatRoomScreen() {
 
   if (isGuest) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top', 'bottom']}>
         <Header title={groupName} onBack={() => router.back()} />
         <GuestGate
           icon="chatbubbles-outline"
@@ -68,7 +68,7 @@ export default function ChatRoomScreen() {
   }
   if (!groupId) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top', 'bottom']}>
         <Header title="Chat" onBack={() => router.back()} />
         <ErrorState message="This chat link is missing a group id." onRetry={() => router.back()} retryLabel="Go back" />
       </SafeAreaView>
@@ -252,7 +252,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title={groupName} onBack={onBack} />
 
       <KeyboardAvoidingView

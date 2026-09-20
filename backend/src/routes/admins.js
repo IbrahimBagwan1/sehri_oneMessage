@@ -12,6 +12,7 @@ const {
   linkUserToAdmin,
   searchUsers,
   promoteUser,
+  linkUserAccount,
 } = require('../controllers/adminController');
 
 // All routes here are super_admin only.
@@ -59,6 +60,21 @@ router.post(
   body('zone_location_id').optional({ nullable: true }).isUUID().withMessage('zone_location_id must be a UUID'),
   handleValidationErrors,
   promoteUser
+);
+
+// POST /api/admin/link-user-account
+// Self-service: an admin OR super_admin creates a linked user account
+// (enables role-switch chips on their dashboard).
+router.post(
+  '/link-user-account',
+  verifyToken,
+  requireRole('admin', 'super_admin'),
+  body('location_id').isUUID().withMessage('location_id must be a UUID'),
+  body('address').optional().isString().isLength({ max: 500 }),
+  body('gender').optional().isIn(['male', 'female']),
+  body('occupation').optional().isIn(['student', 'employee', 'others']),
+  handleValidationErrors,
+  linkUserAccount
 );
 
 // DELETE /api/admin/admins/:id

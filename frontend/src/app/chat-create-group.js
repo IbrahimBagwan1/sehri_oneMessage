@@ -49,7 +49,7 @@ export default function ChatCreateGroupScreen() {
   // ErrorState in the same shell, not a hard boot back.
   if (active_role !== 'super_admin') {
     return (
-      <SafeAreaView style={styles.screen} edges={['top']}>
+      <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
         <Header title="Create group" onBack={() => router.back()} />
         <ErrorState
           message="Only the super admin can create chat groups."
@@ -194,7 +194,7 @@ function ChatCreateGroupInner({ router }) {
     : { icon: 'person-outline',    title: 'No approved users', msg: 'Only approved users appear in the picker.' };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header
         title="Create group"
         onBack={() => router.back()}

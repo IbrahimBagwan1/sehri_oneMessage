@@ -168,7 +168,7 @@ export default function SuperAdminUsers() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Users & zones" onBack={() => router.back()} />
 
       <View style={styles.tabRow}>

@@ -50,7 +50,7 @@ export default function ProfileScreen() {
   const router  = useRouter();
   if (isGuest) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.paperSoft }} edges={['top', 'bottom']}>
         <Header title="Profile" onBack={() => router.back()} />
         <GuestGate
           icon="person-add-outline"
@@ -216,7 +216,7 @@ function ProfileScreenAuthed() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.screen} edges={['top']}>
+      <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
         <Header title="Profile" onBack={() => router.back()} />
         <LoadingState message="Loading your profile…" />
       </SafeAreaView>
@@ -228,7 +228,7 @@ function ProfileScreenAuthed() {
   const zoneHasAddresses = addresses.length > 0;
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header
         title="Profile"
         onBack={() => router.back()}

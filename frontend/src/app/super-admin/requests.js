@@ -116,7 +116,7 @@ export default function SuperAdminRequests() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Profile requests" onBack={() => router.back()} />
 
       <View style={styles.filterRow}>

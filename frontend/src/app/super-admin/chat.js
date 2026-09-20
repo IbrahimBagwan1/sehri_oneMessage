@@ -138,7 +138,7 @@ export default function SuperAdminChatScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header
         title="Group chat"
         onBack={() => router.back()}

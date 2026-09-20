@@ -92,4 +92,18 @@ export const adminApi = {
     });
     return response.data;
   },
+
+  // POST /api/admin/link-user-account
+  // Self-service: creates a linked user account for the calling
+  // admin/super_admin. Response includes { user_id, available_roles }
+  // so the store can refresh the role-switch chips without re-login.
+  linkUserAccount: async ({ location_id, address, gender, occupation } = {}) => {
+    const response = await apiClient.post('/admin/link-user-account', {
+      location_id,
+      address,
+      gender,
+      occupation,
+    });
+    return response.data;
+  },
 };

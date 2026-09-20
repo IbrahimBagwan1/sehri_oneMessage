@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Pressable,
   Alert,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -15,8 +16,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
 import { adminApi } from '../../api/admin';
 import { prayersApi } from '../../api/prayers';
+import { locationsApi } from '../../api/auth';
 import {
   Avatar,
+  Button,
   Card,
   Chip,
   ErrorState,
@@ -56,11 +59,49 @@ const format12h = (t) => {
 };
 
 export default function AdminDashboard() {
-  const router          = useRouter();
-  const user            = useAuthStore((s) => s.user);
-  const active_role     = useAuthStore((s) => s.active_role);
-  const available_roles = useAuthStore((s) => s.available_roles);
-  const switchRole      = useAuthStore((s) => s.switchRole);
+  const router            = useRouter();
+  const user              = useAuthStore((s) => s.user);
+  const active_role       = useAuthStore((s) => s.active_role);
+  const available_roles   = useAuthStore((s) => s.available_roles);
+  const switchRole        = useAuthStore((s) => s.switchRole);
+  const setAvailableRoles = useAuthStore((s) => s.setAvailableRoles);
+
+  // Link-user-account state (for standalone admins with no linked user).
+  const [linkOpen,     setLinkOpen]     = useState(false);
+  const [zones,        setZones]        = useState([]);
+  const [zonesLoading, setZonesLoading] = useState(false);
+  const [pickedZoneId, setPickedZoneId] = useState(null);
+  const [linking,      setLinking]      = useState(false);
+
+  useEffect(() => {
+    if (!linkOpen || zones.length > 0) return;
+    (async () => {
+      setZonesLoading(true);
+      try {
+        const res = await locationsApi.getLocations({ type: 'zone' });
+        setZones(res.data || []);
+      } catch { setZones([]); }
+      finally  { setZonesLoading(false); }
+    })();
+  }, [linkOpen, zones.length]);
+
+  const handleLinkSubmit = async () => {
+    if (!pickedZoneId) return;
+    setLinking(true);
+    try {
+      const res = await adminApi.linkUserAccount({ location_id: pickedZoneId });
+      if (res.success) {
+        await setAvailableRoles(res.data.available_roles);
+        setLinkOpen(false);
+        setPickedZoneId(null);
+        Alert.alert('Linked', res.message);
+      }
+    } catch (err) {
+      Alert.alert("Couldn't link", err?.response?.data?.message || 'Try again in a moment.');
+    } finally {
+      setLinking(false);
+    }
+  };
 
   const [statsData,    setStatsData]    = useState<any>(null);
   const [prayerData,   setPrayerData]   = useState<any>(null);
@@ -163,20 +204,53 @@ export default function AdminDashboard() {
           dateLine={prayerData?.date_hijri || undefined}
         />
 
-        {/* Role switcher */}
-        {available_roles.length > 1 && (
-          <View style={styles.roleRow}>
-            <Text style={styles.roleLabel}>Switch to</Text>
-            <View style={styles.roleChips}>
-              {available_roles.includes('user') && (
-                <Chip label="User" tone="teal" icon="person-outline" onPress={() => handleSwitch('user')} />
-              )}
-              {available_roles.includes('super_admin') && (
-                <Chip label="Super admin" tone="teal" icon="key-outline" onPress={() => handleSwitch('super_admin')} />
-              )}
+        {/* Role switcher — see comment in super-admin/superadmin-dashboard.js
+            for why we render a "link a user account" card when the admin
+            was created in standalone mode (no linked user_id). */}
+        {(() => {
+          const others = available_roles.filter((r) => r !== active_role);
+          if (others.length === 0 && active_role === 'admin' && !available_roles.includes('user')) {
+            return (
+              <View style={styles.section}>
+                <Card tone="warm">
+                  <View style={styles.linkCardRow}>
+                    <View style={styles.linkCardIcon}>
+                      <Ionicons name="swap-horizontal-outline" size={20} color={colors.gold} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.linkCardTitle}>Enable role switching</Text>
+                      <Text style={styles.linkCardBody}>
+                        You don't have a linked user account yet. Link one to switch to
+                        the user view and take part in polls, tracking, and chat.
+                      </Text>
+                    </View>
+                  </View>
+                  <Button
+                    label="Link a user account"
+                    onPress={() => setLinkOpen(true)}
+                    icon="link-outline"
+                    size="sm"
+                    style={{ marginTop: space[3], alignSelf: 'flex-start' }}
+                  />
+                </Card>
+              </View>
+            );
+          }
+          if (others.length === 0) return null;
+          return (
+            <View style={styles.roleRow}>
+              <Text style={styles.roleLabel}>Switch to</Text>
+              <View style={styles.roleChips}>
+                {available_roles.includes('user') && (
+                  <Chip label="User" tone="teal" icon="person-outline" onPress={() => handleSwitch('user')} />
+                )}
+                {available_roles.includes('super_admin') && (
+                  <Chip label="Super admin" tone="teal" icon="key-outline" onPress={() => handleSwitch('super_admin')} />
+                )}
+              </View>
             </View>
-          </View>
-        )}
+          );
+        })()}
 
         {/* Prayer strip */}
         {nextPrayer && (
@@ -252,6 +326,58 @@ export default function AdminDashboard() {
           </View>
         </View>
       </ScrollView>
+
+      {/* --------------- Link-user-account bottom sheet --------------- */}
+      <Modal
+        visible={linkOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => (linking ? null : setLinkOpen(false))}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Link a user account</Text>
+            <Text style={styles.modalBody}>
+              This creates a user record for {user?.name || 'you'} in the zone you pick,
+              reusing your existing password. You'll be able to switch between roles
+              from the dashboard.
+            </Text>
+
+            <Text style={styles.modalLabel}>Pick your zone</Text>
+            {zonesLoading ? (
+              <LoadingState message="Loading zones…" compact />
+            ) : zones.length === 0 ? (
+              <Text style={styles.modalEmpty}>No zones available.</Text>
+            ) : (
+              <View style={styles.zoneChips}>
+                {zones.map((z) => (
+                  <Chip
+                    key={z.id}
+                    label={z.name}
+                    tone={pickedZoneId === z.id ? 'teal' : 'neutral'}
+                    selected={pickedZoneId === z.id}
+                    icon="location-outline"
+                    onPress={() => setPickedZoneId(z.id)}
+                  />
+                ))}
+              </View>
+            )}
+
+            <View style={styles.modalActions}>
+              <Button label="Cancel" onPress={() => setLinkOpen(false)} variant="secondary" style={{ flex: 1 }} disabled={linking} />
+              <Button
+                label={linking ? 'Linking…' : 'Link account'}
+                onPress={handleLinkSubmit}
+                loading={linking}
+                disabled={!pickedZoneId || linking}
+                icon="checkmark"
+                style={{ flex: 1.2 }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -348,4 +474,37 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   quickLabel: { ...type.bodyStrong, color: colors.ink },
+
+  // Link-user-account inline card
+  linkCardRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: space[3] },
+  linkCardIcon: {
+    width: 36, height: 36, borderRadius: radius.md,
+    backgroundColor: colors.paper,
+    borderWidth: 1, borderColor: colors.goldBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  linkCardTitle: { ...type.h3 },
+  linkCardBody:  { ...type.body, marginTop: 4 },
+
+  // Link-user-account modal
+  modalOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: colors.paper,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    padding: space[5],
+    gap: space[3],
+  },
+  modalHandle: {
+    alignSelf: 'center',
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: colors.ruleSoft,
+    marginBottom: space[2],
+  },
+  modalTitle: { ...type.h2, textAlign: 'center' },
+  modalBody:  { ...type.body, color: colors.inkMuted, textAlign: 'center' },
+  modalLabel: { ...type.metaStrong, color: colors.inkMuted, marginTop: space[2] },
+  modalEmpty: { ...type.meta, color: colors.inkFaint },
+  zoneChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  modalActions: { flexDirection: 'row', gap: space[2], marginTop: space[3] },
 });

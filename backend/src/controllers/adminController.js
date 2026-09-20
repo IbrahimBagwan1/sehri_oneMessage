@@ -636,6 +636,114 @@ const promoteUser = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// POST /api/admin/link-user-account
+// Access: admin OR super_admin
+// Body: { location_id, address?, gender?, occupation? }
+//
+// Self-service: creates a User row for the calling admin/super_admin and
+// links it via user_id. Reuses their existing bcrypt hash (same password),
+// marks the user 'approved' (they're already privileged).
+//
+// Why this exists: an admin/super_admin created in "standalone" mode
+// (POST /create-admin without user_id) has no linked user account, so
+// their login response returns available_roles=[<their role>] only, and
+// the role-switch chips on the dashboard stay hidden — they have
+// nowhere to switch to. This endpoint fills that gap without needing
+// another super_admin to run a promotion.
+// ---------------------------------------------------------------------------
+const linkUserAccount = async (req, res, next) => {
+  const t = await db.sequelize.transaction();
+  try {
+    const { location_id, address, gender, occupation } = req.body || {};
+    const { id: callerId, role: callerRole } = req.auth;
+
+    if (!location_id) {
+      await t.rollback();
+      return error(res, { statusCode: 400, message: 'location_id is required.' });
+    }
+
+    const loc = await Location.findByPk(location_id, { transaction: t });
+    if (!loc || !['zone', 'address'].includes(loc.type)) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 400,
+        message: 'location_id must reference a zone or address location.',
+      });
+    }
+
+    const CallerModel = callerRole === 'super_admin' ? SuperAdmin : Admin;
+    const caller = await CallerModel.scope('withPassword').findByPk(callerId, { transaction: t });
+    if (!caller) {
+      await t.rollback();
+      return error(res, { statusCode: 404, message: 'Account not found.' });
+    }
+
+    if (caller.user_id) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 409,
+        message: 'You already have a linked user account. Sign out and back in to refresh your roles.',
+      });
+    }
+
+    // If a users row already exists for this phone (registered separately),
+    // just LINK to it rather than creating a duplicate — phone is unique.
+    const existingUser = await User.findOne({ where: { phone: caller.phone }, transaction: t });
+
+    let userRow;
+    let linkKind;
+    if (existingUser) {
+      userRow  = existingUser;
+      linkKind = 'existing';
+    } else {
+      userRow = await User.create({
+        name:              caller.name,
+        phone:             caller.phone,
+        password:          caller.password,        // already hashed
+        gender:            gender     || 'male',
+        occupation:        occupation || 'others',
+        city:              'Bangalore',
+        location_id,
+        address:           (address && address.trim()) || 'Admin account — no residential address',
+        status:            'approved',
+        is_phone_verified: true,
+      }, { transaction: t });
+      linkKind = 'created';
+    }
+
+    await caller.update({ user_id: userRow.id }, { transaction: t });
+    await t.commit();
+
+    // Derive the fresh role list so the client can update its store
+    // without a re-login. Kept inline (no import from authController) to
+    // avoid a circular dependency between the two controllers.
+    const [saRow, adminRow] = await Promise.all([
+      SuperAdmin.findOne({ where: { phone: caller.phone } }),
+      Admin.findOne({      where: { phone: caller.phone } }),
+    ]);
+    const available_roles = ['user'];
+    if (adminRow) available_roles.push('admin');
+    if (saRow)    available_roles.push('super_admin');
+
+    logger.info(`[admin] ${callerRole} ${callerId} ${linkKind} linked user account ${userRow.id}`);
+    return success(res, {
+      statusCode: linkKind === 'created' ? 201 : 200,
+      message: linkKind === 'created'
+        ? 'User account created and linked. Role switching is now available.'
+        : 'Existing user account linked. Role switching is now available.',
+      data: {
+        user_id:         userRow.id,
+        linked:          linkKind,
+        available_roles,
+      },
+    });
+  } catch (err) {
+    try { await t.rollback(); } catch (_) { /* noop */ }
+    next(err);
+  }
+};
+
 module.exports = {
   createAdmin,
   createSuperAdmin,
@@ -644,4 +752,5 @@ module.exports = {
   linkUserToAdmin,
   searchUsers,
   promoteUser,
+  linkUserAccount,
 };

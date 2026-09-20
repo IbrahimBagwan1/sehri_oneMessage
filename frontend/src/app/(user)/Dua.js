@@ -121,7 +121,7 @@ export default function DuaCategoryList() {
   ) : null;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Duas &amp; Adhkar</Text>
         <Text style={styles.headerSubtitle}>Daily supplications for every moment</Text>

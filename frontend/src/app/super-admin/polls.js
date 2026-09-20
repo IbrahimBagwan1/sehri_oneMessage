@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   FlatList,
   ScrollView,
   Pressable,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -24,11 +25,33 @@ import {
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
+// -----------------------------------------------------------------------------
+// Super admin — polls management screen.
+//
+//   Tab 1: Today — live phase + manual voting override toggle
+//   Tab 2: All polls — paginated history
+//   Tab 3: By date — zone-by-zone breakdown lookup
+//
+// The manual override toggles poll.is_active on the backend
+// (PATCH /api/polls/active/toggle). Because is_active overrides the
+// scheduled 10 PM–10 AM voting window, the Today tab surfaces the
+// override state explicitly so the super admin never wonders "why is
+// the state not matching the clock?".
+// -----------------------------------------------------------------------------
+
 const ZONE_LABELS = {
   masjid:      'Masjid',
   boys_hostel: "Boys' hostel",
   stanza:      'Stanza',
   girls:       'Girls',
+};
+
+const PHASE_LABELS = {
+  voting:       { label: 'Voting open',           tone: 'teal',    icon: 'checkmark-circle-outline' },
+  special_case: { label: 'Special case window',   tone: 'warn',    icon: 'alert-circle-outline' },
+  allotment:    { label: 'Allotment window',      tone: 'gold',    icon: 'hourglass-outline' },
+  status:       { label: 'Final list',            tone: 'success', icon: 'ribbon-outline' },
+  closed:       { label: 'Voting closed',         tone: 'neutral', icon: 'lock-closed-outline' },
 };
 
 const formatDate = (dateStr) => {
@@ -40,20 +63,47 @@ const formatDate = (dateStr) => {
 
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
+/**
+ * Read the current IST hour (0–23) using Intl.DateTimeFormat.formatToParts —
+ * device-timezone-safe, matches the backend pattern in utils/pollPhase.js.
+ * Plain toLocaleString with hour12:false returns "24" at midnight on some
+ * V8 versions — we `% 24` defensively.
+ */
+const readISTHour = () => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+    const h = parts.find((p) => p.type === 'hour');
+    return h ? parseInt(h.value, 10) % 24 : 0;
+  } catch { return 0; }
+};
+
+/** Voting window is 22:00–23:59 and 00:00–09:59 IST. */
+const inScheduledVotingWindow = () => {
+  const h = readISTHour();
+  return h >= 22 || h < 10;
+};
+
 export default function SuperAdminPolls() {
   const router = useRouter();
-  const [tab, setTab] = useState('history');
+  const [tab, setTab] = useState('today');
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
-      <Header title="Poll history" onBack={() => router.back()} />
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <Header title="Polls" onBack={() => router.back()} />
 
       <View style={styles.tabRow}>
+        <TabButton active={tab === 'today'}   label="Today"     onPress={() => setTab('today')} />
         <TabButton active={tab === 'history'} label="All polls" onPress={() => setTab('history')} />
-        <TabButton active={tab === 'date'}    label="By date"   onPress={() => setTab('date')}   />
+        <TabButton active={tab === 'date'}    label="By date"   onPress={() => setTab('date')} />
       </View>
 
-      {tab === 'history' ? <HistoryTab /> : <DateStatsTab />}
+      {tab === 'today'   && <TodayTab />}
+      {tab === 'history' && <HistoryTab />}
+      {tab === 'date'    && <DateStatsTab />}
     </SafeAreaView>
   );
 }
@@ -72,7 +122,222 @@ function TabButton({ active, label, onPress }) {
 }
 
 // -----------------------------------------------------------------------------
-// Tab 1: All polls (paginated)
+// Tab 1: Today — live phase, override state, manual toggle
+// -----------------------------------------------------------------------------
+function TodayTab() {
+  const [data, setData]         = useState(null);   // { poll, phase, my_response }
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState(null);
+  const [toggling, setToggling] = useState(false);
+  const [confirming, setConfirming] = useState(false); // two-step gate
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setConfirming(false);
+    try {
+      const res = await pollsApi.getActive();
+      if (res.success) setData(res.data);
+    } catch (err) {
+      setError(err?.response?.data?.message || "Couldn't load today's poll.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const poll  = data?.poll  || null;
+  const phase = data?.phase || 'closed';
+  const cfg   = PHASE_LABELS[phase] || PHASE_LABELS.closed;
+
+  // Override detection — see the module comment. Because the backend derives
+  // phase from is_active + IST hour, we can detect override by comparing.
+  const override = useMemo(() => {
+    if (!poll) return null;
+    const inWindow = inScheduledVotingWindow();
+    // Super admin force-closed voting DURING the scheduled window.
+    if (poll.is_active === false && inWindow) {
+      return {
+        kind:    'closed',
+        message: 'Voting is manually closed. Would normally be open until 10:00 AM.',
+      };
+    }
+    // Super admin extended voting OUTSIDE the scheduled window.
+    if (poll.is_active === true && !inWindow) {
+      return {
+        kind:    'extended',
+        message: 'Voting is manually extended. Would normally have closed at 10:00 AM.',
+      };
+    }
+    return null;
+  }, [poll]);
+
+  // Toggle target — what happens if the super admin taps the primary button.
+  // We ALWAYS write is_active = !current; the backend re-derives phase.
+  const toggleTarget = poll?.is_active ? 'close' : 'reopen';
+
+  const handleToggle = () => {
+    if (!poll) return;
+    if (!confirming) { setConfirming(true); return; }
+    // Second tap → fire.
+    (async () => {
+      setToggling(true);
+      try {
+        const res = await pollsApi.togglePoll(!poll.is_active);
+        if (res.success) {
+          setData((prev) => (prev ? {
+            ...prev,
+            poll:  { ...prev.poll, is_active: res.data.is_active },
+            phase: res.data.phase,
+          } : prev));
+          setConfirming(false);
+          Alert.alert(
+            res.data.is_active ? 'Voting reopened' : 'Voting closed',
+            res.data.is_active
+              ? 'Users can now vote. Special cases and allotment still run on schedule.'
+              : 'Voting is closed for today. Reopen anytime.',
+          );
+        }
+      } catch (err) {
+        Alert.alert("Couldn't update poll", err?.response?.data?.message || 'Try again in a moment.');
+      } finally {
+        setToggling(false);
+      }
+    })();
+  };
+
+  if (loading) return <LoadingState message="Loading today's poll…" />;
+  if (error)   return <ErrorState message={error} onRetry={load} />;
+
+  if (!poll) {
+    return (
+      <ScrollView contentContainerStyle={styles.list}>
+        <SectionHeader title="Today" ornament="star" />
+        <EmptyState
+          icon="calendar-outline"
+          title="No poll for today"
+          message="The next poll opens at 10 PM. Once the cron creates it, controls appear here."
+        />
+      </ScrollView>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.list}>
+      {/* Phase hero */}
+      <Card padding={false}>
+        <View style={styles.phaseHero}>
+          <View style={[styles.phaseIcon, { backgroundColor: toneBg(cfg.tone) }]}>
+            <Ionicons name={cfg.icon} size={22} color={toneFg(cfg.tone)} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.phaseEyebrow}>Today's poll · {formatDate(poll.date)}</Text>
+            <Text style={styles.phaseTitle}>{cfg.label}</Text>
+          </View>
+          <Chip label={poll.is_active ? 'Active' : 'Inactive'} tone={poll.is_active ? 'success' : 'neutral'} />
+        </View>
+
+        {/* Override banner — makes it unambiguous why phase doesn't match the clock */}
+        {override && (
+          <View style={styles.overrideStrip}>
+            <Ionicons
+              name={override.kind === 'closed' ? 'shield-outline' : 'time-outline'}
+              size={16}
+              color={colors.gold}
+            />
+            <Text style={styles.overrideText}>{override.message}</Text>
+          </View>
+        )}
+      </Card>
+
+      {/* Toggle card */}
+      <View style={{ marginTop: space[3] }}>
+        <Card>
+          <Text style={styles.blockTitle}>Manual voting override</Text>
+          <Text style={styles.blockBody}>
+            {poll.is_active
+              ? 'Voting is open. Close it early to stop new votes ahead of the 10 AM cutoff.'
+              : 'Voting is closed. Reopen it if you want to extend or restart the window.'}
+          </Text>
+
+          {confirming && (
+            <View style={styles.confirmStrip}>
+              <Ionicons name="alert-circle" size={16} color={colors.gold} />
+              <Text style={styles.confirmText}>
+                {toggleTarget === 'close'
+                  ? 'Tap again to close voting for every user immediately.'
+                  : 'Tap again to reopen voting — users can vote right away.'}
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.toggleActions}>
+            {confirming && (
+              <Button
+                label="Cancel"
+                onPress={() => setConfirming(false)}
+                variant="secondary"
+                size="sm"
+                style={{ flex: 1 }}
+                disabled={toggling}
+              />
+            )}
+            <Button
+              label={
+                toggling
+                  ? 'Working…'
+                  : confirming
+                    ? (toggleTarget === 'close' ? 'Confirm close' : 'Confirm reopen')
+                    : (toggleTarget === 'close' ? 'Close voting now' : 'Reopen voting now')
+              }
+              onPress={handleToggle}
+              loading={toggling}
+              disabled={toggling}
+              icon={toggleTarget === 'close' ? 'lock-closed-outline' : 'lock-open-outline'}
+              variant={toggleTarget === 'close' ? 'secondary' : 'primary'}
+              style={confirming ? { flex: 1.2 } : { alignSelf: 'flex-start', marginTop: space[3] }}
+            />
+          </View>
+        </Card>
+      </View>
+
+      {/* Daily schedule reminder */}
+      <View style={{ marginTop: space[3] }}>
+        <Card tone="warm">
+          <Text style={styles.blockTitle}>Daily schedule</Text>
+          <ScheduleRow time="10:00 PM"         desc="Voting opens" />
+          <ScheduleRow time="10:00 AM"         desc="Voting closes" />
+          <ScheduleRow time="10:00 AM – 5:00 PM" desc="Special cases window" />
+          <ScheduleRow time="5:00 PM – 6:00 PM"  desc="Allotment (super admin reviews)" />
+          <ScheduleRow time="6:00 PM – 10:00 PM" desc="Final list visible, no changes" isLast />
+        </Card>
+      </View>
+    </ScrollView>
+  );
+}
+
+function ScheduleRow({ time, desc, isLast }) {
+  return (
+    <View style={[styles.scheduleRow, !isLast && styles.scheduleRowRule]}>
+      <Text style={styles.scheduleTime}>{time}</Text>
+      <Text style={styles.scheduleDesc}>{desc}</Text>
+    </View>
+  );
+}
+
+const toneBg = (tone) => ({
+  teal: colors.tealSoft, gold: colors.goldSoft, success: colors.successSoft,
+  warn: colors.warnSoft, danger: colors.dangerSoft, neutral: colors.ruleFaint,
+}[tone] || colors.ruleFaint);
+
+const toneFg = (tone) => ({
+  teal: colors.tealDark, gold: colors.gold, success: colors.success,
+  warn: colors.warn, danger: colors.danger, neutral: colors.inkMuted,
+}[tone] || colors.inkMuted);
+
+// -----------------------------------------------------------------------------
+// Tab 2: All polls (paginated)
 // -----------------------------------------------------------------------------
 function HistoryTab() {
   const [polls, setPolls]     = useState([]);
@@ -145,7 +410,7 @@ function HistoryTab() {
 }
 
 // -----------------------------------------------------------------------------
-// Tab 2: Zone breakdown for a specific date
+// Tab 3: Zone breakdown for a specific date
 // -----------------------------------------------------------------------------
 function DateStatsTab() {
   const [inputDate, setInputDate] = useState(todayIST());
@@ -250,36 +515,98 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.ruleSoft,
   },
-  tab: { flex: 1, paddingVertical: space[3], alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabActive: { borderBottomColor: colors.teal },
-  tabLabel:  { ...type.body, fontWeight: '600', color: colors.inkFaint },
+  tab:            { flex: 1, paddingVertical: space[3], alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabActive:      { borderBottomColor: colors.teal },
+  tabLabel:       { ...type.body, fontWeight: '600', color: colors.inkFaint },
   tabLabelActive: { color: colors.teal, fontWeight: '700' },
 
   list: { padding: space[4], paddingBottom: space[8] },
 
+  // Today tab
+  phaseHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    padding: space[4],
+  },
+  phaseIcon: {
+    width: 44, height: 44, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  phaseEyebrow: { ...type.micro, color: colors.inkFaint, marginBottom: 2 },
+  phaseTitle:   { ...type.h2 },
+
+  overrideStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[2],
+    backgroundColor: colors.goldSoft,
+    borderTopWidth: 1,
+    borderTopColor: colors.goldBorder,
+    paddingHorizontal: space[4],
+    paddingVertical: space[3],
+  },
+  overrideText: { ...type.meta, flex: 1, color: colors.ink },
+
+  blockTitle: { ...type.h3 },
+  blockBody:  { ...type.body, marginTop: space[1] },
+
+  confirmStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[2],
+    backgroundColor: colors.goldSoft,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.goldBorder,
+    padding: space[3],
+    marginTop: space[3],
+  },
+  confirmText: { ...type.meta, color: colors.ink, flex: 1 },
+
+  toggleActions: { flexDirection: 'row', gap: space[2] },
+
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    paddingVertical: space[2],
+  },
+  scheduleRowRule: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.ruleFaint,
+  },
+  scheduleTime: {
+    ...type.metaStrong,
+    color: colors.gold,
+    width: 140,
+    fontVariant: ['tabular-nums'],
+  },
+  scheduleDesc: { ...type.meta, flex: 1 },
+
+  // History + date tabs
   historyHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: space[2] },
   historyDate: { ...type.h3, color: colors.tealDark },
   historyQ:    { ...type.meta, marginBottom: space[3] },
 
-  miniStrip: { flexDirection: 'row', paddingVertical: space[2], borderTopWidth: 1, borderTopColor: colors.ruleSoft },
-  statCell:  { flex: 1, alignItems: 'center' },
-  statDivider: { width: 1, backgroundColor: colors.ruleSoft },
-  statValue: { fontSize: 20, fontWeight: '800' },
-  statLabel: { ...type.micro, color: colors.inkFaint, marginTop: 2 },
+  miniStrip:  { flexDirection: 'row', paddingVertical: space[2], borderTopWidth: 1, borderTopColor: colors.ruleSoft },
+  statCell:   { flex: 1, alignItems: 'center' },
+  statDivider:{ width: 1, backgroundColor: colors.ruleSoft },
+  statValue:  { fontSize: 20, fontWeight: '800' },
+  statLabel:  { ...type.micro, color: colors.inkFaint, marginTop: 2 },
 
-  label: { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
+  label:         { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
   searchActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space[2], marginTop: space[3] },
 
-  dateHead: { padding: space[4] },
+  dateHead:  { padding: space[4] },
   dateTitle: { ...type.h3 },
   dateSub:   { ...type.meta, marginTop: 2 },
 
-  zoneWrap: {},
-  zoneRow:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: space[4], paddingVertical: space[3] },
-  zoneRule: { height: 1, backgroundColor: colors.ruleFaint, marginHorizontal: space[4] },
-  zoneLabel:{ ...type.body, fontWeight: '600' },
-  zoneStats:{ flexDirection: 'row', gap: space[4] },
-  zoneVal:  { fontSize: 14, fontWeight: '700', minWidth: 32, textAlign: 'right' },
+  zoneWrap:  {},
+  zoneRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: space[4], paddingVertical: space[3] },
+  zoneRule:  { height: 1, backgroundColor: colors.ruleFaint, marginHorizontal: space[4] },
+  zoneLabel: { ...type.body, fontWeight: '600' },
+  zoneStats: { flexDirection: 'row', gap: space[4] },
+  zoneVal:   { fontSize: 14, fontWeight: '700', minWidth: 32, textAlign: 'right' },
 
   pagination: {
     flexDirection: 'row',

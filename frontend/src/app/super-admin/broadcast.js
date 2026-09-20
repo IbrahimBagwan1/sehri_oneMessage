@@ -142,7 +142,7 @@ export default function SuperAdminBroadcastScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Send broadcast" onBack={() => router.back()} />
 
       <KeyboardAvoidingView

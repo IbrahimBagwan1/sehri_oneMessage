@@ -96,7 +96,7 @@ export default function QuranChapterList() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Al-Qur&apos;an</Text>
         <Text style={styles.headerSubtitle}>114 surahs · Sahih International</Text>
