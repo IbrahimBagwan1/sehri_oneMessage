@@ -1,7 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
 import apiClient from '../api/client';
 
 /**
@@ -13,36 +12,103 @@ import apiClient from '../api/client';
  *
  * Silently no-ops on:
  *   • simulators / web (no push support)
+ *   • Expo Go on Android SDK 53+ (Google removed remote-push support
+ *     from Expo Go — you need a development build for real push tokens)
  *   • denied permission (the user chose not to receive push — respect it)
  *   • missing projectId in Expo config (dev builds sometimes lack this)
  *
  * Never throws — a push-registration failure must not break sign-in.
+ *
+ * Loading strategy: we deliberately DO NOT `import 'expo-notifications'`
+ * at the top of the file. In Expo Go on Android since SDK 53, that import
+ * (and specifically Notifications.setNotificationHandler) can throw
+ * synchronously, which would take down every screen that transitively
+ * imports the auth store. Instead we lazy-require the module inside a
+ * try/catch and treat any load failure as "push unavailable here".
  */
 
 // -----------------------------------------------------------------------------
-// Foreground handler — set once at module load. Without this, incoming
-// notifications while the app is open would be silently swallowed.
+// Environment detection — Expo Go vs a real dev/standalone build.
+//
+// Constants.appOwnership === 'expo' means we're inside Expo Go.
+// executionEnvironment === 'storeClient' is the newer equivalent for the
+// same case. Either signal is enough — we skip push in that environment.
 // -----------------------------------------------------------------------------
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert:  true,
-    shouldPlaySound:  true,
-    shouldSetBadge:   false,
-    shouldShowBanner: true,
-    shouldShowList:   true,
-  }),
-});
+const isExpoGo =
+  Constants.appOwnership === 'expo' ||
+  Constants.executionEnvironment === 'storeClient';
+
+// -----------------------------------------------------------------------------
+// Lazy-load expo-notifications. Kept behind a function so the failure
+// (if any) happens on first CALL, not at module import time. Cached
+// after the first successful load.
+// -----------------------------------------------------------------------------
+let _notifications = null;
+let _notificationsLoadFailed = false;
+
+const loadNotifications = () => {
+  if (_notifications) return _notifications;
+  if (_notificationsLoadFailed) return null;
+  try {
+    // eslint-disable-next-line global-require
+    _notifications = require('expo-notifications');
+    return _notifications;
+  } catch (err) {
+    _notificationsLoadFailed = true;
+    if (__DEV__) {
+      console.log('[push] expo-notifications unavailable in this environment:', err?.message);
+    }
+    return null;
+  }
+};
+
+// Set the foreground handler ONCE, lazily, on first use — same reason
+// as above. We do NOT run this at module load.
+let _handlerInstalled = false;
+const ensureForegroundHandler = (Notifications) => {
+  if (_handlerInstalled || !Notifications?.setNotificationHandler) return;
+  try {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert:  true,
+        shouldPlaySound:  true,
+        shouldSetBadge:   false,
+        shouldShowBanner: true,
+        shouldShowList:   true,
+      }),
+    });
+    _handlerInstalled = true;
+  } catch (err) {
+    // setNotificationHandler itself can throw in Expo Go on Android since
+    // SDK 53. Swallow it — the handler is a nice-to-have.
+    if (__DEV__) console.log('[push] setNotificationHandler skipped:', err?.message);
+  }
+};
 
 /**
  * Request permission + fetch an Expo push token + register it with the
  * backend. Idempotent — safe to call on every launch.
  *
- * Returns the token string on success, or null on any failure.
+ * Returns the token string on success, or null on any failure (including
+ * "we're inside Expo Go, remote push isn't supported here" — which is
+ * fine, other push logic just no-ops).
  */
 export const registerForPushNotifications = async () => {
   try {
     // Push doesn't work on simulators/emulators.
     if (!Device.isDevice) return null;
+
+    // Expo Go on Android/iOS no longer ships the remote-push runtime.
+    // Silently skip — a dev build is required to test real push.
+    if (isExpoGo) {
+      if (__DEV__) console.log('[push] Skipping push registration: running inside Expo Go.');
+      return null;
+    }
+
+    const Notifications = loadNotifications();
+    if (!Notifications) return null;
+
+    ensureForegroundHandler(Notifications);
 
     // Ask for permission (or read the previous answer).
     const { status: existing } = await Notifications.getPermissionsAsync();
@@ -85,7 +151,7 @@ export const registerForPushNotifications = async () => {
 
     return token;
   } catch (err) {
-    if (__DEV__) console.log('[push] registration failed:', err.message);
+    if (__DEV__) console.log('[push] registration failed:', err?.message);
     return null;
   }
 };
@@ -93,7 +159,8 @@ export const registerForPushNotifications = async () => {
 /**
  * Clear the backend's copy of the token — call from logout so a
  * shared device doesn't keep pushing arrival notifications to the
- * previous account.
+ * previous account. Non-fatal even in Expo Go — the PATCH itself
+ * doesn't need the notifications module.
  */
 export const unregisterPushNotifications = async () => {
   try { await apiClient.patch('/users/me/push-token', { token: null }); }
@@ -102,12 +169,20 @@ export const unregisterPushNotifications = async () => {
 
 /**
  * Attach a handler for tapping a notification (foreground or from
- * killed state). Returns an unsubscribe function.
+ * killed state). Returns an unsubscribe function — a no-op unsubscribe
+ * when notifications aren't available.
  */
 export const onNotificationTap = (handler) => {
-  const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-    const data = response.notification?.request?.content?.data;
-    handler(data);
-  });
-  return () => sub.remove();
+  const Notifications = loadNotifications();
+  if (!Notifications?.addNotificationResponseReceivedListener) return () => {};
+  try {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification?.request?.content?.data;
+      handler(data);
+    });
+    return () => sub.remove();
+  } catch (err) {
+    if (__DEV__) console.log('[push] tap listener skipped:', err?.message);
+    return () => {};
+  }
 };

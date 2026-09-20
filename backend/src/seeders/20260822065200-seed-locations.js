@@ -1,5 +1,7 @@
 'use strict';
-const { v4: uuidv4 } = require('uuid');
+// Use Node's built-in randomUUID — the `uuid` npm package is ESM-only
+// in v14 and can't be `require`d from a sequelize-cli seeder (CJS).
+const { randomUUID: uuidv4 } = require('crypto');
 
 module.exports = {
   up: async (queryInterface) => {
