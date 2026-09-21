@@ -67,6 +67,15 @@ export default function AdminDashboard() {
   const switchRole        = useAuthStore((s) => s.switchRole);
   const setAvailableRoles = useAuthStore((s) => s.setAvailableRoles);
 
+  // -----------------------------------------------------------------------
+  // ALL useState calls must be declared before any useEffect that reads
+  // them. Earlier revisions had the voters-drill-down useEffect (which
+  // references statsData?.poll?.id) BEFORE `const [statsData, …] = useState`,
+  // causing a Temporal Dead Zone ReferenceError on first render — the
+  // admin dashboard threw on mount and never showed anything. Never
+  // re-split these two blocks; useState first, useEffect second.
+  // -----------------------------------------------------------------------
+
   // Link-user-account state (for standalone admins with no linked user).
   const [linkOpen,     setLinkOpen]     = useState(false);
   const [zones,        setZones]        = useState([]);
@@ -80,6 +89,13 @@ export default function AdminDashboard() {
   const [voters,        setVoters]        = useState([]);
   const [votersLoading, setVotersLoading] = useState(false);
   const [votersError,   setVotersError]   = useState(null);
+
+  const [statsData,    setStatsData]    = useState<any>(null);
+  const [prayerData,   setPrayerData]   = useState<any>(null);
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [loadingPrayer,setLoadingP]     = useState(true);
+  const [statsError,   setStatsError]   = useState<string | null>(null);
+  const [refreshing,   setRefreshing]   = useState(false);
 
   useEffect(() => {
     if (!votersZone || !statsData?.poll?.id) return;
@@ -134,13 +150,6 @@ export default function AdminDashboard() {
     }
   };
 
-  const [statsData,    setStatsData]    = useState<any>(null);
-  const [prayerData,   setPrayerData]   = useState<any>(null);
-  const [loadingStats, setLoadingStats] = useState(true);
-  const [loadingPrayer,setLoadingP]     = useState(true);
-  const [statsError,   setStatsError]   = useState<string | null>(null);
-  const [refreshing,   setRefreshing]   = useState(false);
-
   const firstName = useMemo(() => (user?.name || 'Admin').trim().split(/\s+/)[0], [user?.name]);
 
   const fetchStats = useCallback(async () => {
@@ -191,7 +200,25 @@ export default function AdminDashboard() {
 
   const nextPrayer = useMemo(() => {
     if (!prayerData?.timings) return null;
-    const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+    // Prayer strings from the backend are IST wall-clock times. Comparing
+    // them against the device's local clock would give the wrong "next"
+    // prayer for anyone whose device isn't set to Asia/Kolkata. Read the
+    // current IST hour+minute directly instead — same pattern as the
+    // user home screen's readIST().
+    let nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(new Date());
+      const h = parts.find((p) => p.type === 'hour');
+      const m = parts.find((p) => p.type === 'minute');
+      if (h && m) {
+        nowMins = (parseInt(h.value, 10) % 24) * 60 + parseInt(m.value, 10);
+      }
+    } catch { /* fall back to device local */ }
     const rows = [
       { key: 'Fajr',    time: prayerData.timings.Fajr    },
       { key: 'Dhuhr',   time: prayerData.timings.Dhuhr   },
@@ -322,30 +349,47 @@ export default function AdminDashboard() {
               </View>
 
               {/* Per-zone breakdown — tap a row to open the drill-down
-                  sheet with the list of Yes voters in that zone. */}
+                  sheet with the list of Yes voters in that zone.
+                  Drill-down is ONLY allowed for the caller's own zone
+                  (backend rejects cross-zone GET /:id/zone-voters with
+                  a 403). We gate the affordance to match: zone admins
+                  see rows for all zones the backend returned (which,
+                  post-item-6, is only their own), but tap-through only
+                  fires when the row IS their zone. This is defensive —
+                  today the backend only returns one zone for admins,
+                  but if that ever regresses the frontend still won't
+                  send a request it knows will be rejected. */}
               <View style={styles.zoneList}>
-                {Object.entries(byZone).map(([zone, counts], idx, arr) => (
-                  <View key={zone}>
-                    <Pressable
-                      onPress={() => statsData?.poll?.id && counts.yes > 0 && setVotersZone(zone)}
-                      style={({ pressed }) => [styles.zoneRow, pressed && counts.yes > 0 && { backgroundColor: colors.tealSoft }]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${ZONE_LABELS[zone] || zone}: ${counts.yes} yes voters, tap to view`}
-                      disabled={!statsData?.poll?.id || counts.yes === 0}
-                    >
-                      <Text style={styles.zoneName}>{ZONE_LABELS[zone] || zone}</Text>
-                      <View style={styles.zoneStats}>
-                        <Text style={[styles.zoneNumber, { color: colors.success }]}>{counts.yes}</Text>
-                        <Text style={[styles.zoneNumber, { color: colors.danger }]}>{counts.no}</Text>
-                        <Text style={[styles.zoneNumber, { color: colors.tealDark }]}>{counts.total}</Text>
-                      </View>
-                      {counts.yes > 0 && (
-                        <Ionicons name="chevron-forward" size={16} color={colors.inkGhost} style={{ marginLeft: space[2] }} />
-                      )}
-                    </Pressable>
-                    {idx < arr.length - 1 && <View style={styles.zoneRule} />}
-                  </View>
-                ))}
+                {Object.entries(byZone).map(([zone, counts], idx, arr) => {
+                  const isMyZone = active_role === 'super_admin' || statsData?.my_zone === zone;
+                  const canDrill = isMyZone && counts.yes > 0 && statsData?.poll?.id;
+                  return (
+                    <View key={zone}>
+                      <Pressable
+                        onPress={() => { if (canDrill) setVotersZone(zone); }}
+                        style={({ pressed }) => [styles.zoneRow, pressed && canDrill && { backgroundColor: colors.tealSoft }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          canDrill
+                            ? `${ZONE_LABELS[zone] || zone}: ${counts.yes} yes voters, tap to view`
+                            : `${ZONE_LABELS[zone] || zone}: ${counts.yes} yes voters`
+                        }
+                        disabled={!canDrill}
+                      >
+                        <Text style={styles.zoneName}>{ZONE_LABELS[zone] || zone}</Text>
+                        <View style={styles.zoneStats}>
+                          <Text style={[styles.zoneNumber, { color: colors.success }]}>{counts.yes}</Text>
+                          <Text style={[styles.zoneNumber, { color: colors.danger }]}>{counts.no}</Text>
+                          <Text style={[styles.zoneNumber, { color: colors.tealDark }]}>{counts.total}</Text>
+                        </View>
+                        {canDrill && (
+                          <Ionicons name="chevron-forward" size={16} color={colors.inkGhost} style={{ marginLeft: space[2] }} />
+                        )}
+                      </Pressable>
+                      {idx < arr.length - 1 && <View style={styles.zoneRule} />}
+                    </View>
+                  );
+                })}
               </View>
             </Card>
           ) : (

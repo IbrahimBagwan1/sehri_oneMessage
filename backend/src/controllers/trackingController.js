@@ -617,11 +617,46 @@ const getEta = async (req, res, next) => {
       });
     }
 
-    const result = await googleMapsService.distanceMatrix({
-      origin: { lat: Number(rider.latitude), lng: Number(rider.longitude) },
+    // Directions API returns a real road-following polyline AND the
+    // driving distance/duration in one call — cheaper and more useful
+    // than distanceMatrix (which only returns numbers, no path). We fall
+    // back to distanceMatrix only if directions failed or is degraded, so
+    // the user still sees an ETA even when the polyline isn't available.
+    const origin = { lat: Number(rider.latitude), lng: Number(rider.longitude) };
+    const route  = await googleMapsService.directions({
+      origin,
       destination,
       mode: 'driving',
     });
+
+    let distanceMeters = route?.distanceMeters ?? null;
+    let durationSeconds = route?.durationSeconds ?? null;
+    let distanceText   = route?.distanceText ?? null;
+    let durationText   = route?.durationText ?? null;
+
+    if (durationSeconds == null) {
+      try {
+        const dm = await googleMapsService.distanceMatrix({
+          origin,
+          destination,
+          mode: 'driving',
+        });
+        distanceMeters   = dm.distanceMeters;
+        durationSeconds  = dm.durationSeconds;
+        distanceText     = dm.distanceText;
+        durationText     = dm.durationText;
+      } catch (dmErr) {
+        // Both APIs failed — still return the destination + rider so the
+        // map draws two markers and a straight-line fallback polyline.
+        logger.warn(`[tracking] both directions and distanceMatrix failed: ${dmErr.message}`);
+      }
+    }
+
+    // Convert the decoded [lat,lng] tuples into {latitude, longitude}
+    // objects — matches the shape LeafletMap's polyline prop expects.
+    const routePath = Array.isArray(route?.path) && route.path.length >= 2
+      ? route.path.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+      : null;
 
     return success(res, {
       statusCode: 200,
@@ -634,20 +669,22 @@ const getEta = async (req, res, next) => {
           longitude: Number(rider.longitude),
           status: rider.status,
         },
-        // Destination coords so the frontend can drop a "your home" marker
-        // and draw a polyline between the rider and the user without a
-        // second geocode round-trip.
+        // Destination coords so the frontend can drop a "your home" marker.
         destination: {
           latitude:  destination.lat,
           longitude: destination.lng,
         },
+        // Real driving route (Google Directions). Null when Directions
+        // fell back or both APIs failed — frontend draws a straight line
+        // between rider and destination as a graceful degrade.
+        route: routePath,
         eta: {
-          distance_meters: result.distanceMeters,
-          distance_text: result.distanceText,
-          duration_seconds: result.durationSeconds,
-          duration_text: result.durationText,
+          distance_meters: distanceMeters,
+          distance_text:   distanceText,
+          duration_seconds: durationSeconds,
+          duration_text:   durationText,
           eta_minutes:
-            result.durationSeconds != null ? Math.round(result.durationSeconds / 60) : null,
+            durationSeconds != null ? Math.round(durationSeconds / 60) : null,
         },
       },
     });

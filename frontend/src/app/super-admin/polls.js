@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { pollsApi } from '../../api/polls';
+import { adminApi } from '../../api/admin';
 import {
   Button,
   Card,
@@ -130,14 +131,32 @@ function TodayTab() {
   const [error, setError]       = useState(null);
   const [toggling, setToggling] = useState(false);
   const [confirming, setConfirming] = useState(false); // two-step gate
+  const [creating, setCreating] = useState(false);   // manual create-today spinner
+  const [stats, setStats] = useState(null);          // { by_zone, grand_total, my_zone }
+  const [statsError, setStatsError] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setStatsError(null);
     setConfirming(false);
     try {
+      // Poll metadata + phase (blocking — decides whether the toggle
+      // card and stats grid should even render).
       const res = await pollsApi.getActive();
       if (res.success) setData(res.data);
+
+      // Live zone-by-zone vote totals for today. Same endpoint the
+      // admin dashboard uses; for super_admin it returns every zone.
+      // Non-blocking — if it fails we still show the phase card and
+      // the toggle card, just with a "stats unavailable" note.
+      try {
+        const statsRes = await adminApi.getActiveStats();
+        if (statsRes.success) setStats(statsRes.data);
+      } catch (statsErr) {
+        setStatsError(statsErr?.response?.data?.message || "Couldn't load vote totals.");
+        setStats(null);
+      }
     } catch (err) {
       setError(err?.response?.data?.message || "Couldn't load today's poll.");
     } finally {
@@ -145,7 +164,56 @@ function TodayTab() {
     }
   }, []);
 
+  // Ticker every 30 s so the stats card feels live without needing a
+  // pull-to-refresh — cheap query and the phase/toggle state doesn't
+  // change often enough to also poll.
+  useEffect(() => {
+    if (!data?.poll?.id) return undefined;
+    const t = setInterval(async () => {
+      try {
+        const statsRes = await adminApi.getActiveStats();
+        if (statsRes.success) setStats(statsRes.data);
+      } catch { /* silent — next tick tries again */ }
+    }, 30 * 1000);
+    return () => clearInterval(t);
+  }, [data?.poll?.id]);
+
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Manual safety net — the daily cron that would normally create the
+  // poll doesn't exist yet (see backend/README on the cron gap), so a
+  // super admin needs a way to create it themselves. Idempotent on the
+  // backend; 409 collision surfaces as a friendly alert.
+  const handleCreateToday = () => {
+    Alert.alert(
+      "Create today's poll?",
+      "This creates the day's Sehri poll immediately. Skip only if the automatic schedule has already run — you'll get a warning if a poll already exists.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Create',
+          onPress: async () => {
+            setCreating(true);
+            try {
+              const res = await pollsApi.createTodayPoll();
+              if (res.success) {
+                Alert.alert("Today's poll created", res.message || 'Ready for voting.');
+                await load();
+              }
+            } catch (err) {
+              const msg = err?.response?.data?.message || 'Try again in a moment.';
+              Alert.alert("Couldn't create poll", msg);
+              // If the backend says it already exists, reload so the UI
+              // reflects reality (someone else beat us to it).
+              if (err?.response?.status === 409) await load();
+            } finally {
+              setCreating(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const poll  = data?.poll  || null;
   const phase = data?.phase || 'closed';
@@ -214,11 +282,26 @@ function TodayTab() {
     return (
       <ScrollView contentContainerStyle={styles.list}>
         <SectionHeader title="Today" ornament="star" />
-        <EmptyState
-          icon="calendar-outline"
-          title="No poll for today"
-          message="The next poll opens at 10 PM. Once the cron creates it, controls appear here."
-        />
+        <Card>
+          <Text style={styles.blockTitle}>No poll for today</Text>
+          <Text style={styles.blockBody}>
+            The daily poll is normally opened automatically at 10 pm. If that
+            didn't run, you can create it manually now — voting opens
+            immediately if you're inside the scheduled window (10 pm–10 am),
+            otherwise the poll is created in a paused state and you can flip
+            it on from here.
+          </Text>
+          <View style={{ marginTop: space[3] }}>
+            <Button
+              label={creating ? 'Creating…' : "Create today's poll"}
+              onPress={handleCreateToday}
+              loading={creating}
+              disabled={creating}
+              icon="add-circle-outline"
+              fullWidth
+            />
+          </View>
+        </Card>
       </ScrollView>
     );
   }
@@ -302,6 +385,15 @@ function TodayTab() {
         </Card>
       </View>
 
+      {/* Live vote totals — polls every 30 s. Kitchen-facing view: the
+          grand total is what the meal count is prepped for; the per-zone
+          rows tell them how many packets per zone. Uses the same
+          endpoint the admin dashboard consumes, but for super_admin the
+          backend returns every zone. */}
+      <View style={{ marginTop: space[3] }}>
+        <StatsCard stats={stats} statsError={statsError} onRetry={load} />
+      </View>
+
       {/* Daily schedule reminder */}
       <View style={{ marginTop: space[3] }}>
         <Card tone="warm">
@@ -314,6 +406,67 @@ function TodayTab() {
         </Card>
       </View>
     </ScrollView>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// StatsCard — live grand-total + per-zone breakdown for today's poll.
+// Styled to match the admin dashboard's equivalent card exactly so
+// admins and super admins see the same visual language.
+// -----------------------------------------------------------------------------
+function StatsCard({ stats, statsError, onRetry }) {
+  if (statsError) {
+    return (
+      <Card>
+        <Text style={styles.blockTitle}>Live vote totals</Text>
+        <Text style={{ ...type.meta, color: colors.danger, marginTop: space[2] }}>
+          {statsError}
+        </Text>
+        <View style={{ marginTop: space[2] }}>
+          <Button label="Retry" onPress={onRetry} variant="secondary" size="sm" icon="refresh" />
+        </View>
+      </Card>
+    );
+  }
+  if (!stats?.grand_total) {
+    return (
+      <Card>
+        <Text style={styles.blockTitle}>Live vote totals</Text>
+        <Text style={styles.blockBody}>Waiting for the first vote to come in…</Text>
+      </Card>
+    );
+  }
+  const grand = stats.grand_total;
+  const byZone = stats.by_zone || {};
+  return (
+    <Card padding={false}>
+      <View style={{ padding: space[4], paddingBottom: 0 }}>
+        <Text style={styles.blockTitle}>Live vote totals</Text>
+        <Text style={styles.blockBody}>Updates every 30 seconds.</Text>
+      </View>
+      <View style={styles.statsGrandRow}>
+        <StatCell label="Yes"   value={grand.yes}   color={colors.success} />
+        <View style={styles.statDivider} />
+        <StatCell label="No"    value={grand.no}    color={colors.danger} />
+        <View style={styles.statDivider} />
+        <StatCell label="Total" value={grand.total} color={colors.tealDark} />
+      </View>
+      <View style={styles.statsZoneList}>
+        {Object.entries(byZone).map(([zone, counts], idx, arr) => (
+          <View key={zone}>
+            <View style={styles.statsZoneRow}>
+              <Text style={styles.zoneLabel}>{ZONE_LABELS[zone] || zone}</Text>
+              <View style={styles.zoneStats}>
+                <Text style={[styles.zoneVal, { color: colors.success  }]}>{counts.yes}</Text>
+                <Text style={[styles.zoneVal, { color: colors.danger   }]}>{counts.no}</Text>
+                <Text style={[styles.zoneVal, { color: colors.tealDark }]}>{counts.total}</Text>
+              </View>
+            </View>
+            {idx < arr.length - 1 && <View style={styles.zoneRule} />}
+          </View>
+        ))}
+      </View>
+    </Card>
   );
 }
 
@@ -618,4 +771,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.paper,
   },
   pageText: { ...type.meta, fontWeight: '600', color: colors.inkMuted },
+
+  // Live stats card (Today tab)
+  statsGrandRow: {
+    flexDirection: 'row',
+    paddingVertical: space[3],
+    marginTop: space[3],
+    borderTopWidth: 1,
+    borderTopColor: colors.ruleSoft,
+  },
+  statsZoneList: { borderTopWidth: 1, borderTopColor: colors.ruleSoft },
+  statsZoneRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: space[4],
+    paddingVertical: space[3],
+  },
 });

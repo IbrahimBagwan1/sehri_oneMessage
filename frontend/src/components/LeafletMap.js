@@ -214,6 +214,14 @@ const LeafletMap = forwardRef(function LeafletMap(
         domStorageEnabled
         setSupportMultipleWindows={false}
         androidLayerType="hardware"
+        // A WebView can silently reload — Android low-memory reclaim, some
+        // navigation events, RN hot reload — after which our injected
+        // globals (__renderMarkers, __animateTo) no longer exist. If we
+        // don't reset readyRef here, subsequent marker/polyline updates
+        // silently no-op against the fresh page and the map appears
+        // frozen or blank. Flipping to false on onLoadStart makes those
+        // effects wait until the fresh ready message arrives.
+        onLoadStart={() => { readyRef.current = false; }}
         onMessage={(e) => {
           try {
             const msg = JSON.parse(e.nativeEvent.data);

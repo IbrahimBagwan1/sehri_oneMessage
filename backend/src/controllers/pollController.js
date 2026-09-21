@@ -54,19 +54,31 @@ const getActivePoll = async (req, res, next) => {
 
     const phase = getPollPhase(poll);
 
-    // If the calling user is a regular user (or an admin/super_admin acting
-    // as a user via requireUserAccess), also attach their own response for
-    // today so the home screen can show "You voted: Yes" without a
-    // separate request.
+    // Attach the calling user's own response for today so the home screen
+    // can show "You voted: Yes" and switch into the special-case UI branch
+    // without a second request.
+    //
+    // NOTE: this route intentionally uses `verifyToken` alone (no
+    // requireUserAccess) so admins/super_admins with no linked users row
+    // can still fetch phase. That means req.actingUserId is NOT populated
+    // for us — we have to derive it inline from the JWT payload, mirroring
+    // the requireUserAccess middleware's rule:
+    //   • role='user'      → id IS the users.id
+    //   • role='admin'|'super_admin' → user_id (if linked; else null → skip)
+    // Without this derivation, my_response used to always come back null
+    // for regular users, breaking the post-vote UI refresh AND the
+    // special-case UI branch (which both key off my_response).
+    const actingUserId =
+      req.auth?.role === 'user'
+        ? req.auth.id
+        : req.auth?.user_id || null;
+
     let myResponse = null;
-    if (req.actingUserId) {
+    if (actingUserId) {
       myResponse = await PollResponse.findOne({
-        where: { poll_id: poll.id, user_id: req.actingUserId },
+        where: { poll_id: poll.id, user_id: actingUserId },
         attributes: ['response', 'is_special_case', 'special_case_type', 'sehri_allowed'],
       });
-    } else if (req.auth.role === 'user') {
-      // Fallback: route hit without requireUserAccess (e.g. admin viewing)
-      myResponse = null;
     }
 
     return success(res, {
@@ -249,12 +261,45 @@ const getActiveStats = async (req, res, next) => {
       });
     }
 
+    // Determine which zones this caller is allowed to see:
+    //   • super_admin → every zone
+    //   • admin       → only their own zone (resolved from their JWT's
+    //                    zone_location_id, then mapped to the zone-name
+    //                    key used in poll_responses.zone)
+    //
+    // Mirrors the same restriction getZoneVoters already enforces —
+    // without it, a zone admin saw every zone's vote totals, breaking
+    // the "you only see your own zone" invariant applied everywhere
+    // else in the admin surface (users list, feedback list, etc.).
+    let allowedZones = VALID_ZONES;
+    let adminZoneName = null;
+    if (req.auth.role === 'admin') {
+      const adminZoneLocation = await resolveZone(req.auth.zone_location_id, db);
+      if (!adminZoneLocation) {
+        return error(res, {
+          statusCode: 422,
+          message: 'Could not resolve your admin zone',
+        });
+      }
+      adminZoneName = adminZoneLocation.name.toLowerCase().replace(/\s+/g, '_');
+      if (!VALID_ZONES.includes(adminZoneName)) {
+        return error(res, {
+          statusCode: 422,
+          message: `Your admin zone '${adminZoneName}' is not a recognised delivery zone`,
+        });
+      }
+      allowedZones = [adminZoneName];
+    }
+
     // Aggregate yes/no counts per zone in one query using GROUP BY.
     // sequelize.fn + sequelize.col lets us do COUNT(*) without raw SQL.
     const { sequelize } = db;
 
+    const where = { poll_id: poll.id };
+    if (adminZoneName) where.zone = adminZoneName;
+
     const rows = await PollResponse.findAll({
-      where: { poll_id: poll.id },
+      where,
       attributes: [
         'zone',
         'response',
@@ -264,10 +309,10 @@ const getActiveStats = async (req, res, next) => {
       raw: true,
     });
 
-    // Shape the raw rows into a clean zone-keyed map:
-    // { masjid: { yes: 5, no: 2, total: 7 }, boys_hostel: { ... }, ... }
+    // Shape the raw rows into a clean zone-keyed map — but ONLY include
+    // the zones this caller is allowed to see.
     const stats = Object.fromEntries(
-      VALID_ZONES.map((z) => [z, { yes: 0, no: 0, total: 0 }])
+      allowedZones.map((z) => [z, { yes: 0, no: 0, total: 0 }])
     );
 
     for (const row of rows) {
@@ -277,15 +322,15 @@ const getActiveStats = async (req, res, next) => {
     }
 
     // Compute totals per zone
-    for (const zone of VALID_ZONES) {
+    for (const zone of allowedZones) {
       stats[zone].total = stats[zone].yes + stats[zone].no;
     }
 
-    // Grand totals across all zones
+    // Grand totals across the zones this caller can see.
     const grandTotal = {
-      yes: VALID_ZONES.reduce((s, z) => s + stats[z].yes, 0),
-      no: VALID_ZONES.reduce((s, z) => s + stats[z].no, 0),
-      total: VALID_ZONES.reduce((s, z) => s + stats[z].total, 0),
+      yes:   allowedZones.reduce((s, z) => s + stats[z].yes, 0),
+      no:    allowedZones.reduce((s, z) => s + stats[z].no, 0),
+      total: allowedZones.reduce((s, z) => s + stats[z].total, 0),
     };
 
     return success(res, {
@@ -296,6 +341,10 @@ const getActiveStats = async (req, res, next) => {
         phase: getPollPhase(poll),
         by_zone: stats,
         grand_total: grandTotal,
+        // The admin's own zone name, so the frontend can gate the
+        // drill-down affordance to just this zone without a second
+        // /me call. Null for super_admin (they see everything).
+        my_zone: adminZoneName,
       },
     });
   } catch (err) {
@@ -405,6 +454,79 @@ const getZoneVoters = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// POST /api/polls/create-today
+// Access: super_admin
+//
+// Manually creates today's poll — the safety net for the (documented but
+// unimplemented) daily cron job. Idempotent: if today's poll already exists,
+// returns 409 with the existing row rather than silently duplicating.
+//
+// `is_active` defaults ON when we're currently inside the scheduled voting
+// window (22:00–09:59 IST) so opening it during the vote window immediately
+// lets users vote. Outside that window it stays OFF and the phase engine
+// resolves to SPECIAL_CASE/ALLOTMENT/STATUS based on the clock. The super
+// admin can flip is_active any time via PATCH /active/toggle.
+// ---------------------------------------------------------------------------
+const createTodaysPoll = async (req, res, next) => {
+  try {
+    const istDateStr = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Kolkata',
+    });
+
+    // Idempotency guard — one poll row per calendar day (enforced by the
+    // unique index on polls.date too, but we want a friendly 409 not a raw
+    // UniqueConstraintError from Sequelize).
+    const existing = await Poll.findOne({ where: { date: istDateStr } });
+    if (existing) {
+      return error(res, {
+        statusCode: 409,
+        message: "Today's poll already exists.",
+        // eslint-disable-next-line no-unused-vars
+        errors: undefined,
+      });
+    }
+
+    // Default is_active from the current IST hour: on during the voting
+    // window, off otherwise. Uses the shared pollPhase constants so the
+    // schedule stays defined in exactly one place.
+    const { WINDOWS } = require('../utils/pollPhase');
+    const istHourStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      hour: 'numeric',
+      hour12: false,
+    }).format(new Date());
+    const istHour = parseInt(istHourStr, 10) % 24;
+    const inVotingWindow =
+      istHour >= WINDOWS.VOTING_OPEN_HOUR || istHour < WINDOWS.VOTING_CLOSE_HOUR;
+
+    const poll = await Poll.create({
+      date: istDateStr,
+      is_active: inVotingWindow,
+    });
+
+    logger.info(
+      `[polls] super_admin=${req.auth.id} manually created poll ${poll.id} for ${istDateStr} (is_active=${poll.is_active})`
+    );
+
+    return success(res, {
+      statusCode: 201,
+      message: 'Today\'s poll created',
+      data: {
+        poll: {
+          id: poll.id,
+          date: poll.date,
+          question: poll.question,
+          is_active: poll.is_active,
+        },
+        phase: getPollPhase(poll),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getTodaysPoll, // exported so Person 2 handlers can import it
   getActivePoll,
@@ -412,4 +534,5 @@ module.exports = {
   getMyResponses,
   getActiveStats,
   getZoneVoters,
+  createTodaysPoll,
 };

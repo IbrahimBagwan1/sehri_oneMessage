@@ -14,6 +14,7 @@ const {
   getMyResponses,
   getActiveStats,
   getZoneVoters,
+  createTodaysPoll,
 } = require('../controllers/pollController');
 const {
   submitSpecialCase,
@@ -62,6 +63,11 @@ router.get('/active/stats', verifyToken, requireRole('admin', 'super_admin'), ge
 // Super admin manually opens or closes today's voting window.
 // Body: { is_active: true | false }
 router.patch('/active/toggle', verifyToken, requireRole('super_admin'), ...validateToggle, togglePoll);
+
+// POST /api/polls/create-today
+// Super admin manual safety net for the (unimplemented) daily cron.
+// Idempotent — 409 if a poll for today already exists.
+router.post('/create-today', verifyToken, requireRole('super_admin'), createTodaysPoll);
 
 // GET /api/polls/my-responses
 // Paginated personal vote history for the calling user.

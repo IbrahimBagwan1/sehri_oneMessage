@@ -27,6 +27,7 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const { VALID_ZONES } = require('../constants/zones');
+const { resolveZone } = require('../utils/resolveZone');
 const {
   getPollPhase,
   isSpecialCaseWindowOpen,
@@ -44,18 +45,22 @@ const { Poll, PollResponse, User } = db;
 // ---------------------------------------------------------------------------
 // Shared zone aggregation helper — reused by getActiveStats and getDateStats.
 //
-// Given a poll id, returns:
+// Given a poll id (and optionally a single zone key to filter by), returns:
 //   { by_zone: { masjid: { yes, no, total }, ... }, grand_total: { yes, no, total } }
 //
-// Extracted here so both endpoints stay DRY. If Person 1 later moves
-// getActiveStats to use this too, that's a simple refactor — but we do NOT
-// touch their file now.
+// When `onlyZone` is passed, only that zone's row appears in by_zone and
+// the grand_total only counts that zone — this is how getActiveStats /
+// getDateStats keep zone admins from seeing other zones' totals.
 // ---------------------------------------------------------------------------
-const buildZoneStats = async (pollId) => {
+const buildZoneStats = async (pollId, onlyZone = null) => {
   const { sequelize } = db;
 
+  const allowedZones = onlyZone ? [onlyZone] : VALID_ZONES;
+  const where = { poll_id: pollId };
+  if (onlyZone) where.zone = onlyZone;
+
   const rows = await PollResponse.findAll({
-    where: { poll_id: pollId },
+    where,
     attributes: [
       'zone',
       'response',
@@ -68,7 +73,7 @@ const buildZoneStats = async (pollId) => {
   // Seed every zone with zeroes so the response shape is always consistent
   // regardless of whether anyone voted from a given zone.
   const byZone = Object.fromEntries(
-    VALID_ZONES.map((z) => [z, { yes: 0, no: 0, total: 0 }])
+    allowedZones.map((z) => [z, { yes: 0, no: 0, total: 0 }])
   );
 
   for (const row of rows) {
@@ -77,17 +82,36 @@ const buildZoneStats = async (pollId) => {
     }
   }
 
-  for (const zone of VALID_ZONES) {
+  for (const zone of allowedZones) {
     byZone[zone].total = byZone[zone].yes + byZone[zone].no;
   }
 
   const grandTotal = {
-    yes:   VALID_ZONES.reduce((s, z) => s + byZone[z].yes, 0),
-    no:    VALID_ZONES.reduce((s, z) => s + byZone[z].no, 0),
-    total: VALID_ZONES.reduce((s, z) => s + byZone[z].total, 0),
+    yes:   allowedZones.reduce((s, z) => s + byZone[z].yes, 0),
+    no:    allowedZones.reduce((s, z) => s + byZone[z].no, 0),
+    total: allowedZones.reduce((s, z) => s + byZone[z].total, 0),
   };
 
   return { by_zone: byZone, grand_total: grandTotal };
+};
+
+// ---------------------------------------------------------------------------
+// Resolve the calling admin's zone-name key (masjid/boys_hostel/…), or
+// null for super_admin. Mirrors the pattern in pollController.getActiveStats
+// and getZoneVoters. Returns { zoneName: string|null, error: {status,message}|null }
+// so callers can early-out cleanly.
+// ---------------------------------------------------------------------------
+const resolveAdminZoneName = async (req) => {
+  if (req.auth.role !== 'admin') return { zoneName: null, error: null };
+  const zoneLocation = await resolveZone(req.auth.zone_location_id, db);
+  if (!zoneLocation) {
+    return { zoneName: null, error: { status: 422, message: 'Could not resolve your admin zone' } };
+  }
+  const name = zoneLocation.name.toLowerCase().replace(/\s+/g, '_');
+  if (!VALID_ZONES.includes(name)) {
+    return { zoneName: null, error: { status: 422, message: `Your admin zone '${name}' is not a recognised delivery zone` } };
+  }
+  return { zoneName: name, error: null };
 };
 
 // ---------------------------------------------------------------------------
@@ -463,10 +487,19 @@ const getPollHistory = async (req, res, next) => {
     // rather than N queries — more efficient for larger history pages.
     const pollIds = polls.map((p) => p.id);
 
+    // Zone scope for admin — same rule as getActiveStats/getDateStats.
+    // A zone admin viewing history should see their zone's turnout, not
+    // the community-wide total (which could be much higher and misleading).
+    const { zoneName: adminZoneName, error: zoneErr } = await resolveAdminZoneName(req);
+    if (zoneErr) return error(res, { statusCode: zoneErr.status, message: zoneErr.message });
+
+    const countWhere = {
+      poll_id: { [Op.in]: pollIds },
+      ...(adminZoneName ? { zone: adminZoneName } : {}),
+    };
+
     const responseCounts = await PollResponse.findAll({
-      where: {
-        poll_id: { [Op.in]: pollIds },
-      },
+      where: countWhere,
       attributes: [
         'poll_id',
         'response',
@@ -540,7 +573,14 @@ const getDateStats = async (req, res, next) => {
       });
     }
 
-    const { by_zone, grand_total } = await buildZoneStats(poll.id);
+    // Zone scope for admin — parallel to getActiveStats. Without this a
+    // zone admin who reaches the historical /date/:date/stats endpoint
+    // would see every zone's totals, contradicting the same-zone-only
+    // invariant enforced on the live stats.
+    const { zoneName: adminZoneName, error: zoneErr } = await resolveAdminZoneName(req);
+    if (zoneErr) return error(res, { statusCode: zoneErr.status, message: zoneErr.message });
+
+    const { by_zone, grand_total } = await buildZoneStats(poll.id, adminZoneName);
 
     return success(res, {
       statusCode: 200,
@@ -553,6 +593,7 @@ const getDateStats = async (req, res, next) => {
         },
         by_zone,
         grand_total,
+        my_zone: adminZoneName,
       },
     });
   } catch (err) {

@@ -72,4 +72,12 @@ export const pollsApi = {
     const response = await apiClient.patch('/polls/active/toggle', { is_active });
     return response.data;
   },
+
+  // POST /api/polls/create-today
+  // Super-admin safety net for the (unimplemented) daily cron —
+  // manually create today's poll. 409 if one already exists.
+  createTodayPoll: async () => {
+    const response = await apiClient.post('/polls/create-today');
+    return response.data; // { success, data: { poll, phase } }
+  },
 };

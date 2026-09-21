@@ -51,6 +51,26 @@ const STATUS = {
   done:       { label: 'Delivery complete',   tone: 'success' },
 };
 
+// Client-side proximity threshold — once the rider is within this many
+// meters of the user's home pin we switch from "arriving in X min" to
+// an arrived banner. Backend also fires a proximity push at 5 min ETA,
+// but that's a coarser signal; this is the visible-on-screen final beat.
+const ARRIVAL_THRESHOLD_M = 80;
+
+// Haversine great-circle distance in meters between two {latitude, longitude}
+// pairs. Sub-meter accurate at the scales we care about (< a few km).
+const distanceMeters = (a, b) => {
+  if (!a || !b) return Infinity;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+};
+
 export default function TrackScreen() {
   const isGuest = useAuthStore((s) => s.isGuest);
   if (isGuest) {
@@ -75,14 +95,24 @@ function TrackScreenAuthed() {
   // second before the socket kicks in).
   const [rider,      setRider]      = useState(null);
   const [userPin,    setUserPin]    = useState(null); // { latitude, longitude } for the polyline destination
-  const [loading,    setLoading]    = useState(true);
+  const [route,      setRoute]      = useState(null); // [{ latitude, longitude }, ...] real driving path from Google Directions
+  const [loading,    setLoading]    = useState(true); // ONLY true for the very first load
   const [error,      setError]      = useState(null);
   const [etaMinutes, setEta]        = useState(null);
   const [etaAt,      setEtaAt]      = useState(null);   // Date of last update
 
+  // First-load flag so returning to this tab doesn't dismount the map.
+  // Historical bug: useFocusEffect always called loadSnapshot which set
+  // loading=true on every re-focus. That unmounted <LeafletMap>, and on
+  // Android react-native-webview's teardown+remount is racy — the second
+  // WebView instance intermittently loaded blank, needing multiple manual
+  // refreshes to recover. Now the first load shows LoadingState; every
+  // subsequent focus refetches in the background, keeping the map alive.
+  const hasLoadedOnceRef = useRef(false);
+
   // --- Load initial snapshot + user's home pin --------------------------
   const loadSnapshot = useCallback(async () => {
-    setLoading(true);
+    if (!hasLoadedOnceRef.current) setLoading(true);
     setError(null);
     try {
       // Rider snapshot. Backend also returns null when rider isn't
@@ -94,10 +124,10 @@ function TrackScreenAuthed() {
         if (r?.eta_minutes != null) setEta(r.eta_minutes);
       }
 
-      // One-shot ETA request gives us the destination coords too
-      // (backend geocodes the user's address). If it 4xx's — e.g. no
-      // address set — the map still renders the rider, just no
-      // "arriving in X min" line.
+      // One-shot ETA request gives us the destination coords AND the
+      // real road-following polyline (Google Directions). If it 4xx's —
+      // e.g. no address set — the map still renders the rider, just no
+      // "arriving in X min" line and no route line.
       try {
         const etaRes = await trackingApi.getEta();
         if (etaRes.success) {
@@ -105,8 +135,6 @@ function TrackScreenAuthed() {
             setEta(Math.round(etaRes.data.eta.duration_seconds / 60));
             setEtaAt(new Date());
           }
-          // Drop the "your home" marker + polyline once we know where the
-          // destination is. The backend returns it as a plain lat/lng pair.
           const dest = etaRes.data?.destination;
           if (dest?.latitude != null && dest?.longitude != null) {
             setUserPin({
@@ -114,12 +142,26 @@ function TrackScreenAuthed() {
               longitude: Number(dest.longitude),
             });
           }
+          // Real driving route from Directions. Falls back to null if
+          // the backend couldn't fetch one — the map effect below will
+          // then draw a straight-line polyline between rider ↔ home so
+          // the user still sees the two points connected.
+          const path = etaRes.data?.route;
+          if (Array.isArray(path) && path.length >= 2) {
+            setRoute(path.map((p) => ({
+              latitude:  Number(p.latitude),
+              longitude: Number(p.longitude),
+            })));
+          } else {
+            setRoute(null);
+          }
         }
       } catch (_) { /* non-fatal */ }
     } catch (err) {
       setError(err?.response?.data?.message || "Couldn't load the rider's location.");
     } finally {
       setLoading(false);
+      hasLoadedOnceRef.current = true;
     }
   }, []);
 
@@ -181,7 +223,33 @@ function TrackScreenAuthed() {
   useFocusEffect(useCallback(() => { loadSnapshot(); }, [loadSnapshot]));
 
   const hasRiderLocation = rider?.latitude != null && rider?.longitude != null;
-  const statusCfg = STATUS[rider?.status] || STATUS.idle;
+
+  // Client-side arrival detection. The kitchen's push-based proximity
+  // ping fires at 5 min ETA (backend), but that leaves a gap — nobody
+  // tells the user "he's here" when the rider actually pulls up. This
+  // computes the great-circle distance between the current rider
+  // position and the user's home pin on every render and switches into
+  // an arrival state when we're within ARRIVAL_THRESHOLD_M and the
+  // rider is still marked as delivering. Once the backend flips status
+  // to 'done' the empty/done branch below takes over.
+  const distanceToHome = useMemo(() => {
+    if (!hasRiderLocation || !userPin) return null;
+    return distanceMeters(
+      { latitude: Number(rider.latitude), longitude: Number(rider.longitude) },
+      userPin,
+    );
+  }, [hasRiderLocation, rider?.latitude, rider?.longitude, userPin]);
+
+  const hasArrived =
+    hasRiderLocation &&
+    userPin &&
+    rider?.status === 'delivering' &&
+    distanceToHome != null &&
+    distanceToHome <= ARRIVAL_THRESHOLD_M;
+
+  const statusCfg = hasArrived
+    ? { label: 'Arrived at your address', tone: 'success' }
+    : (STATUS[rider?.status] || STATUS.idle);
 
   // Build the marker set for LeafletMap. Kept in a memo so the WebView
   // isn't hammered with re-injects unless the actual coords change.
@@ -193,7 +261,7 @@ function TrackScreenAuthed() {
         latitude:  Number(rider.latitude),
         longitude: Number(rider.longitude),
         kind:      'rider',
-        label:     '🚴',
+        label:     hasArrived ? '🏁' : '🚴',
         title:     rider.name || 'Rider',
       });
     }
@@ -207,7 +275,24 @@ function TrackScreenAuthed() {
       });
     }
     return list;
-  }, [hasRiderLocation, rider?.latitude, rider?.longitude, rider?.name, userPin]);
+  }, [hasRiderLocation, rider?.latitude, rider?.longitude, rider?.name, userPin, hasArrived]);
+
+  // Polyline to draw on the map:
+  //   • real road-following route from Google Directions when we have one
+  //   • else a straight rider↔home line as a degrade so the two points
+  //     stay visually connected
+  //   • null when we don't have both endpoints (map falls back to just
+  //     the two markers)
+  const mapPolyline = useMemo(() => {
+    if (route && route.length >= 2) return route;
+    if (hasRiderLocation && userPin) {
+      return [
+        { latitude: Number(rider.latitude), longitude: Number(rider.longitude) },
+        userPin,
+      ];
+    }
+    return null;
+  }, [route, hasRiderLocation, rider?.latitude, rider?.longitude, userPin]);
 
   // -------------------- Render states --------------------
   if (loading) {
@@ -262,9 +347,7 @@ function TrackScreenAuthed() {
           }
           zoom={15}
           markers={mapMarkers}
-          polyline={hasRiderLocation && userPin
-            ? [{ latitude: Number(rider.latitude), longitude: Number(rider.longitude) }, userPin]
-            : null}
+          polyline={mapPolyline}
         />
 
         {/* Recenter button — small overlay, top-right */}
@@ -298,8 +381,26 @@ function TrackScreenAuthed() {
           </View>
         </View>
 
-        {/* ETA hero — the reason this screen exists */}
-        {etaMinutes != null ? (
+        {/* ETA hero — takes three shapes:
+              1. rider is at the door           → arrival banner
+              2. rider is en route, ETA known   → "Arriving in X min"
+              3. still waiting on first ETA     → "Calculating…" */}
+        {hasArrived ? (
+          <View style={[styles.etaHero, styles.etaHeroArrived]}>
+            <Text style={[styles.etaEyebrow, styles.etaEyebrowArrived]}>
+              At your address
+            </Text>
+            <View style={styles.etaRow}>
+              <Ionicons name="checkmark-circle" size={28} color={colors.success} />
+              <Text style={[styles.etaWaiting, styles.etaValueArrived]}>
+                Rider has arrived
+              </Text>
+            </View>
+            <Text style={styles.etaFreshness}>
+              Please step out to collect your Sehri.
+            </Text>
+          </View>
+        ) : etaMinutes != null ? (
           <View style={styles.etaHero}>
             <Text style={styles.etaEyebrow}>Arriving in</Text>
             <View style={styles.etaRow}>
@@ -455,6 +556,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[4], paddingVertical: space[3],
   },
   etaEyebrow: { ...type.micro, color: colors.tealDark, fontWeight: '700', marginBottom: 2 },
+  etaEyebrowArrived: { color: colors.success },
+  etaHeroArrived: { backgroundColor: colors.successSoft, borderColor: colors.success },
+  etaValueArrived: { color: colors.success, marginLeft: space[2] },
   etaRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
   etaValue: {
     fontSize: 42, fontWeight: '800', color: colors.tealDark,

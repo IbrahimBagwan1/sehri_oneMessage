@@ -21,6 +21,7 @@ const AppError = require('../utils/appError');
 
 const GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
 const DISTANCE_MATRIX_URL = 'https://maps.googleapis.com/maps/api/distancematrix/json';
+const DIRECTIONS_URL = 'https://maps.googleapis.com/maps/api/directions/json';
 
 const REQUEST_TIMEOUT_MS = 6000;
 
@@ -143,9 +144,105 @@ const distanceMatrix = async ({ origin, destination, mode = 'driving' }) => {
   }
 };
 
+/**
+ * Decode a Google-encoded polyline5 string into an array of
+ * [latitude, longitude] pairs. Implements the standard algorithm
+ * described at https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+ *
+ * Pure JS, no npm dependency. Kept co-located with the Directions call so
+ * the frontend can consume plain [lat, lng] arrays that drop straight into
+ * Leaflet without any decoding step.
+ */
+const decodePolyline5 = (encoded) => {
+  if (typeof encoded !== 'string' || encoded.length === 0) return [];
+  const points = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+
+  while (index < encoded.length) {
+    let result = 0;
+    let shift = 0;
+    let b;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dLat = (result & 1) ? ~(result >> 1) : (result >> 1);
+    lat += dLat;
+
+    result = 0;
+    shift = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dLng = (result & 1) ? ~(result >> 1) : (result >> 1);
+    lng += dLng;
+
+    points.push([lat * 1e-5, lng * 1e-5]);
+  }
+  return points;
+};
+
+/**
+ * Fetch a driving route from origin to destination using the Google
+ * Directions API. Returns
+ *   { path: [[lat,lng], ...], distanceMeters, durationSeconds, distanceText, durationText }
+ * or null on any failure — the caller can degrade to a straight-line
+ * polyline. Never throws; the /eta endpoint must never fail because
+ * Directions was flaky.
+ */
+const directions = async ({ origin, destination, mode = 'driving' }) => {
+  const apiKey = getApiKey();
+  if (!apiKey || !origin || !destination) return null;
+
+  try {
+    const { data } = await axios.get(DIRECTIONS_URL, {
+      params: {
+        origin: `${origin.lat},${origin.lng}`,
+        destination: `${destination.lat},${destination.lng}`,
+        mode,
+        units: 'metric',
+        key: apiKey,
+      },
+      timeout: REQUEST_TIMEOUT_MS,
+    });
+
+    if (data.status !== 'OK' || !Array.isArray(data.routes) || data.routes.length === 0) {
+      logger.warn(`[googleMaps] directions returned status=${data.status}`);
+      return null;
+    }
+
+    const route = data.routes[0];
+    const leg   = route.legs?.[0];
+    const encoded = route.overview_polyline?.points || '';
+    const path = decodePolyline5(encoded);
+
+    if (path.length < 2) {
+      logger.warn('[googleMaps] directions returned an empty polyline');
+      return null;
+    }
+
+    return {
+      path,
+      distanceMeters:  leg?.distance?.value ?? null,
+      durationSeconds: leg?.duration?.value ?? null,
+      distanceText:    leg?.distance?.text ?? null,
+      durationText:    leg?.duration?.text ?? null,
+    };
+  } catch (err) {
+    logger.warn(`[googleMaps] directions failed: ${err.message}`);
+    return null;
+  }
+};
+
 module.exports = {
   isConfigured,
   reverseGeocode,
   geocode,
   distanceMatrix,
+  directions,
 };
