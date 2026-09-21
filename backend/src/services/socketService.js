@@ -206,6 +206,18 @@ const emitEtaUpdate = (userId, payload) => {
   io.to(`user:${userId}`).emit('eta_update', payload);
 };
 
+/**
+ * Notify a specific user that the rider marked their stop as
+ * delivered. The user's track screen switches to the delivered/
+ * complete state on receipt. Broadcast per-user rather than per-zone
+ * so a rider marking Boys' Hostel PG done doesn't confuse users at
+ * other PGs served by the same rider.
+ */
+const emitStopDelivered = (userId, payload) => {
+  if (!io || !userId) return;
+  io.to(`user:${userId}`).emit('stop_delivered', payload);
+};
+
 module.exports = {
   initSocket,
   getIO,
@@ -216,4 +228,5 @@ module.exports = {
   // tracking
   emitRiderPosition,
   emitEtaUpdate,
+  emitStopDelivered,
 };

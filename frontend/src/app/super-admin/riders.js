@@ -77,47 +77,76 @@ export default function SuperAdminRidersScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   // --- Actions ---------------------------------------------------------
+  // ---- Multi-rider assign ------------------------------------------------
+  // Backend supports any number of assigned riders per day via
+  // delivery_stops. The old "assign today" replaced whichever single
+  // rider was there — new behavior: this button ADDS the rider to the
+  // current run, keeping everyone else assigned. Remove works the same
+  // way in reverse. Both flow through POST /delivery-run/assign which
+  // regenerates the stops from the full rider set (idempotent).
+  const currentlyAssignedIds = () =>
+    riders.filter((r) => r.is_assigned_today).map((r) => r.id);
+
+  const applyDeliveryRun = async (nextIds, action, riderName) => {
+    setBusyId(nextIds.length > 0 ? nextIds[0] : 'run'); // spin something
+    try {
+      if (nextIds.length === 0) {
+        // Empty = wipe today's run entirely.
+        await trackingApi.unassignTodayRider();
+      } else {
+        const res = await trackingApi.assignDeliveryRun(nextIds);
+        // Surface orphaned PGs if any — those are zones the current
+        // rider set can't cover. Non-blocking notice.
+        const orphans = res?.data?.orphaned_pgs || [];
+        if (orphans.length > 0) {
+          Alert.alert(
+            'Some PGs uncovered',
+            `${orphans.length} PG${orphans.length === 1 ? '' : 's'} in the run has no eligible rider ` +
+            `(no assigned rider matches their zone). Assign a rider whose zone covers those PGs, ` +
+            `or a rider with "all zones" access.`,
+          );
+        }
+      }
+      await load(true);
+    } catch (err) {
+      Alert.alert(
+        `Couldn't ${action} ${riderName}`,
+        err?.response?.data?.message || 'Try again in a moment.'
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleAssign = (rider) => {
+    const already = currentlyAssignedIds();
+    if (already.includes(rider.id)) return; // no-op
+    const nextIds = [...already, rider.id];
+    const others = already.length;
     Alert.alert(
-      `Assign ${rider.name} for today?`,
-      "Replaces any current assignment. Only one rider can be assigned per day.",
+      `Add ${rider.name} to today's run?`,
+      others === 0
+        ? "You'll be the only rider on today's run."
+        : `They'll deliver alongside ${others} other rider${others === 1 ? '' : 's'}. PGs are auto-split by zone.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Assign',
-          onPress: async () => {
-            setBusyId(rider.id);
-            try {
-              await trackingApi.assignTodayRider(rider.id);
-              await load(true);
-            } catch (err) {
-              Alert.alert("Couldn't assign", err?.response?.data?.message || 'Try again.');
-            } finally { setBusyId(null); }
-          },
-        },
+        { text: 'Add', onPress: () => applyDeliveryRun(nextIds, 'add', rider.name) },
       ]
     );
   };
 
   const handleUnassign = (rider) => {
+    const already = currentlyAssignedIds();
+    const nextIds = already.filter((id) => id !== rider.id);
+    const remaining = nextIds.length;
     Alert.alert(
-      `Remove ${rider.name} from today?`,
-      "Their marker stops broadcasting to users' track screens. You can reassign anyone active before Sehri time.",
+      `Remove ${rider.name} from today's run?`,
+      remaining === 0
+        ? "No riders will be assigned for today. The delivery run is cleared."
+        : `Their PGs get reassigned to the remaining ${remaining} rider${remaining === 1 ? '' : 's'} (auto-split by zone).`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            setBusyId(rider.id);
-            try {
-              await trackingApi.unassignTodayRider();
-              await load(true);
-            } catch (err) {
-              Alert.alert("Couldn't remove", err?.response?.data?.message || 'Try again.');
-            } finally { setBusyId(null); }
-          },
-        },
+        { text: 'Remove', style: 'destructive', onPress: () => applyDeliveryRun(nextIds, 'remove', rider.name) },
       ]
     );
   };
@@ -292,12 +321,8 @@ function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
 
       <View style={styles.rowActions}>
         {isAssigned ? (
-          // Assigned state → primary action becomes "Remove". Kept as
-          // the primary button (not variant='secondary') so it's the
-          // obvious way out; destructive coloring via the danger tone
-          // on the delete button remains the "harder" action.
           <Button
-            label="Remove from today"
+            label="Remove from run"
             onPress={onUnassign}
             size="sm"
             icon="close-circle-outline"
@@ -308,10 +333,10 @@ function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
           />
         ) : (
           <Button
-            label="Assign today"
+            label="Add to run"
             onPress={onAssign}
             size="sm"
-            icon="calendar-outline"
+            icon="add-circle-outline"
             disabled={!rider.is_active || busy}
             loading={busy}
             style={{ flex: 1 }}

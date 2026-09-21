@@ -188,26 +188,48 @@ const decodePolyline5 = (encoded) => {
 };
 
 /**
- * Fetch a driving route from origin to destination using the Google
- * Directions API. Returns
- *   { path: [[lat,lng], ...], distanceMeters, durationSeconds, distanceText, durationText }
- * or null on any failure — the caller can degrade to a straight-line
- * polyline. Never throws; the /eta endpoint must never fail because
- * Directions was flaky.
+ * Fetch a driving route via the Google Directions API.
+ *
+ * Simple case (origin → destination):
+ *   directions({ origin, destination })
+ *   Returns { path, distanceMeters, durationSeconds, distanceText, durationText, waypointOrder: [], legs: [{...}] }
+ *
+ * Multi-stop case (origin → [waypoints...] → destination):
+ *   directions({ origin, destination, waypoints, optimizeWaypoints: true })
+ *   Returns the same shape PLUS `waypointOrder` — an array of indices
+ *   into the input `waypoints` array in Google's optimized visit order,
+ *   and `legs` — one leg per hop (origin→wp0, wp0→wp1, …, wpN→destination)
+ *   each with its own distance/duration. Rider UI uses the legs to
+ *   compute per-stop distance / eta and waypointOrder to sort the stops.
+ *
+ * Never throws — returns null on any failure so callers can degrade.
  */
-const directions = async ({ origin, destination, mode = 'driving' }) => {
+const directions = async ({
+  origin,
+  destination,
+  waypoints = [],
+  optimizeWaypoints = false,
+  mode = 'driving',
+}) => {
   const apiKey = getApiKey();
   if (!apiKey || !origin || !destination) return null;
 
+  const params = {
+    origin: `${origin.lat},${origin.lng}`,
+    destination: `${destination.lat},${destination.lng}`,
+    mode,
+    units: 'metric',
+    key: apiKey,
+  };
+  if (Array.isArray(waypoints) && waypoints.length > 0) {
+    // Google waypoint syntax: "optimize:true|lat,lng|lat,lng|..."
+    const prefix = optimizeWaypoints ? 'optimize:true|' : '';
+    params.waypoints = prefix + waypoints.map((w) => `${w.lat},${w.lng}`).join('|');
+  }
+
   try {
     const { data } = await axios.get(DIRECTIONS_URL, {
-      params: {
-        origin: `${origin.lat},${origin.lng}`,
-        destination: `${destination.lat},${destination.lng}`,
-        mode,
-        units: 'metric',
-        key: apiKey,
-      },
+      params,
       timeout: REQUEST_TIMEOUT_MS,
     });
 
@@ -217,7 +239,6 @@ const directions = async ({ origin, destination, mode = 'driving' }) => {
     }
 
     const route = data.routes[0];
-    const leg   = route.legs?.[0];
     const encoded = route.overview_polyline?.points || '';
     const path = decodePolyline5(encoded);
 
@@ -226,12 +247,25 @@ const directions = async ({ origin, destination, mode = 'driving' }) => {
       return null;
     }
 
+    // Multi-leg routes: total distance/duration is the sum. For the
+    // single-leg case this collapses to the leg's own values.
+    const legs = Array.isArray(route.legs) ? route.legs : [];
+    const distanceMeters = legs.reduce((s, l) => s + (l.distance?.value || 0), 0) || null;
+    const durationSeconds = legs.reduce((s, l) => s + (l.duration?.value || 0), 0) || null;
+
     return {
       path,
-      distanceMeters:  leg?.distance?.value ?? null,
-      durationSeconds: leg?.duration?.value ?? null,
-      distanceText:    leg?.distance?.text ?? null,
-      durationText:    leg?.duration?.text ?? null,
+      distanceMeters,
+      durationSeconds,
+      distanceText:    legs[0]?.distance?.text ?? null,
+      durationText:    legs[0]?.duration?.text ?? null,
+      waypointOrder:   Array.isArray(route.waypoint_order) ? route.waypoint_order : [],
+      legs: legs.map((l) => ({
+        distanceMeters:  l.distance?.value ?? null,
+        durationSeconds: l.duration?.value ?? null,
+        distanceText:    l.distance?.text ?? null,
+        durationText:    l.duration?.text ?? null,
+      })),
     };
   } catch (err) {
     logger.warn(`[googleMaps] directions failed: ${err.message}`);

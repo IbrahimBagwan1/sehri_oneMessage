@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -22,135 +23,147 @@ import {
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
-const ZONE_LABELS: Record<string, string> = {
-  masjid:      'Masjid',
-  boys_hostel: "Boys' hostel",
-  stanza:      'Stanza',
-  girls:       'Girls',
-};
-
 // -----------------------------------------------------------------------------
-// Rider delivery list — grouped by zone → PG. Each PG shows the count of
-// residents and a tappable checkbox to mark it delivered.
+// Rider deliveries — the stop queue for today's optimized route.
+//
+// One row per assigned PG (delivery_stop on the backend). Rows render
+// in `sort_order` — Google Directions' optimized visit order (recomputed
+// at assign time, on Start delivery, and after each mark-delivered).
+//
+// The map screen visualises the SAME data as a route polyline + numbered
+// pins; this screen is the tap-to-mark queue. Both read from
+// useRiderStore.myStops so state stays consistent.
 // -----------------------------------------------------------------------------
-
-type PGRow = {
-  type: 'pg_row';
-  key: string;
-  zone: string;
-  address: string;
-  count: number;
-  isSpecial: boolean;
-};
-
-type ZoneHeader = {
-  type: 'zone_header';
-  key: string;
-  zone: string;
-  total: number;
-};
-
-type Row = PGRow | ZoneHeader;
-
-const buildListData = (by_zone: Record<string, any[]>): Row[] => {
-  const items: Row[] = [];
-  for (const [zone, responses] of Object.entries(by_zone)) {
-    const byAddress: Record<string, { count: number; isSpecial: boolean }> = {};
-    for (const r of responses) {
-      const addr = r.address || 'Unknown address';
-      if (!byAddress[addr]) byAddress[addr] = { count: 0, isSpecial: false };
-      byAddress[addr].count += 1;
-      if (r.is_special_case) byAddress[addr].isSpecial = true;
-    }
-    items.push({ type: 'zone_header', key: `header-${zone}`, zone, total: responses.length });
-    for (const [address, data] of Object.entries(byAddress)) {
-      items.push({
-        type: 'pg_row',
-        key: `pg-${zone}-${address}`,
-        zone,
-        address,
-        count: data.count,
-        isSpecial: data.isSpecial,
-      });
-    }
-  }
-  return items;
-};
 
 export default function DeliveriesScreen() {
-  const fetchDeliveryList = useRiderStore((s) => s.fetchDeliveryList);
-  const deliveryList      = useRiderStore((s) => s.deliveryList);
-  const loadingList       = useRiderStore((s) => s.loadingList);
-  const listError         = useRiderStore((s) => s.listError);
+  const fetchMyStops       = useRiderStore((s) => s.fetchMyStops);
+  const markStopDelivered  = useRiderStore((s) => s.markStopDelivered);
+  const stops              = useRiderStore((s) => s.myStops);
+  const summary            = useRiderStore((s) => s.stopsSummary);
+  const loading            = useRiderStore((s) => s.loadingStops);
+  const error              = useRiderStore((s) => s.stopsError);
 
-  const [delivered, setDelivered]   = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [busyStopId, setBusyStopId] = useState(null);
 
-  useFocusEffect(useCallback(() => { fetchDeliveryList(); }, [fetchDeliveryList]));
+  useFocusEffect(useCallback(() => { fetchMyStops(); }, [fetchMyStops]));
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchDeliveryList();
+    await fetchMyStops();
     setRefreshing(false);
   };
 
-  const toggleDelivered = (key: string) => {
-    setDelivered((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const listData: Row[] = deliveryList?.by_zone ? buildListData(deliveryList.by_zone) : [];
-  const totalPGs = listData.filter((i) => i.type === 'pg_row').length;
-  const doneCount = Object.values(delivered).filter(Boolean).length;
-
-  const renderItem = ({ item }: { item: Row }) => {
-    if (item.type === 'zone_header') {
-      return (
-        <View style={styles.zoneHeader}>
-          <Ionicons name="location-outline" size={13} color={colors.gold} />
-          <Text style={styles.zoneHeaderText}>{ZONE_LABELS[item.zone] || item.zone}</Text>
-          <View style={styles.zoneCount}><Text style={styles.zoneCountText}>{item.total}</Text></View>
-        </View>
-      );
-    }
-
-    const isDone = !!delivered[item.key];
-    return (
-      <Pressable
-        onPress={() => toggleDelivered(item.key)}
-        style={({ pressed }) => [styles.pgRow, pressed && styles.pgRowPressed, isDone && styles.pgRowDone]}
-        accessibilityRole="checkbox"
-        accessibilityState={{ checked: isDone }}
-        accessibilityLabel={`${item.address}, mark ${isDone ? 'undelivered' : 'delivered'}`}
-      >
-        <View style={{ flex: 1 }}>
-          {item.isSpecial && (
-            <View style={{ marginBottom: space[1] }}>
-              <Chip label="Special case" tone="gold" />
-            </View>
-          )}
-          <Text style={[styles.pgName, isDone && styles.textDone]} numberOfLines={2}>{item.address}</Text>
-          <Text style={[styles.pgCount, isDone && styles.textDone]}>
-            {item.count} {item.count === 1 ? 'person' : 'people'}
-          </Text>
-        </View>
-        <View style={[styles.checkbox, isDone && styles.checkboxDone]}>
-          {isDone && <Ionicons name="checkmark" size={15} color={colors.paper} />}
-        </View>
-      </Pressable>
+  const handleMarkDelivered = (stop) => {
+    if (stop.status === 'delivered') return;
+    Alert.alert(
+      `Mark "${stop.location_name}" as delivered?`,
+      `${stop.packet_count} packet${stop.packet_count === 1 ? '' : 's'} for this PG. Users here will get a "delivered" notification.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Mark delivered',
+          onPress: async () => {
+            setBusyStopId(stop.id);
+            try {
+              await markStopDelivered(stop.id);
+            } catch (err) {
+              Alert.alert("Couldn't mark delivered", err?.response?.data?.message || 'Try again in a moment.');
+            } finally {
+              setBusyStopId(null);
+            }
+          },
+        },
+      ]
     );
   };
 
-  if (loadingList && !refreshing) {
+  // Sort: pending (by sort_order) first, then delivered (in delivered_at
+  // desc — most recent completion sits at the top of the "done" section
+  // so it's easy to spot / undo mentally).
+  const orderedStops = [...(stops || [])].sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'pending' ? -1 : 1;
+    if (a.status === 'pending') {
+      const ao = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+      const bo = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+      return ao - bo;
+    }
+    return (b.delivered_at || '').localeCompare(a.delivered_at || '');
+  });
+
+  const renderItem = ({ item, index }) => {
+    const isDone = item.status === 'delivered';
+    const busy   = busyStopId === item.id;
+    // Visible stop number = position in the pending queue. Delivered
+    // rows show a checkmark badge instead so numbering stays stable.
+    const visibleIndex = orderedStops
+      .filter((s) => s.status === 'pending')
+      .findIndex((s) => s.id === item.id) + 1;
+
+    return (
+      <Card style={isDone ? styles.cardDone : undefined} padding={false}>
+        <View style={styles.rowInner}>
+          {/* Number / checkmark badge */}
+          <View style={[styles.numBadge, isDone && styles.numBadgeDone]}>
+            {isDone
+              ? <Ionicons name="checkmark" size={16} color={colors.paper} />
+              : <Text style={styles.numText}>{visibleIndex || index + 1}</Text>}
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.pgName, isDone && styles.textMuted]} numberOfLines={2}>
+              {item.location_name}
+            </Text>
+            <View style={styles.metaRow}>
+              <Ionicons name="people-outline" size={13} color={colors.inkFaint} />
+              <Text style={[styles.metaText, isDone && styles.textMuted]}>
+                {item.packet_count} packet{item.packet_count === 1 ? '' : 's'}
+              </Text>
+              {!item.has_pin && !isDone && (
+                <Chip label="No pin" tone="warn" />
+              )}
+              {isDone && (
+                <Chip label="Delivered" tone="success" icon="checkmark-circle-outline" />
+              )}
+            </View>
+          </View>
+
+          {isDone ? (
+            <View style={styles.deliveredWrap}>
+              <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => handleMarkDelivered(item)}
+              disabled={busy}
+              style={({ pressed }) => [
+                styles.markBtn,
+                pressed && styles.markBtnPressed,
+                busy && { opacity: 0.6 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Mark ${item.location_name} delivered`}
+            >
+              <Ionicons name="checkmark" size={16} color={colors.paper} />
+              <Text style={styles.markBtnText}>{busy ? 'Saving…' : 'Delivered'}</Text>
+            </Pressable>
+          )}
+        </View>
+      </Card>
+    );
+  };
+
+  if (loading && !refreshing && (!stops || stops.length === 0)) {
     return (
       <SafeAreaView style={styles.screen} edges={['top']}>
         <Header title="Deliveries" />
-        <LoadingState message="Loading today's list…" />
+        <LoadingState message="Loading today's stops…" />
       </SafeAreaView>
     );
   }
 
-  if (listError) {
-    const notAssigned = listError.toLowerCase().includes('not assigned');
+  if (error) {
+    const notAssigned = error.toLowerCase().includes('not assigned') || error.toLowerCase().includes("haven't been");
     return (
       <SafeAreaView style={styles.screen} edges={['top']}>
         <Header title="Deliveries" />
@@ -158,48 +171,70 @@ export default function DeliveriesScreen() {
           <EmptyState
             icon="calendar-outline"
             title="Not assigned today"
-            message="You haven't been assigned as today's delivery rider. Check with the coordinator."
+            message="You haven't been assigned any stops today. Check with the coordinator."
             actionLabel="Refresh"
-            onAction={fetchDeliveryList}
+            onAction={fetchMyStops}
           />
         ) : (
-          <ErrorState message={listError} onRetry={fetchDeliveryList} />
+          <ErrorState message={error} onRetry={fetchMyStops} />
         )}
       </SafeAreaView>
     );
   }
 
-  if (!deliveryList || deliveryList.total === 0) {
+  if (!stops || stops.length === 0) {
     return (
       <SafeAreaView style={styles.screen} edges={['top']}>
         <Header title="Deliveries" />
         <EmptyState
           icon="checkmark-done-circle-outline"
-          title="No deliveries today"
-          message="Nobody voted yes for today's Sehri."
+          title="No stops"
+          message="You haven't been assigned any PGs today."
+          actionLabel="Refresh"
+          onAction={fetchMyStops}
         />
       </SafeAreaView>
     );
   }
 
+  const s = summary || {
+    total_stops: stops.length,
+    delivered_stops: stops.filter((x) => x.status === 'delivered').length,
+    pending_stops: stops.filter((x) => x.status === 'pending').length,
+    total_packets: stops.reduce((n, x) => n + (x.packet_count || 0), 0),
+    delivered_packets: stops.filter((x) => x.status === 'delivered').reduce((n, x) => n + (x.packet_count || 0), 0),
+  };
+
+  const allDone = s.pending_stops === 0;
+
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
-      <Header title="Deliveries" subtitle={deliveryList.poll_date} />
+      <Header title="Deliveries" subtitle={`${s.pending_stops} of ${s.total_stops} left`} />
 
-      {/* Summary strip */}
+      {/* Summary strip — matches the aesthetic of admin dashboards' StatCells */}
       <View style={styles.summaryStrip}>
-        <SummaryCell label="People"    value={deliveryList.total}       color={colors.ink} />
+        <SummaryCell label="Stops"       value={s.pending_stops}    total={s.total_stops}       color={allDone ? colors.success : colors.tealDark} />
         <View style={styles.summaryDivider} />
-        <SummaryCell label="Done"      value={doneCount}                color={colors.success} />
+        <SummaryCell label="Packets"     value={s.delivered_packets} total={s.total_packets}    color={colors.gold} suffix="delivered" />
         <View style={styles.summaryDivider} />
-        <SummaryCell label="Remaining" value={totalPGs - doneCount}     color={colors.warn} />
+        <SummaryCell label="Done"        value={s.delivered_stops}   total={s.total_stops}      color={colors.success} />
       </View>
 
+      {allDone && (
+        <View style={styles.doneBanner}>
+          <Ionicons name="ribbon-outline" size={16} color={colors.success} />
+          <Text style={styles.doneBannerText}>
+            All stops delivered. Jazak-Allahu-khayran — you can stop delivery from the Map tab.
+          </Text>
+        </View>
+      )}
+
       <FlatList
-        data={listData}
-        keyExtractor={(item) => item.key}
+        data={orderedStops}
+        keyExtractor={(x) => x.id}
         renderItem={renderItem}
         contentContainerStyle={styles.list}
+        ItemSeparatorComponent={() => <View style={{ height: space[2] }} />}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.teal]} tintColor={colors.teal} />}
         showsVerticalScrollIndicator={false}
       />
@@ -207,11 +242,14 @@ export default function DeliveriesScreen() {
   );
 }
 
-function SummaryCell({ label, value, color }: { label: string; value: number; color: string }) {
+function SummaryCell({ label, value, total, color, suffix }) {
   return (
     <View style={styles.summaryCell}>
-      <Text style={[styles.summaryValue, { color }]}>{value}</Text>
-      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.summaryValueRow}>
+        <Text style={[styles.summaryValue, { color }]}>{value}</Text>
+        {total != null && <Text style={styles.summaryTotal}> / {total}</Text>}
+      </Text>
+      <Text style={styles.summaryLabel}>{suffix || label}</Text>
     </View>
   );
 }
@@ -228,44 +266,63 @@ const styles = StyleSheet.create({
   },
   summaryCell:    { flex: 1, alignItems: 'center' },
   summaryDivider: { width: 1, backgroundColor: colors.ruleSoft, marginVertical: 4 },
+  summaryValueRow:{ alignItems: 'baseline' },
   summaryValue:   { fontSize: 22, fontWeight: '800' },
+  summaryTotal:   { fontSize: 13, color: colors.inkFaint, fontWeight: '600' },
   summaryLabel:   { ...type.micro, color: colors.inkFaint, marginTop: 2 },
 
-  list: { padding: space[4], paddingBottom: space[8] },
-
-  zoneHeader: {
+  doneBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space[2],
-    paddingVertical: space[3],
-    marginTop: space[2],
-  },
-  zoneHeaderText: { ...type.metaStrong, color: colors.inkMuted, flex: 1 },
-  zoneCount:      { backgroundColor: colors.goldSoft, borderRadius: radius.pill, paddingHorizontal: space[2], paddingVertical: 2, borderWidth: 1, borderColor: colors.goldBorder },
-  zoneCountText:  { ...type.micro, color: colors.gold, fontWeight: '700' },
-
-  pgRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.paper,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.ruleSoft,
+    backgroundColor: colors.successSoft,
     paddingHorizontal: space[4],
     paddingVertical: space[3],
-    marginBottom: space[2],
+    borderBottomWidth: 1,
+    borderBottomColor: colors.success,
   },
-  pgRowPressed: { backgroundColor: colors.tealSoft },
-  pgRowDone:    { opacity: 0.55 },
-  pgName:       { ...type.h3 },
-  pgCount:      { ...type.meta, marginTop: 2 },
-  textDone:     { textDecorationLine: 'line-through', color: colors.inkGhost },
+  doneBannerText: { ...type.meta, color: colors.success, flex: 1, fontWeight: '700' },
 
-  checkbox: {
-    width: 26, height: 26, borderRadius: 6,
-    borderWidth: 2, borderColor: colors.ruleSoft,
-    alignItems: 'center', justifyContent: 'center',
-    marginLeft: space[3],
+  list: { padding: space[4], paddingBottom: space[8] },
+
+  cardDone: { opacity: 0.7, backgroundColor: colors.paper },
+  rowInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    padding: space[4],
   },
-  checkboxDone: { backgroundColor: colors.teal, borderColor: colors.teal },
+
+  numBadge: {
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: colors.tealSoft,
+    borderWidth: 1.5, borderColor: colors.tealBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  numBadgeDone: { backgroundColor: colors.success, borderColor: colors.success },
+  numText:      { ...type.bodyStrong, color: colors.tealDark, fontVariant: ['tabular-nums'] },
+
+  pgName:    { ...type.h3 },
+  textMuted: { color: colors.inkGhost, textDecorationLine: 'line-through' },
+
+  metaRow: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: space[2],
+    marginTop: 4, flexWrap: 'wrap',
+  },
+  metaText: { ...type.meta, color: colors.inkMuted },
+
+  markBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.teal,
+    paddingHorizontal: space[3], paddingVertical: space[2],
+    borderRadius: radius.md,
+  },
+  markBtnPressed: { backgroundColor: colors.tealDark },
+  markBtnText:    { ...type.metaStrong, color: colors.paper },
+
+  deliveredWrap: {
+    width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
+  },
 });

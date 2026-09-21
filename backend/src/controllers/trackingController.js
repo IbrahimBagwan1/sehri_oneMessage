@@ -11,7 +11,71 @@ const etaComputationService = require('../services/etaComputationService');
 const socketService = require('../services/socketService');
 const logger = require('../utils/logger');
 
-const { Rider, Poll, PollResponse, User, Location } = db;
+const { Rider, Poll, PollResponse, User, Location, DeliveryStop } = db;
+
+// ---------------------------------------------------------------------------
+// Shared: compute today's deliverable {location_id → packet_count} map.
+//
+// Reuses the same predicate as getDeliveryList: yes-votes minus approved
+// dont_want, plus approved want. Everyone at the same PG (same
+// location_id) collapses into a single packet count for that PG. PGs
+// with no coord pin are still returned (a rider can still deliver
+// there manually; only the map polyline degrades — the packet count
+// and stop entry itself are unaffected).
+// ---------------------------------------------------------------------------
+const computeDeliverablePGs = async (pollId) => {
+  const responses = await PollResponse.findAll({
+    where: {
+      poll_id: pollId,
+      [Op.or]: [
+        {
+          response: 'yes',
+          [Op.not]: {
+            is_special_case: true,
+            special_case_type: 'dont_want',
+            sehri_allowed: 'approved',
+          },
+        },
+        {
+          is_special_case: true,
+          special_case_type: 'want',
+          sehri_allowed: 'approved',
+        },
+      ],
+    },
+    include: [
+      { model: User, as: 'user', attributes: ['id', 'location_id'] },
+    ],
+    attributes: ['id', 'zone'],
+  });
+
+  // Walk each user's location_id up the chain to the first ancestor
+  // with coords — that's the delivery destination. If nothing in the
+  // chain has coords, still count the packet under the user's raw
+  // location_id so it appears in the stop list (rider knows to go
+  // there, ETA/polyline just degrade).
+  const byPg = new Map(); // location_id → { count, coord_location_id (may be null) }
+  for (const r of responses) {
+    const rootId = r.user?.location_id;
+    if (!rootId) continue;
+    const dest = await resolveDeliveryDestination(rootId);
+    // Key by the PG the user actually belongs to (rootId), so two users
+    // at the same PG never split into two stops even if their PG has
+    // no coord and both resolve up to the zone.
+    const key = rootId;
+    if (!byPg.has(key)) {
+      byPg.set(key, {
+        location_id:      key,
+        packet_count:     0,
+        coord_location_id: dest?.source_location_id || null,
+        lat: dest?.lat ?? null,
+        lng: dest?.lng ?? null,
+      });
+    }
+    byPg.get(key).packet_count += 1;
+  }
+  return Array.from(byPg.values());
+};
 
 // ---------------------------------------------------------------------------
 // Internal helper — fetch today's poll (same pattern as pollController).
@@ -277,7 +341,24 @@ const getAllRiders = async (req, res, next) => {
       getTodaysPoll(),
     ]);
 
-    const assignedRiderId = todaysPoll?.assigned_rider_id || null;
+    // Multi-rider: derive is_assigned_today from delivery_stops so it
+    // stays correct when a super admin assigns 2+ riders. Fall back
+    // to legacy poll.assigned_rider_id if the poll has no stops yet
+    // (single-rider legacy flow — assignTodaysRider only sets the FK).
+    let assignedRiderIds = new Set();
+    if (todaysPoll) {
+      const rows = await DeliveryStop.findAll({
+        where: { poll_id: todaysPoll.id },
+        attributes: [
+          [db.sequelize.fn('DISTINCT', db.sequelize.col('rider_id')), 'rider_id'],
+        ],
+        raw: true,
+      });
+      for (const r of rows) if (r.rider_id) assignedRiderIds.add(r.rider_id);
+      if (assignedRiderIds.size === 0 && todaysPoll.assigned_rider_id) {
+        assignedRiderIds.add(todaysPoll.assigned_rider_id);
+      }
+    }
 
     return success(res, {
       statusCode: 200,
@@ -294,7 +375,7 @@ const getAllRiders = async (req, res, next) => {
         longitude: r.longitude,
         current_address: r.current_address,
         eta_minutes: r.eta_minutes,
-        is_assigned_today: assignedRiderId === r.id,
+        is_assigned_today: assignedRiderIds.has(r.id),
         created_at: r.created_at,
       })),
     });
@@ -685,15 +766,51 @@ const pushLocation = async (req, res, next) => {
 const getEta = async (req, res, next) => {
   try {
     const poll = await getTodaysPoll();
-    if (!poll || !poll.assigned_rider_id) {
+    if (!poll) {
       return success(res, {
         statusCode: 200,
-        message: 'No rider assigned for today',
+        message: 'No poll for today',
         data: { eta: null },
       });
     }
 
-    const rider = await Rider.findByPk(poll.assigned_rider_id, {
+    // Multi-rider resolution — same rule getActiveRider uses. Find the
+    // delivery_stop for the calling user's PG; the stop's rider is
+    // whose ETA we compute. Falls back to legacy poll.assigned_rider_id
+    // for the pre-multi-rider flow.
+    const userForStop = await User.findByPk(req.actingUserId, {
+      attributes: ['id', 'location_id'],
+    });
+    let riderId = null;
+    let stopRow = null;
+    if (userForStop?.location_id) {
+      stopRow = await DeliveryStop.findOne({
+        where: { poll_id: poll.id, location_id: userForStop.location_id },
+        attributes: ['id', 'rider_id', 'status'],
+      });
+      if (stopRow) riderId = stopRow.rider_id;
+    }
+    if (!riderId && poll.assigned_rider_id) riderId = poll.assigned_rider_id;
+
+    if (!riderId) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No rider assigned to your PG today',
+        data: { eta: null },
+      });
+    }
+
+    // If this stop is already delivered, short-circuit — no point
+    // computing an ETA to a stop that's done.
+    if (stopRow?.status === 'delivered') {
+      return success(res, {
+        statusCode: 200,
+        message: 'Your Sehri has been delivered.',
+        data: { eta: null, stop: { id: stopRow.id, status: 'delivered' } },
+      });
+    }
+
+    const rider = await Rider.findByPk(riderId, {
       attributes: ['id', 'name', 'latitude', 'longitude', 'status', 'is_active'],
     });
 
@@ -866,50 +983,82 @@ const getEta = async (req, res, next) => {
 const getActiveRider = async (req, res, next) => {
   try {
     const poll = await getTodaysPoll();
-
-    if (!poll || !poll.assigned_rider_id) {
+    if (!poll) {
       return success(res, {
         statusCode: 200,
-        message: 'No rider assigned for today',
+        message: 'No poll for today',
         data: { rider: null },
       });
     }
 
-    const rider = await Rider.findByPk(poll.assigned_rider_id, {
-      include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
-      attributes: [
-        'id', 'name', 'phone', 'zone_location_id',
-        'latitude', 'longitude', 'current_address',
-        'eta_minutes', 'status', 'is_active',
+    // MULTI-RIDER resolution:
+    // Find the delivery_stop for the calling user's PG (their
+    // location_id, walked up if needed to match a stop). Whatever
+    // rider owns that stop is the rider the user should see. This
+    // makes multi-rider correctness fall out for free — two users at
+    // the same PG hit the same stop hit the same rider; two PGs
+    // served by different riders each resolve to their own rider.
+    //
+    // We also expose the specific stop's status/id so the user's
+    // track screen can flip to a "delivered" state without a separate
+    // fetch.
+    const user = await User.findByPk(req.actingUserId, {
+      attributes: ['id', 'location_id'],
+    });
+    if (!user || !user.location_id) {
+      return success(res, {
+        statusCode: 200,
+        message: 'Your profile has no location yet.',
+        data: { rider: null },
+      });
+    }
+
+    // The stop's location_id is the PG the user belongs to (we key
+    // stops by rootId in computeDeliverablePGs). So the lookup is a
+    // direct match on user.location_id.
+    let stop = await DeliveryStop.findOne({
+      where: { poll_id: poll.id, location_id: user.location_id },
+      include: [
+        {
+          model: Rider, as: 'rider',
+          include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
+          attributes: [
+            'id', 'name', 'phone', 'zone_location_id',
+            'latitude', 'longitude', 'current_address',
+            'eta_minutes', 'status', 'is_active',
+          ],
+        },
       ],
     });
 
-    if (!rider || !rider.is_active || rider.status === 'done') {
+    // Legacy single-rider fallback: if no stops have been generated
+    // yet for this poll but assigned_rider_id is set (pre-multi-rider
+    // flow), surface that rider for every user.
+    let rider = stop?.rider || null;
+    if (!rider && poll.assigned_rider_id) {
+      rider = await Rider.findByPk(poll.assigned_rider_id, {
+        include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
+        attributes: [
+          'id', 'name', 'phone', 'zone_location_id',
+          'latitude', 'longitude', 'current_address',
+          'eta_minutes', 'status', 'is_active',
+        ],
+      });
+    }
+
+    if (!rider || !rider.is_active) {
       return success(res, {
         statusCode: 200,
-        message: rider?.status === 'done' ? 'Delivery is complete for today' : 'No active rider',
+        message: 'No rider assigned to your PG today',
         data: { rider: null },
       });
     }
 
-    // Zone check: if the rider serves a specific zone, only users in that
-    // zone should see them. Riders with no zone are visible to all.
-    if (rider.zone_location_id) {
-      const user = await User.findByPk(req.actingUserId, {
-        attributes: ['location_id'],
-      });
-
-      if (user) {
-        const userZone = await resolveZone(user.location_id, db);
-        if (userZone && userZone.id !== rider.zone_location_id) {
-          return success(res, {
-            statusCode: 200,
-            message: 'No rider assigned to your zone',
-            data: { rider: null },
-          });
-        }
-      }
-    }
+    // If the stop itself is already delivered OR the rider's whole
+    // run is done, surface that so the client's empty state is
+    // accurate. We still return the rider so the client can show
+    // "delivered" attribution.
+    const isDoneForThisUser = stop?.status === 'delivered' || rider.status === 'done';
 
     return success(res, {
       statusCode: 200,
@@ -922,9 +1071,14 @@ const getActiveRider = async (req, res, next) => {
           longitude: rider.longitude,
           current_address: rider.current_address,
           eta_minutes: rider.eta_minutes,
-          status: rider.status,
+          status: isDoneForThisUser ? 'done' : rider.status,
           zone: rider.zone ? { id: rider.zone.id, name: rider.zone.name } : null,
         },
+        stop: stop ? {
+          id: stop.id,
+          status: stop.status,
+          delivered_at: stop.delivered_at,
+        } : null,
       },
     });
   } catch (err) {
@@ -953,12 +1107,33 @@ const getDeliveryList = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'No poll found for today' });
     }
 
-    // Verify the requesting rider is today's assigned rider.
-    if (poll.assigned_rider_id !== req.auth.id) {
+    // MULTI-RIDER: the rider is "assigned" if they have at least one
+    // delivery_stop today. Legacy single-rider check (assigned_rider_id)
+    // is kept as a fallback for polls that haven't been migrated to
+    // the delivery_stops model yet.
+    const myStopCount = await DeliveryStop.count({
+      where: { poll_id: poll.id, rider_id: req.auth.id },
+    });
+    const legacyMatch = poll.assigned_rider_id === req.auth.id;
+    if (myStopCount === 0 && !legacyMatch) {
       return error(res, {
         statusCode: 403,
-        message: 'You are not assigned as today\'s delivery rider',
+        message: 'You are not assigned as a delivery rider today.',
       });
+    }
+
+    // MULTI-RIDER predicate: only surface users at PGs this rider is
+    // responsible for. Falls back to all deliverable responses if no
+    // stops exist (legacy flow) so single-rider polls still see the
+    // full list.
+    let stopLocationIds = null;
+    if (myStopCount > 0) {
+      const myStops = await DeliveryStop.findAll({
+        where: { poll_id: poll.id, rider_id: req.auth.id },
+        attributes: ['location_id'],
+        raw: true,
+      });
+      stopLocationIds = myStops.map((s) => s.location_id);
     }
 
     // Fetch all yes-voters, excluding dont_want approved special cases.
@@ -966,6 +1141,7 @@ const getDeliveryList = async (req, res, next) => {
     //   (response = 'yes' AND NOT (is_special_case = true AND special_case_type = 'dont_want' AND sehri_allowed = 'approved'))
     //   OR
     //   (is_special_case = true AND special_case_type = 'want' AND sehri_allowed = 'approved')
+    const userWhere = stopLocationIds ? { location_id: { [Op.in]: stopLocationIds } } : undefined;
     const responses = await PollResponse.findAll({
       where: {
         poll_id: poll.id,
@@ -992,6 +1168,8 @@ const getDeliveryList = async (req, res, next) => {
           model: User,
           as: 'user',
           attributes: ['id', 'name', 'phone', 'address', 'location_id'],
+          where: userWhere,
+          required: !!userWhere, // INNER JOIN when we're filtering, LEFT JOIN otherwise
         },
       ],
       attributes: ['id', 'zone', 'is_special_case', 'special_case_type'],
@@ -1062,6 +1240,611 @@ const deleteRider = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Internal: recompute the optimized sort_order for a rider's pending stops
+// via Google Directions waypoint optimization.
+//
+// Called when:
+//   • a rider is first assigned (initial ordering)
+//   • a stop is marked delivered (ordering may improve for what's left)
+//
+// If the rider has 0 or 1 pending stops, we skip the API call entirely.
+// If Directions fails/rate-limits, we leave whatever sort_order was there;
+// the frontend still shows the stops (unordered fallback = alphabetical
+// by name in the UI). We never throw — route optimization is a
+// best-effort enhancement, not a correctness dependency.
+// ---------------------------------------------------------------------------
+const recomputeRiderRouteOrder = async (riderId, pollId) => {
+  try {
+    const rider = await Rider.findByPk(riderId, {
+      attributes: ['id', 'latitude', 'longitude', 'zone_location_id'],
+    });
+    if (!rider) return;
+
+    const stops = await DeliveryStop.findAll({
+      where: { poll_id: pollId, rider_id: riderId, status: 'pending' },
+      include: [{ model: Location, as: 'location', attributes: ['id', 'name', 'latitude', 'longitude', 'parent_id'] }],
+      order: [['sort_order', 'ASC']],
+    });
+    if (stops.length <= 1) return; // trivially "ordered"
+
+    // Resolve each stop's coordinate — walk up the chain if the PG
+    // itself has none. Stops with no resolvable coord are pushed to
+    // the end of the order (they can't participate in optimization).
+    const withCoords = [];
+    const noCoords   = [];
+    for (const s of stops) {
+      let coord = null;
+      if (s.location?.latitude != null && s.location?.longitude != null) {
+        coord = { lat: Number(s.location.latitude), lng: Number(s.location.longitude) };
+      } else {
+        const resolved = await resolveDeliveryDestination(s.location_id);
+        if (resolved) coord = { lat: resolved.lat, lng: resolved.lng };
+      }
+      if (coord) withCoords.push({ stop: s, coord });
+      else       noCoords.push({ stop: s });
+    }
+
+    if (withCoords.length <= 1) return;
+
+    // Origin: rider's current GPS if we have it, else the first
+    // coord-having stop (which then becomes leg[0].destination). This
+    // gives us a sane route even before the rider starts broadcasting.
+    let origin = null;
+    if (rider.latitude != null && rider.longitude != null) {
+      origin = { lat: Number(rider.latitude), lng: Number(rider.longitude) };
+    } else {
+      origin = withCoords[0].coord;
+    }
+
+    // Google's Directions API returns the optimized waypoint order and
+    // leg-by-leg distances. We use it to derive sort_order 1..N for
+    // the rider's pending stops. Setting destination = last stop is
+    // arbitrary; Google will still optimize the middle waypoints. If
+    // we had a fixed "return to base" address we'd use that instead.
+    //
+    // We choose the stop furthest from the origin as the destination
+    // and let the rest be waypoints — Google reorders the waypoints
+    // but leaves origin/destination fixed, so this gives good results.
+    let furthestIdx = 0;
+    let furthestD2 = -1;
+    for (let i = 0; i < withCoords.length; i++) {
+      const c = withCoords[i].coord;
+      const d2 =
+        Math.pow(c.lat - origin.lat, 2) + Math.pow(c.lng - origin.lng, 2);
+      if (d2 > furthestD2) {
+        furthestD2 = d2;
+        furthestIdx = i;
+      }
+    }
+    const destination = withCoords[furthestIdx].coord;
+    const waypointStops = withCoords.filter((_, i) => i !== furthestIdx);
+
+    let orderedStops;
+    if (waypointStops.length === 0) {
+      orderedStops = [withCoords[furthestIdx].stop];
+    } else {
+      const dir = await googleMapsService.directions({
+        origin,
+        destination,
+        waypoints: waypointStops.map((w) => w.coord),
+        optimizeWaypoints: true,
+      });
+      if (!dir || !Array.isArray(dir.waypointOrder)) {
+        // Directions failed — leave stops in whatever order they were.
+        return;
+      }
+      // dir.waypointOrder is a permutation of [0..waypointStops.length-1]
+      // in Google's chosen order. Final visit order is:
+      //   waypointStops[order[0]], waypointStops[order[1]], …, then destination.
+      const ordered = dir.waypointOrder.map((idx) => waypointStops[idx].stop);
+      orderedStops = [...ordered, withCoords[furthestIdx].stop];
+    }
+
+    // Write sort_order back: 1..N for coord-having stops in optimized
+    // order, then N+1..N+M for stops we couldn't route (alphabetical
+    // by PG name for deterministic display).
+    noCoords.sort((a, b) => (a.stop.location?.name || '').localeCompare(b.stop.location?.name || ''));
+
+    let n = 1;
+    for (const s of orderedStops) {
+      await s.update({ sort_order: n++ });
+    }
+    for (const { stop } of noCoords) {
+      await stop.update({ sort_order: n++ });
+    }
+  } catch (err) {
+    logger.warn(`[tracking] route recompute failed for rider=${riderId} poll=${pollId}: ${err.message}`);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/tracking/delivery-run/assign
+// Access: super_admin
+// Body: { rider_ids: [uuid, ...] }
+//
+// Multi-rider assignment. Replaces the single-rider assumption baked
+// into polls.assigned_rider_id. Zone-based auto-split:
+//
+//   • For each PG that needs delivery today, find every rider in
+//     rider_ids whose zone_location_id matches the PG's zone (or is
+//     null = "serves all zones").
+//   • Round-robin the PGs of a zone among the eligible riders. If no
+//     rider matches a zone, PGs in that zone are dropped from the run
+//     (super admin needs to add a rider for that zone) — returned in
+//     `orphaned_pgs` so the UI can warn.
+//   • Wipes the existing delivery_stops for this poll and regenerates,
+//     so re-running this endpoint is idempotent (safe to click "Assign
+//     riders" twice with different rider sets).
+//
+// For UI back-compat, polls.assigned_rider_id is set to rider_ids[0]
+// (a "primary" rider) so any legacy single-rider display still works.
+// Callers should prefer GET /delivery-run to see the full picture.
+// ---------------------------------------------------------------------------
+const assignDeliveryRun = async (req, res, next) => {
+  const t = await db.sequelize.transaction();
+  try {
+    const { rider_ids: riderIds } = req.body || {};
+    if (!Array.isArray(riderIds) || riderIds.length === 0) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 400,
+        message: 'rider_ids must be a non-empty array of rider UUIDs.',
+      });
+    }
+    // Cap on paranoia — 20 riders is more than any real Sehri run.
+    if (riderIds.length > 20) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 400,
+        message: 'At most 20 riders can be assigned to a single delivery run.',
+      });
+    }
+
+    const poll = await getTodaysPoll();
+    if (!poll) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 404,
+        message: "No poll for today. Create today's poll first.",
+      });
+    }
+
+    const riders = await Rider.findAll({
+      where: { id: { [Op.in]: riderIds }, is_active: true },
+      attributes: ['id', 'name', 'zone_location_id'],
+      transaction: t,
+    });
+    if (riders.length !== riderIds.length) {
+      await t.rollback();
+      return error(res, {
+        statusCode: 400,
+        message: 'One or more rider_ids are unknown or inactive.',
+      });
+    }
+
+    // Compute today's PGs (packet counts per PG) — coord-less PGs still
+    // count. computeDeliverablePGs is transaction-agnostic (it hits
+    // the same connection pool) so we run it without the transaction
+    // context; the writes below are what needs to be atomic.
+    const pgs = await computeDeliverablePGs(poll.id);
+    if (pgs.length === 0) {
+      // Still valid — a super admin might assign riders before anyone
+      // votes yes; the run is just empty and can be re-run later.
+      await DeliveryStop.destroy({ where: { poll_id: poll.id }, transaction: t });
+      poll.assigned_rider_id = riderIds[0];
+      await poll.save({ transaction: t });
+      await t.commit();
+      return success(res, {
+        statusCode: 200,
+        message: 'Riders assigned. No PGs need delivery yet — stops will be regenerated on the next assign.',
+        data: {
+          poll_id: poll.id,
+          rider_count: riders.length,
+          stop_count: 0,
+          orphaned_pgs: [],
+        },
+      });
+    }
+
+    // Group PGs by the zone snapshot on their poll responses so
+    // round-robin only matches riders eligible for THAT zone. We
+    // resolve each PG's zone by looking at its own Location record's
+    // parent chain (same rule the vote-time snapshot uses).
+    const pgsByZone = new Map(); // zone_location_id → [pg,...]
+    for (const pg of pgs) {
+      // Walk up the PG's Location chain to find the zone ancestor.
+      const zone = await resolveZone(pg.location_id, db);
+      const zoneId = zone?.id || null;
+      if (!pgsByZone.has(zoneId)) pgsByZone.set(zoneId, []);
+      pgsByZone.get(zoneId).push(pg);
+    }
+
+    // Deterministic PG ordering within a zone so round-robin is stable.
+    for (const arr of pgsByZone.values()) {
+      arr.sort((a, b) => a.location_id.localeCompare(b.location_id));
+    }
+
+    // For each zone, pick eligible riders: those whose zone matches
+    // OR who serve all zones (zone_location_id === null).
+    const eligibleForZone = (zoneId) =>
+      riders.filter((r) => r.zone_location_id === zoneId || r.zone_location_id == null);
+
+    // Wipe existing stops for a clean regenerate.
+    await DeliveryStop.destroy({ where: { poll_id: poll.id }, transaction: t });
+
+    const stopsToCreate = [];
+    const orphanedPgs = [];
+    for (const [zoneId, zonePgs] of pgsByZone) {
+      const eligible = eligibleForZone(zoneId);
+      if (eligible.length === 0) {
+        // No rider covers this zone — collect for the response so the
+        // super admin can add a rider and re-run assign.
+        for (const pg of zonePgs) orphanedPgs.push(pg.location_id);
+        continue;
+      }
+      // Round-robin: PG i → eligible[i % eligible.length]
+      for (let i = 0; i < zonePgs.length; i++) {
+        const rider = eligible[i % eligible.length];
+        const pg = zonePgs[i];
+        stopsToCreate.push({
+          poll_id:      poll.id,
+          rider_id:     rider.id,
+          location_id:  pg.location_id,
+          packet_count: pg.packet_count,
+          status:       'pending',
+          sort_order:   null,
+        });
+      }
+    }
+
+    if (stopsToCreate.length > 0) {
+      await DeliveryStop.bulkCreate(stopsToCreate, { transaction: t });
+    }
+
+    // Legacy backcompat — the old assigned_rider_id column is still
+    // read by a few UI paths. Set it to the first rider so those
+    // paths keep working; new callers use GET /delivery-run.
+    poll.assigned_rider_id = riderIds[0];
+    await poll.save({ transaction: t });
+
+    await t.commit();
+
+    // Kick off route optimization per rider — fire-and-forget so the
+    // assign response returns fast. Each recomputeRiderRouteOrder
+    // catches its own errors and never throws.
+    for (const rider of riders) {
+      recomputeRiderRouteOrder(rider.id, poll.id).catch((err) =>
+        logger.warn(`[tracking] initial route recompute failed for ${rider.id}: ${err.message}`)
+      );
+    }
+
+    logger.info(
+      `[tracking] super_admin=${req.auth.id} assigned delivery run for poll=${poll.id}: ` +
+      `${riders.length} rider(s), ${stopsToCreate.length} stop(s), ${orphanedPgs.length} orphan PG(s)`
+    );
+
+    return success(res, {
+      statusCode: 200,
+      message: `Assigned ${stopsToCreate.length} stop${stopsToCreate.length === 1 ? '' : 's'} to ${riders.length} rider${riders.length === 1 ? '' : 's'}.`,
+      data: {
+        poll_id: poll.id,
+        rider_count: riders.length,
+        stop_count: stopsToCreate.length,
+        orphaned_pgs: orphanedPgs,
+      },
+    });
+  } catch (err) {
+    try { await t.rollback(); } catch (_) { /* noop */ }
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/tracking/delivery-run
+// Access: super_admin
+//
+// Full super-admin view of today's delivery run: every assigned rider
+// with their stops, status, delivered count, etc. Used by the
+// dashboard/riders screen to visualize the current run.
+// ---------------------------------------------------------------------------
+const getDeliveryRun = async (req, res, next) => {
+  try {
+    const poll = await getTodaysPoll();
+    if (!poll) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No poll for today.',
+        data: { poll: null, riders: [] },
+      });
+    }
+
+    const stops = await DeliveryStop.findAll({
+      where: { poll_id: poll.id },
+      include: [
+        { model: Rider,    as: 'rider',    attributes: ['id', 'name', 'phone', 'status', 'latitude', 'longitude', 'zone_location_id'] },
+        { model: Location, as: 'location', attributes: ['id', 'name', 'parent_id', 'latitude', 'longitude'] },
+      ],
+      order: [['rider_id', 'ASC'], ['sort_order', 'ASC']],
+    });
+
+    // Group by rider for the response shape.
+    const byRider = new Map();
+    for (const s of stops) {
+      const rid = s.rider_id;
+      if (!byRider.has(rid)) {
+        byRider.set(rid, {
+          rider: s.rider ? {
+            id: s.rider.id,
+            name: s.rider.name,
+            phone: s.rider.phone,
+            status: s.rider.status,
+            latitude: s.rider.latitude,
+            longitude: s.rider.longitude,
+          } : { id: rid },
+          stops: [],
+          total_stops: 0,
+          delivered_stops: 0,
+          total_packets: 0,
+        });
+      }
+      const bucket = byRider.get(rid);
+      bucket.stops.push({
+        id: s.id,
+        location_id:  s.location_id,
+        location_name: s.location?.name || null,
+        packet_count: s.packet_count,
+        sort_order:   s.sort_order,
+        status:       s.status,
+        delivered_at: s.delivered_at,
+      });
+      bucket.total_stops += 1;
+      bucket.total_packets += s.packet_count;
+      if (s.status === 'delivered') bucket.delivered_stops += 1;
+    }
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Delivery run fetched.',
+      data: {
+        poll: { id: poll.id, date: poll.date },
+        riders: Array.from(byRider.values()),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/tracking/my-stops
+// Access: rider (must be assigned to today's run)
+//
+// The rider's own stops for today's poll in optimized visit order,
+// with each stop's PG name, coord, packet count, and status. Used by
+// the rider's route screen to render the map + stop queue.
+// ---------------------------------------------------------------------------
+const getMyStops = async (req, res, next) => {
+  try {
+    const poll = await getTodaysPoll();
+    if (!poll) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No poll for today.',
+        data: { poll: null, stops: [] },
+      });
+    }
+
+    const stops = await DeliveryStop.findAll({
+      where: { poll_id: poll.id, rider_id: req.auth.id },
+      include: [
+        { model: Location, as: 'location', attributes: ['id', 'name', 'parent_id', 'latitude', 'longitude'] },
+      ],
+      order: [
+        // Nulls last on sort_order.
+        [db.sequelize.literal('sort_order IS NULL'), 'ASC'],
+        ['sort_order', 'ASC'],
+        ['created_at', 'ASC'],
+      ],
+    });
+
+    if (stops.length === 0) {
+      return success(res, {
+        statusCode: 200,
+        message: "You haven't been assigned any stops today.",
+        data: { poll: { id: poll.id, date: poll.date }, stops: [] },
+      });
+    }
+
+    // Resolve each stop's shared destination coord (walk up chain if
+    // the PG itself doesn't have coords). This is the same coord the
+    // user side resolves — guarantees rider and user see the identical
+    // destination point.
+    const out = [];
+    for (const s of stops) {
+      let lat = null;
+      let lng = null;
+      if (s.location?.latitude != null && s.location?.longitude != null) {
+        lat = Number(s.location.latitude);
+        lng = Number(s.location.longitude);
+      } else {
+        const resolved = await resolveDeliveryDestination(s.location_id);
+        if (resolved) { lat = resolved.lat; lng = resolved.lng; }
+      }
+      out.push({
+        id: s.id,
+        location_id:  s.location_id,
+        location_name: s.location?.name || 'PG',
+        packet_count: s.packet_count,
+        sort_order:   s.sort_order,
+        status:       s.status,
+        delivered_at: s.delivered_at,
+        latitude:  lat,
+        longitude: lng,
+        has_pin:   lat != null && lng != null,
+      });
+    }
+
+    // Bonus: compute the full route polyline through every pending
+    // coord-having stop so the rider's map can draw the actual road
+    // path. Origin is the rider's current GPS if available, else the
+    // first stop. Fire-and-forget style — we return null on any
+    // failure and the client falls back to numbered markers only.
+    let routePolyline = null;
+    try {
+      const pending = out.filter((s) => s.status === 'pending' && s.has_pin);
+      if (pending.length >= 1) {
+        const me = await Rider.findByPk(req.auth.id, { attributes: ['latitude', 'longitude'] });
+        const origin = (me?.latitude != null && me?.longitude != null)
+          ? { lat: Number(me.latitude), lng: Number(me.longitude) }
+          : { lat: pending[0].latitude, lng: pending[0].longitude };
+        const destination = { lat: pending[pending.length - 1].latitude, lng: pending[pending.length - 1].longitude };
+        const middle = pending.slice(0, -1).map((s) => ({ lat: s.latitude, lng: s.longitude }));
+        // Route is already sorted server-side (sort_order), so we
+        // pass optimizeWaypoints=false to preserve that visit order —
+        // don't want Google to reshuffle the queue behind the rider's
+        // back after they've started following it.
+        const dir = await googleMapsService.directions({
+          origin,
+          destination,
+          waypoints: middle,
+          optimizeWaypoints: false,
+        });
+        if (dir && Array.isArray(dir.path) && dir.path.length >= 2) {
+          routePolyline = dir.path.map(([lat, lng]) => ({ latitude: lat, longitude: lng }));
+        }
+      }
+    } catch (dirErr) {
+      logger.warn(`[tracking] my-stops polyline compute failed: ${dirErr.message}`);
+    }
+
+    // Aggregate summary — useful for the rider's header strip.
+    const totalStops     = out.length;
+    const deliveredStops = out.filter((s) => s.status === 'delivered').length;
+    const pendingStops   = totalStops - deliveredStops;
+    const totalPackets     = out.reduce((n, s) => n + (s.packet_count || 0), 0);
+    const deliveredPackets = out
+      .filter((s) => s.status === 'delivered')
+      .reduce((n, s) => n + (s.packet_count || 0), 0);
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Your stops fetched.',
+      data: {
+        poll: { id: poll.id, date: poll.date },
+        stops: out,
+        route_polyline: routePolyline,
+        summary: {
+          total_stops:      totalStops,
+          delivered_stops:  deliveredStops,
+          pending_stops:    pendingStops,
+          total_packets:    totalPackets,
+          delivered_packets: deliveredPackets,
+        },
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/tracking/stops/:id/mark-delivered
+// Access: rider (must own the stop)
+//
+// Marks the stop delivered, advances the route (recomputes optimized
+// order for whatever pending stops remain), and emits a socket event
+// to every user at that PG so their track screen flips to complete.
+// Idempotent — hitting it twice on the same stop returns the current
+// state without re-emitting.
+// ---------------------------------------------------------------------------
+const markStopDelivered = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const stop = await DeliveryStop.findByPk(id);
+    if (!stop) return error(res, { statusCode: 404, message: 'Stop not found.' });
+
+    if (stop.rider_id !== req.auth.id) {
+      return error(res, {
+        statusCode: 403,
+        message: 'You can only mark your own stops as delivered.',
+      });
+    }
+    if (stop.status === 'delivered') {
+      return success(res, {
+        statusCode: 200,
+        message: 'Stop was already marked delivered.',
+        data: { id: stop.id, status: 'delivered', delivered_at: stop.delivered_at },
+      });
+    }
+
+    stop.status                = 'delivered';
+    stop.delivered_at          = new Date();
+    stop.delivered_by_rider_id = req.auth.id;
+    await stop.save();
+
+    // Notify every user at this PG. We include the poll_id so stale
+    // events from a different day don't confuse a client that
+    // reconnected across midnight.
+    try {
+      const affectedUsers = await User.findAll({
+        where: { location_id: stop.location_id, status: 'approved' },
+        attributes: ['id'],
+      });
+      for (const u of affectedUsers) {
+        socketService.emitStopDelivered(u.id, {
+          poll_id:     stop.poll_id,
+          stop_id:     stop.id,
+          location_id: stop.location_id,
+          delivered_at: stop.delivered_at.toISOString(),
+        });
+      }
+    } catch (err) {
+      logger.warn(`[tracking] failed to emit stop_delivered: ${err.message}`);
+    }
+
+    // Recompute route for whatever remains. Fire-and-forget so the
+    // rider's tap-response stays fast.
+    recomputeRiderRouteOrder(stop.rider_id, stop.poll_id).catch(() => {});
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Marked delivered.',
+      data: {
+        id: stop.id,
+        status: stop.status,
+        delivered_at: stop.delivered_at,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/tracking/my-route/recompute
+// Access: rider (must be assigned)
+//
+// Rider-triggered route recompute — called when they tap "Start
+// delivery" so the initial route reflects their actual live GPS
+// origin instead of the coordinate we had when they were assigned.
+// Idempotent; safe to call more than once.
+// ---------------------------------------------------------------------------
+const recomputeMyRoute = async (req, res, next) => {
+  try {
+    const poll = await getTodaysPoll();
+    if (!poll) return error(res, { statusCode: 404, message: 'No poll for today.' });
+    await recomputeRiderRouteOrder(req.auth.id, poll.id);
+    return success(res, {
+      statusCode: 200,
+      message: 'Route recomputed.',
+      data: { poll_id: poll.id },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   riderLogin,
   createRider,
@@ -1075,4 +1858,9 @@ module.exports = {
   getDeliveryList,
   deleteRider,
   getEta,
+  assignDeliveryRun,
+  getDeliveryRun,
+  getMyStops,
+  markStopDelivered,
+  recomputeMyRoute,
 };

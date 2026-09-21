@@ -21,9 +21,19 @@ export const useRiderStore = create((set, get) => ({
   isAuthenticated:  false,
   isHydrated:       false,
   isDelivering:     false,
-  deliveryList:     null,    // { poll_date, total, by_zone } or null
+  deliveryList:     null,    // { poll_date, total, by_zone } or null (legacy — /delivery-list)
   loadingList:      false,
   listError:        null,
+
+  // Multi-rider / route optimization state (from /my-stops):
+  //   myStops = [{ id, location_name, packet_count, sort_order, status, latitude, longitude, has_pin, ... }]
+  //   routePolyline = [{ latitude, longitude }, ...] — Google Directions polyline through pending stops
+  //   stopsSummary  = { total_stops, delivered_stops, pending_stops, total_packets, delivered_packets }
+  myStops:          [],
+  routePolyline:    null,
+  stopsSummary:     null,
+  loadingStops:     false,
+  stopsError:       null,
 
   // Internal — interval handle for the GPS push loop
   _pushInterval:    null,
@@ -111,8 +121,59 @@ export const useRiderStore = create((set, get) => ({
   },
 
   // -------------------------------------------------------------------------
+  // fetchMyStops — the rider's optimized route + stop queue for today.
+  // Used by both the map screen (polyline + numbered markers) and the
+  // deliveries screen (queue + mark-delivered actions).
+  // -------------------------------------------------------------------------
+  fetchMyStops: async () => {
+    set({ loadingStops: true, stopsError: null });
+    try {
+      const result = await get().withRiderToken(() => trackingApi.getMyStops());
+      if (result.success) {
+        set({
+          myStops:       Array.isArray(result.data?.stops) ? result.data.stops : [],
+          routePolyline: Array.isArray(result.data?.route_polyline) ? result.data.route_polyline : null,
+          stopsSummary:  result.data?.summary || null,
+        });
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.message || 'Failed to load stops';
+      set({ stopsError: msg });
+    } finally {
+      set({ loadingStops: false });
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // markStopDelivered — optimistic update, then server confirm.
+  // Refetches after the response so the polyline + optimized order
+  // reflect what's left. If the API errors, roll back to whatever the
+  // server currently says.
+  // -------------------------------------------------------------------------
+  markStopDelivered: async (stopId) => {
+    const prevStops = get().myStops;
+    // Optimistic
+    set({
+      myStops: prevStops.map((s) =>
+        s.id === stopId ? { ...s, status: 'delivered', delivered_at: new Date().toISOString() } : s
+      ),
+    });
+    try {
+      await get().withRiderToken(() => trackingApi.markStopDelivered(stopId));
+      // Refetch to pick up the new sort_order + polyline.
+      await get().fetchMyStops();
+    } catch (err) {
+      // Roll back and surface the error.
+      set({ myStops: prevStops });
+      throw err;
+    }
+  },
+
+  // -------------------------------------------------------------------------
   // startDelivery — requests location permission, then starts a repeating
   // interval that pushes the rider's GPS to the backend every 5 seconds.
+  // On start, also asks the backend to recompute the optimized route
+  // using the rider's live GPS as origin.
   // -------------------------------------------------------------------------
   startDelivery: async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -159,6 +220,21 @@ export const useRiderStore = create((set, get) => ({
     };
 
     await pushOnce();
+
+    // Now that we've pushed our live GPS, ask the backend to recompute
+    // the optimized visit order using that GPS as origin — otherwise
+    // the initial order was based on stale coords from assignment time.
+    // Then refetch stops so the UI picks up the new sort + polyline.
+    try {
+      await get().withRiderToken(() => trackingApi.recomputeMyRoute());
+      await get().fetchMyStops();
+    } catch (recomputeErr) {
+      // Non-fatal — the rider can still deliver in whatever order
+      // was already computed at assignment time. Directions failure
+      // shouldn't block them from starting the run.
+      console.warn('Route recompute at start failed:', recomputeErr?.message);
+    }
+
     const interval = setInterval(pushOnce, PUSH_INTERVAL_MS);
     set({ _pushInterval: interval });
   },
@@ -217,6 +293,9 @@ export const useRiderStore = create((set, get) => ({
       isAuthenticated: false,
       isDelivering:    false,
       deliveryList:    null,
+      myStops:         [],
+      routePolyline:   null,
+      stopsSummary:    null,
       _pushInterval:   null,
     });
   },

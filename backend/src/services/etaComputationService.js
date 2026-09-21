@@ -37,7 +37,7 @@ const expoPushService = require('./expoPushService');
 const socketService = require('./socketService');
 const { resolveZone } = require('../utils/resolveZone');
 
-const { Poll, PollResponse, User, Rider, Location } = db;
+const { Poll, PollResponse, User, Rider, Location, DeliveryStop } = db;
 
 // ---------------------------------------------------------------------------
 // Config — env-overridable, sensible defaults for a community-scale run.
@@ -102,52 +102,96 @@ const updateETAsForRider = async (rider, lat, lng) => {
 
     if (shouldSkipRecompute(rider.id, lat, lng)) return;
 
-    // Only the assigned rider for today's poll drives ETAs.
     const poll = await Poll.findOne({ where: { date: todayIST() } });
-    if (!poll || poll.assigned_rider_id !== rider.id) return;
+    if (!poll) return;
 
-    // Load deliverable responses — anyone who voted yes and wasn't
-    // cancelled by an approved dont_want special case, plus approved
-    // want special cases. Matches getDeliveryList's SQL predicate.
-    const responses = await PollResponse.findAll({
-      where: {
-        poll_id: poll.id,
-        [Op.or]: [
-          {
-            response: 'yes',
-            [Op.not]: {
-              is_special_case: true,
-              special_case_type: 'dont_want',
-              sehri_allowed: 'approved',
-            },
-          },
-          {
-            is_special_case: true,
-            special_case_type: 'want',
-            sehri_allowed: 'approved',
-          },
-        ],
-      },
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'name', 'fcm_token', 'location_id'],
-        },
-      ],
+    // MULTI-RIDER: this rider drives ETAs for whichever PGs
+    // delivery_stops assigns to them. We derive the eligible
+    // PollResponses from that stop list, so two riders in the same
+    // zone each recompute ETAs only for their own users.
+    //
+    // Legacy fallback: if no stops have been generated yet (single-
+    // rider pre-multi-rider flow), fall back to poll.assigned_rider_id
+    // + the old zone-based predicate.
+    const myStops = await DeliveryStop.findAll({
+      where: { poll_id: poll.id, rider_id: rider.id, status: 'pending' },
+      attributes: ['id', 'location_id'],
     });
 
-    if (responses.length === 0) return;
+    let inZoneResponses;
+    if (myStops.length > 0) {
+      const stopLocationIds = new Set(myStops.map((s) => s.location_id));
+      // Load every deliverable response whose user is at one of our
+      // assigned PGs. One DB call per recompute regardless of rider count.
+      const responses = await PollResponse.findAll({
+        where: {
+          poll_id: poll.id,
+          [Op.or]: [
+            {
+              response: 'yes',
+              [Op.not]: {
+                is_special_case: true,
+                special_case_type: 'dont_want',
+                sehri_allowed: 'approved',
+              },
+            },
+            {
+              is_special_case: true,
+              special_case_type: 'want',
+              sehri_allowed: 'approved',
+            },
+          ],
+        },
+        include: [
+          {
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'fcm_token', 'location_id'],
+          },
+        ],
+      });
+      inZoneResponses = responses.filter((r) => stopLocationIds.has(r.user?.location_id));
+    } else {
+      // Legacy path — single-rider flow via poll.assigned_rider_id.
+      if (poll.assigned_rider_id !== rider.id) return;
 
-    // Filter to the rider's zone (unless the rider is unzoned).
-    let inZoneResponses = responses;
-    if (rider.zone_location_id) {
-      inZoneResponses = [];
-      for (const r of responses) {
-        const zone = await resolveZone(r.user.location_id, db);
-        if (zone && zone.id === rider.zone_location_id) inZoneResponses.push(r);
+      const responses = await PollResponse.findAll({
+        where: {
+          poll_id: poll.id,
+          [Op.or]: [
+            {
+              response: 'yes',
+              [Op.not]: {
+                is_special_case: true,
+                special_case_type: 'dont_want',
+                sehri_allowed: 'approved',
+              },
+            },
+            {
+              is_special_case: true,
+              special_case_type: 'want',
+              sehri_allowed: 'approved',
+            },
+          ],
+        },
+        include: [
+          {
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'fcm_token', 'location_id'],
+          },
+        ],
+      });
+      inZoneResponses = responses;
+      if (rider.zone_location_id) {
+        inZoneResponses = [];
+        for (const r of responses) {
+          const zone = await resolveZone(r.user.location_id, db);
+          if (zone && zone.id === rider.zone_location_id) inZoneResponses.push(r);
+        }
       }
     }
+
     if (inZoneResponses.length === 0) return;
 
     // Resolve each user's address-level location (with coords) and dedupe.

@@ -15,6 +15,11 @@ const {
   getDeliveryList,
   deleteRider,
   getEta,
+  assignDeliveryRun,
+  getDeliveryRun,
+  getMyStops,
+  markStopDelivered,
+  recomputeMyRoute,
 } = require('../controllers/trackingController');
 
 // ---------------------------------------------------------------------------
@@ -45,10 +50,38 @@ router.get('/eta', verifyToken, requireUserAccess, getEta);
 // ---------------------------------------------------------------------------
 
 // GET /api/tracking/delivery-list
-// Returns today's confirmed delivery addresses.
-// Only accessible by the rider assigned to today's poll.
+// Returns today's confirmed delivery addresses for the CALLING rider
+// (multi-rider aware — only their assigned PGs). Legacy fallback:
+// returns the full deliverable list when no delivery_stops exist yet
+// and the caller matches poll.assigned_rider_id.
 // Must be declared BEFORE /:id routes.
 router.get('/delivery-list', verifyToken, requireRole('rider'), getDeliveryList);
+
+// GET /api/tracking/my-stops
+// The rider's own delivery stops for today's run, in optimized
+// visit order (Google Directions waypoint optimization). Each stop
+// carries its shared destination coord + packet count + status.
+router.get('/my-stops', verifyToken, requireRole('rider'), getMyStops);
+
+// POST /api/tracking/my-route/recompute
+// Rider-triggered route recompute — called when they tap "Start
+// delivery" so the optimized order reflects their live origin.
+router.post('/my-route/recompute', verifyToken, requireRole('rider'), recomputeMyRoute);
+
+// PATCH /api/tracking/stops/:id/mark-delivered
+// Rider marks one of their own stops as delivered. Emits a
+// stop_delivered socket event to every user at that PG.
+router.patch('/stops/:id/mark-delivered', verifyToken, requireRole('rider'), markStopDelivered);
+
+// POST /api/tracking/delivery-run/assign
+// Super admin assigns N riders to today's run — backend generates
+// delivery_stops with zone-based round-robin auto-split.
+// Body: { rider_ids: [uuid, ...] }
+router.post('/delivery-run/assign', verifyToken, requireRole('super_admin'), assignDeliveryRun);
+
+// GET /api/tracking/delivery-run
+// Super admin's view of today's run — every rider + their stops.
+router.get('/delivery-run', verifyToken, requireRole('super_admin'), getDeliveryRun);
 
 // PATCH /api/tracking/:id/push-location
 // Rider pushes their live GPS every 5 seconds.

@@ -142,6 +142,10 @@ function TrackScreenAuthed() {
   const [route,      setRoute]      = useState(null); // [{latitude,longitude}, ...] — shared per destination
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
+  // Backend attaches the user's delivery_stop (if any) to /tracking/active.
+  // The stop status drives the "delivered" branch — socket-pushed
+  // stop_delivered events flip it in real time.
+  const [stopStatus, setStopStatus] = useState(null); // 'pending' | 'delivered' | null
   const [etaMinutes, setEta]        = useState(null);
   const [etaAt,      setEtaAt]      = useState(null); // Date of last update
   const [autoFollow, setAutoFollow] = useState(true); // pauses when user pans the map
@@ -169,6 +173,10 @@ function TrackScreenAuthed() {
         const r = res.data.rider;
         setRider(r);
         if (r?.eta_minutes != null) setEta(r.eta_minutes);
+        // The delivery_stop for this user's PG comes with the snapshot
+        // now (multi-rider resolution) — surface its status so the
+        // "delivered" branch renders correctly on cold load.
+        setStopStatus(res.data?.stop?.status ?? null);
       }
 
       // One-shot ETA request gives us the SHARED destination coords
@@ -254,6 +262,17 @@ function TrackScreenAuthed() {
           })));
         }
       });
+
+      // Rider marked our stop delivered → flip into the "delivered"
+      // state instantly. The empty-state branch below handles the
+      // final render (message + rider attribution).
+      s.on('stop_delivered', (payload) => {
+        if (!mounted) return;
+        setStopStatus('delivered');
+        // Mirror on rider so the empty state uses the "delivery complete"
+        // copy — matches the existing done-status pattern.
+        setRider((prev) => (prev ? { ...prev, status: 'done' } : prev));
+      });
     })();
 
     return () => {
@@ -261,6 +280,7 @@ function TrackScreenAuthed() {
       if (currentSocket) {
         currentSocket.off('rider_position');
         currentSocket.off('eta_update');
+        currentSocket.off('stop_delivered');
       }
       unsubscribeTracking();
     };
@@ -362,16 +382,22 @@ function TrackScreenAuthed() {
     );
   }
 
-  if (!rider || rider.status === 'done') {
+  // Empty / done branch: no rider, rider's whole run done, OR OUR
+  // specific stop was delivered (multi-rider case — rider may still be
+  // delivering other PGs but our Sehri is here).
+  if (!rider || rider.status === 'done' || stopStatus === 'delivered') {
+    const isDelivered = rider?.status === 'done' || stopStatus === 'delivered';
     return (
       <SafeAreaView style={styles.screen} edges={['top']}>
         <TrackHeader />
         <EmptyState
-          icon="bicycle-outline"
-          title={rider?.status === 'done' ? 'Delivery complete for today' : 'No active delivery'}
+          icon={isDelivered ? 'checkmark-done-circle-outline' : 'bicycle-outline'}
+          title={isDelivered ? 'Sehri delivered' : 'No active delivery'}
           message={
-            rider?.status === 'done'
-              ? 'The rider has finished today\'s run.'
+            isDelivered
+              ? (rider?.name
+                  ? `${rider.name} marked your Sehri as delivered. Jazak-Allahu-khayran.`
+                  : 'Your Sehri has been delivered.')
               : "The rider hasn't started yet. Check back closer to Sehri time."
           }
           actionLabel="Refresh"

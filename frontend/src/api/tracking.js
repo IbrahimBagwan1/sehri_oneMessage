@@ -88,4 +88,43 @@ export const trackingApi = {
     const response = await apiClient.delete(`/tracking/${riderId}`);
     return response.data;
   },
+
+  // ---------------------------------------------------------------------------
+  // Multi-rider delivery run
+  // ---------------------------------------------------------------------------
+
+  // POST /api/tracking/delivery-run/assign — super-admin only.
+  // Body: { rider_ids: [uuid, ...] }
+  assignDeliveryRun: async (riderIds) => {
+    const response = await apiClient.post('/tracking/delivery-run/assign', {
+      rider_ids: riderIds,
+    });
+    return response.data; // { success, data: { poll_id, rider_count, stop_count, orphaned_pgs } }
+  },
+
+  // GET /api/tracking/delivery-run — super-admin only.
+  // Full view of today's run grouped by rider.
+  getDeliveryRun: async () => {
+    const response = await apiClient.get('/tracking/delivery-run');
+    return response.data;
+  },
+
+  // GET /api/tracking/my-stops — rider only.
+  // The rider's own stops in optimized visit order.
+  getMyStops: async () => {
+    const response = await apiClient.get('/tracking/my-stops');
+    return response.data; // { success, data: { poll, stops: [...] } }
+  },
+
+  // POST /api/tracking/my-route/recompute — rider only.
+  recomputeMyRoute: async () => {
+    const response = await apiClient.post('/tracking/my-route/recompute');
+    return response.data;
+  },
+
+  // PATCH /api/tracking/stops/:id/mark-delivered — rider only.
+  markStopDelivered: async (stopId) => {
+    const response = await apiClient.patch(`/tracking/stops/${stopId}/mark-delivered`);
+    return response.data;
+  },
 };
