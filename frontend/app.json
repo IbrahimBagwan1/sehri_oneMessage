@@ -8,7 +8,10 @@
     "scheme": "onemessage",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "config": {
+        "googleMapsApiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +25,8 @@
         "googleMaps": {
           "apiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
         }
-      }
+      },
+      "package": "com.anonymous.onemessage"
     },
     "web": {
       "output": "static",
@@ -33,7 +37,8 @@
       [
         "react-native-maps",
         {
-          "googleMapsApiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
+          "androidGoogleMapsApiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go",
+          "iosGoogleMapsApiKey":     "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
         }
       ],
       [

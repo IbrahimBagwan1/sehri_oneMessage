@@ -57,14 +57,6 @@ export default function UserTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="donate"
-        options={{
-          title: 'Donate',
-          href: restricted,
-          tabBarIcon: ({ color, size }) => <Ionicons name="heart-outline" size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="chat"
         options={{
           title: 'Chat',
@@ -84,6 +76,14 @@ export default function UserTabLayout() {
         options={{
           title: 'Qur’an',
           tabBarIcon: ({ color, size }) => <Ionicons name="library-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="donate"
+        options={{
+          title: 'Donate',
+          href: restricted,
+          tabBarIcon: ({ color, size }) => <Ionicons name="heart-outline" size={size} color={color} />,
         }}
       />
     </Tabs>

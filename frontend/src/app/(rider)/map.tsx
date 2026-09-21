@@ -1,30 +1,45 @@
 // @ts-nocheck
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import MapView, { PROVIDER_GOOGLE, Marker } from 'react-native-maps';
 import { useRiderStore } from '../../store/useRiderStore';
 import { Button, Chip, Header, LoadingState } from '../../components/ui';
-import LeafletMap from '../../components/LeafletMap';
 import { colors, radius, space, type } from '../../theme';
 
-// Historical note: this screen used to render `react-native-maps` with a
-// Google provider. On Android react-native-maps 1.x always uses Google as
-// the base tile source, and the map rendered as a solid black rectangle
-// whenever the Google Maps API key wasn't fully wired (Expo Go, or a
-// dev-client built before the plugin config was added, or a Google Cloud
-// project with billing / Maps SDK for Android not enabled). We switched
-// to LeafletMap (WebView + OpenStreetMap) so tiles render everywhere
-// without any external cloud dependency.
+// -----------------------------------------------------------------------------
+// Rider map — the rider's own live position, with a start/stop delivery
+// toggle in the bottom panel.
+//
+// Rendered on native Google Maps via react-native-maps + PROVIDER_GOOGLE.
+// The Android key is under app.json → android.config.googleMaps.apiKey
+// and the iOS equivalent under ios.config.googleMapsApiKey; both are
+// injected into the native project by the react-native-maps config
+// plugin during `npx expo prebuild`. Requires a dev-client build — Expo
+// Go does NOT ship the Google Maps native SDK.
+//
+// Broadcasts: useRiderStore.startDelivery() opens a watchPositionAsync
+// stream and pushes each GPS ping to PATCH /api/tracking/:id/push-location
+// which then emits `rider_position` into the rider's zone room for every
+// user watching the track screen. This screen is the rider's view of
+// that same coordinate stream.
+// -----------------------------------------------------------------------------
 
-const DEFAULT_CENTER = { latitude: 12.9716, longitude: 77.5946 };
+const DEFAULT_REGION = {
+  latitude:  12.9716,
+  longitude: 77.5946,
+  latitudeDelta:  0.02,
+  longitudeDelta: 0.02,
+};
 
 export default function RiderMapScreen() {
   const router         = useRouter();
@@ -35,28 +50,36 @@ export default function RiderMapScreen() {
   const logout         = useRiderStore((s) => s.logout);
 
   const mapRef = useRef<any>(null);
+  const followRef = useRef(0);
 
   const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [currentAddress,  setCurrentAddress]  = useState<string | null>(null);
   const [loadingLocation, setLoadingLocation] = useState(true);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [toggling,        setToggling]        = useState(false);
 
   useEffect(() => {
-    let subscription = null;
+    let subscription: any = null;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         setLoadingLocation(false);
+        setPermissionDenied(true);
         return;
       }
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       setCurrentLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
 
-      const [place] = await Location.reverseGeocodeAsync({
-        latitude: loc.coords.latitude, longitude: loc.coords.longitude,
-      });
-      if (place) {
-        setCurrentAddress([place.name, place.street, place.district, place.city].filter(Boolean).join(', '));
+      try {
+        const [place] = await Location.reverseGeocodeAsync({
+          latitude: loc.coords.latitude, longitude: loc.coords.longitude,
+        });
+        if (place) {
+          setCurrentAddress([place.name, place.street, place.district, place.city].filter(Boolean).join(', '));
+        }
+      } catch {
+        // On-device reverse-geocode is best-effort; backend backfills via
+        // Google Reverse Geocode during pushLocation if we don't provide one.
       }
 
       setLoadingLocation(false);
@@ -66,7 +89,16 @@ export default function RiderMapScreen() {
         (newLoc) => {
           const coords = { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude };
           setCurrentLocation(coords);
-          mapRef.current?.animateTo({ latitude: coords.latitude, longitude: coords.longitude });
+          // Throttle camera-follow to at most once every ~1.5s so a
+          // rapid GPS burst doesn't animate the map endlessly.
+          const now = Date.now();
+          if (mapRef.current && now - followRef.current > 1500) {
+            followRef.current = now;
+            mapRef.current.animateCamera(
+              { center: coords },
+              { duration: 700 }
+            );
+          }
         }
       );
     })();
@@ -77,7 +109,7 @@ export default function RiderMapScreen() {
     setToggling(true);
     try {
       if (isDelivering) await stopDelivery(); else await startDelivery();
-    } catch (err) {
+    } catch (err: any) {
       Alert.alert('Something went wrong', err?.message || 'Try again in a moment.');
     } finally {
       setToggling(false);
@@ -90,6 +122,10 @@ export default function RiderMapScreen() {
       { text: 'Sign out', style: 'destructive', onPress: async () => { await logout(); router.replace('/(auth)/login'); } },
     ]);
   };
+
+  const initialRegion = currentLocation
+    ? { ...currentLocation, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+    : DEFAULT_REGION;
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -115,20 +151,50 @@ export default function RiderMapScreen() {
           <View style={styles.mapPlaceholder}>
             <LoadingState message="Getting your location…" />
           </View>
+        ) : permissionDenied ? (
+          <View style={styles.mapPlaceholder}>
+            <Ionicons name="location-outline" size={40} color={colors.warn} />
+            <Text style={styles.placeholderTitle}>Location permission is off</Text>
+            <Text style={styles.placeholderHint}>
+              Enable location for OneMessage in Settings so we can broadcast
+              your position to the community while you deliver.
+            </Text>
+          </View>
         ) : (
-          <LeafletMap
+          <MapView
             ref={mapRef}
-            center={currentLocation || DEFAULT_CENTER}
-            zoom={16}
-            markers={currentLocation ? [{
-              id: 'self',
-              latitude:  currentLocation.latitude,
-              longitude: currentLocation.longitude,
-              kind:      'rider',
-              label:     isDelivering ? '●' : '',
-              title:     rider?.name || 'You',
-            }] : []}
-          />
+            provider={PROVIDER_GOOGLE}
+            style={styles.map}
+            initialRegion={initialRegion}
+            showsUserLocation
+            followsUserLocation={false}
+            showsMyLocationButton={false}
+            showsCompass={false}
+            showsPointsOfInterest={false}
+            toolbarEnabled={false}
+            loadingEnabled
+            loadingIndicatorColor={colors.teal}
+            loadingBackgroundColor={colors.paperSoft}
+          >
+            {currentLocation && (
+              <Marker
+                identifier="self"
+                coordinate={currentLocation}
+                anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
+                title={rider?.name || 'You'}
+                description={isDelivering ? 'Broadcasting live' : 'Idle'}
+              >
+                <View style={isDelivering ? styles.selfMarkerLive : styles.selfMarker}>
+                  <Ionicons
+                    name={isDelivering ? 'radio' : 'ellipse'}
+                    size={16}
+                    color={colors.paper}
+                  />
+                </View>
+              </Marker>
+            )}
+          </MapView>
         )}
       </View>
 
@@ -153,7 +219,7 @@ export default function RiderMapScreen() {
           label={isDelivering ? 'Stop delivery' : 'Start delivery'}
           onPress={handleToggle}
           loading={toggling}
-          disabled={loadingLocation}
+          disabled={loadingLocation || permissionDenied}
           fullWidth
           icon={isDelivering ? 'stop-circle-outline' : 'play-circle-outline'}
           variant={isDelivering ? 'secondary' : 'primary'}
@@ -170,17 +236,30 @@ const styles = StyleSheet.create({
   mapContainer: { flex: 1 },
   map:          { flex: 1 },
   mapPlaceholder: {
-    flex: 1, justifyContent: 'center', alignItems: 'center', gap: space[2], padding: space[6],
+    flex: 1, justifyContent: 'center', alignItems: 'center', gap: space[3], padding: space[6],
   },
-  placeholderTitle: { ...type.body, color: colors.inkFaint },
-  coords: { ...type.meta, color: colors.inkGhost, fontVariant: ['tabular-nums'] },
+  placeholderTitle: { ...type.h3, color: colors.ink, marginTop: space[2] },
+  placeholderHint:  { ...type.body, color: colors.inkMuted, textAlign: 'center' },
 
-  marker: {
-    backgroundColor: colors.paper,
-    borderRadius: 20,
-    padding: 6,
-    borderWidth: 1,
-    borderColor: colors.tealBorder,
+  selfMarker: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: colors.inkMuted,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 3, borderColor: colors.paper,
+    ...Platform.select({
+      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      android: { elevation: 6 },
+    }),
+  },
+  selfMarkerLive: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: colors.teal,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 3, borderColor: colors.paper,
+    ...Platform.select({
+      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      android: { elevation: 6 },
+    }),
   },
 
   panel: {

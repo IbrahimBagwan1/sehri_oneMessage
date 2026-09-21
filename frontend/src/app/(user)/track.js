@@ -9,11 +9,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import { trackingApi } from '../../api/tracking';
 import {
   Card, Chip, EmptyState, ErrorState, GuestGate, Header, LoadingState,
 } from '../../components/ui';
-import LeafletMap from '../../components/LeafletMap';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
 import {
@@ -28,22 +28,39 @@ import {
 // Data model: two sources of truth
 //   1. GET /api/tracking/active — snapshot at mount so the map has an
 //      initial rider position even before the first socket event lands.
+//      GET /api/tracking/eta    — snapshot for the destination pin + the
+//      real driving polyline (Google Directions) computed against the
+//      SHARED destination (their PG's fixed lat/lng, not a per-user
+//      geocode of their address text). See resolveDeliveryDestination
+//      in backend/src/controllers/trackingController.js.
 //   2. Socket events on the `zone:{id}` room:
 //        rider_position { latitude, longitude, status, ... }
-//        eta_update    { eta_minutes, rider: {...}, ... }
+//        eta_update    { eta_minutes, route, rider: {...}, ... }
 //      These replace the old 8-second polling. The map marker moves as
 //      the rider actually moves; the "arriving in X min" readout
-//      updates whenever the backend recomputes.
+//      updates whenever the backend recomputes; and the polyline
+//      redraws with the fresh driving path — shared per-destination so
+//      every user at the same PG sees the identical route (the backend
+//      dedupes by destination coord and computes Directions once per PG).
 //
 // Guest wrapper — see comment in wrapper. Rules-of-hooks stay clean.
 //
-// Map rendering — LeafletMap (WebView + OpenStreetMap), not
-// react-native-maps. See LeafletMap.js for why: RN Maps 1.x on Android
-// requires a working Google Cloud Maps SDK setup or the map is a black
-// rectangle. Leaflet + OSM works everywhere without a key.
+// Map rendering — native Google Maps via react-native-maps
+// (PROVIDER_GOOGLE). The Android key lives in app.json under
+// android.config.googleMaps.apiKey and is injected by the
+// react-native-maps config plugin during `npx expo prebuild`. iOS uses
+// ios.config.googleMapsApiKey via the same plugin. This requires a dev
+// client build — Expo Go doesn't ship the Google Maps native SDK.
 // -----------------------------------------------------------------------------
 
-const DEFAULT_CENTER = { latitude: 12.9082, longitude: 77.5484 };
+// Bangalore-centered fallback used only until the first rider position
+// or destination arrives.
+const DEFAULT_REGION = {
+  latitude:  12.9082,
+  longitude: 77.5484,
+  latitudeDelta:  0.06,
+  longitudeDelta: 0.06,
+};
 
 const STATUS = {
   idle:       { label: 'Rider is idle',       tone: 'neutral' },
@@ -71,6 +88,33 @@ const distanceMeters = (a, b) => {
   return 2 * R * Math.asin(Math.sqrt(s));
 };
 
+// Camera-fit helper: given the current markers, compute a region that
+// keeps both the rider and the home marker on screen with breathing
+// room. Called on initial load and after big jumps — the interstitial
+// smooth-follow uses animateCamera on the rider position alone.
+const regionForMarkers = (rider, home) => {
+  if (rider && home) {
+    const latMin = Math.min(rider.latitude, home.latitude);
+    const latMax = Math.max(rider.latitude, home.latitude);
+    const lngMin = Math.min(rider.longitude, home.longitude);
+    const lngMax = Math.max(rider.longitude, home.longitude);
+    const pad = 0.008; // ~800 m breathing room around the bounds
+    return {
+      latitude:  (latMin + latMax) / 2,
+      longitude: (lngMin + lngMax) / 2,
+      latitudeDelta:  Math.max(0.008, (latMax - latMin) + pad),
+      longitudeDelta: Math.max(0.008, (lngMax - lngMin) + pad),
+    };
+  }
+  if (rider) {
+    return { ...DEFAULT_REGION, latitude: rider.latitude, longitude: rider.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 };
+  }
+  if (home) {
+    return { ...DEFAULT_REGION, latitude: home.latitude, longitude: home.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 };
+  }
+  return DEFAULT_REGION;
+};
+
 export default function TrackScreen() {
   const isGuest = useAuthStore((s) => s.isGuest);
   if (isGuest) {
@@ -94,21 +138,24 @@ function TrackScreenAuthed() {
   // Initial snapshot from REST (so the map isn't empty for the first
   // second before the socket kicks in).
   const [rider,      setRider]      = useState(null);
-  const [userPin,    setUserPin]    = useState(null); // { latitude, longitude } for the polyline destination
-  const [route,      setRoute]      = useState(null); // [{ latitude, longitude }, ...] real driving path from Google Directions
-  const [loading,    setLoading]    = useState(true); // ONLY true for the very first load
+  const [userPin,    setUserPin]    = useState(null); // shared PG coord — { latitude, longitude }
+  const [route,      setRoute]      = useState(null); // [{latitude,longitude}, ...] — shared per destination
+  const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [etaMinutes, setEta]        = useState(null);
-  const [etaAt,      setEtaAt]      = useState(null);   // Date of last update
+  const [etaAt,      setEtaAt]      = useState(null); // Date of last update
+  const [autoFollow, setAutoFollow] = useState(true); // pauses when user pans the map
 
   // First-load flag so returning to this tab doesn't dismount the map.
-  // Historical bug: useFocusEffect always called loadSnapshot which set
-  // loading=true on every re-focus. That unmounted <LeafletMap>, and on
-  // Android react-native-webview's teardown+remount is racy — the second
-  // WebView instance intermittently loaded blank, needing multiple manual
-  // refreshes to recover. Now the first load shows LoadingState; every
-  // subsequent focus refetches in the background, keeping the map alive.
+  // Only the very first snapshot fires the full <LoadingState/> branch;
+  // every re-focus reloads in the background with the map still alive.
   const hasLoadedOnceRef = useRef(false);
+  // Track when we last recentered on the rider — throttles smooth-follow
+  // to at most once every 1500 ms so a rapid GPS burst doesn't churn the
+  // camera. Matches the "throttle sensibly" pattern the backend ETA
+  // service already uses (RECOMPUTE_MIN_SECONDS = 30 s over there;
+  // the camera can afford to be more responsive but not on every ping).
+  const lastFollowRef = useRef(0);
 
   // --- Load initial snapshot + user's home pin --------------------------
   const loadSnapshot = useCallback(async () => {
@@ -124,10 +171,10 @@ function TrackScreenAuthed() {
         if (r?.eta_minutes != null) setEta(r.eta_minutes);
       }
 
-      // One-shot ETA request gives us the destination coords AND the
-      // real road-following polyline (Google Directions). If it 4xx's —
-      // e.g. no address set — the map still renders the rider, just no
-      // "arriving in X min" line and no route line.
+      // One-shot ETA request gives us the SHARED destination coords
+      // (resolved from the user's Location pin, NOT geocoded from their
+      // address text — see backend resolveDeliveryDestination) AND the
+      // shared road-following polyline from Google Directions.
       try {
         const etaRes = await trackingApi.getEta();
         if (etaRes.success) {
@@ -142,10 +189,6 @@ function TrackScreenAuthed() {
               longitude: Number(dest.longitude),
             });
           }
-          // Real driving route from Directions. Falls back to null if
-          // the backend couldn't fetch one — the map effect below will
-          // then draw a straight-line polyline between rider ↔ home so
-          // the user still sees the two points connected.
           const path = etaRes.data?.route;
           if (Array.isArray(path) && path.length >= 2) {
             setRoute(path.map((p) => ({
@@ -156,7 +199,7 @@ function TrackScreenAuthed() {
             setRoute(null);
           }
         }
-      } catch (_) { /* non-fatal */ }
+      } catch (_) { /* non-fatal — map still renders rider without ETA */ }
     } catch (err) {
       setError(err?.response?.data?.message || "Couldn't load the rider's location.");
     } finally {
@@ -192,13 +235,6 @@ function TrackScreenAuthed() {
           status:    payload.status || 'delivering',
           eta_minutes: payload.eta_minutes ?? prev?.eta_minutes,
         }));
-        // Recenter map on the new rider position.
-        if (mapRef.current && payload.latitude != null && payload.longitude != null) {
-          mapRef.current.animateTo({
-            latitude:  Number(payload.latitude),
-            longitude: Number(payload.longitude),
-          });
-        }
       });
 
       s.on('eta_update', (payload) => {
@@ -206,6 +242,16 @@ function TrackScreenAuthed() {
         if (payload?.eta_minutes != null) {
           setEta(payload.eta_minutes);
           setEtaAt(new Date(payload.at || Date.now()));
+        }
+        // Shared polyline for this destination — every user at the same
+        // PG receives an eta_update with the identical `route` array
+        // because the backend dedupes by destination coord and calls
+        // Directions once per PG.
+        if (Array.isArray(payload?.route) && payload.route.length >= 2) {
+          setRoute(payload.route.map((p) => ({
+            latitude:  Number(p.latitude),
+            longitude: Number(p.longitude),
+          })));
         }
       });
     })();
@@ -251,38 +297,9 @@ function TrackScreenAuthed() {
     ? { label: 'Arrived at your address', tone: 'success' }
     : (STATUS[rider?.status] || STATUS.idle);
 
-  // Build the marker set for LeafletMap. Kept in a memo so the WebView
-  // isn't hammered with re-injects unless the actual coords change.
-  const mapMarkers = useMemo(() => {
-    const list = [];
-    if (hasRiderLocation) {
-      list.push({
-        id: 'rider',
-        latitude:  Number(rider.latitude),
-        longitude: Number(rider.longitude),
-        kind:      'rider',
-        label:     hasArrived ? '🏁' : '🚴',
-        title:     rider.name || 'Rider',
-      });
-    }
-    if (userPin) {
-      list.push({
-        id: 'home',
-        latitude:  userPin.latitude,
-        longitude: userPin.longitude,
-        kind:      'home',
-        title:     'Your home',
-      });
-    }
-    return list;
-  }, [hasRiderLocation, rider?.latitude, rider?.longitude, rider?.name, userPin, hasArrived]);
-
-  // Polyline to draw on the map:
-  //   • real road-following route from Google Directions when we have one
-  //   • else a straight rider↔home line as a degrade so the two points
-  //     stay visually connected
-  //   • null when we don't have both endpoints (map falls back to just
-  //     the two markers)
+  // Polyline to draw: prefer the real Directions route; fall back to a
+  // straight rider↔home line so the two points stay visually connected
+  // even if Directions failed or hasn't returned yet.
   const mapPolyline = useMemo(() => {
     if (route && route.length >= 2) return route;
     if (hasRiderLocation && userPin) {
@@ -293,6 +310,38 @@ function TrackScreenAuthed() {
     }
     return null;
   }, [route, hasRiderLocation, rider?.latitude, rider?.longitude, userPin]);
+
+  // Initial region — set once on mount from whatever we have. Post-mount
+  // we drive camera changes imperatively via mapRef so the state ping
+  // rate stays independent from the region prop.
+  const initialRegion = useMemo(() => {
+    return regionForMarkers(
+      hasRiderLocation ? { latitude: Number(rider.latitude), longitude: Number(rider.longitude) } : null,
+      userPin,
+    );
+    // We want this computed ONCE, on first render — subsequent updates
+    // are handled by the auto-follow effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Smooth follow: keep the rider centered as they move, but ONLY when
+  // the user hasn't panned away (autoFollow=true) and throttled so a
+  // rapid GPS burst doesn't animate the camera 5 times per second.
+  useEffect(() => {
+    if (!autoFollow || !mapRef.current || !hasRiderLocation) return;
+    const now = Date.now();
+    if (now - lastFollowRef.current < 1500) return;
+    lastFollowRef.current = now;
+    mapRef.current.animateCamera(
+      {
+        center: {
+          latitude:  Number(rider.latitude),
+          longitude: Number(rider.longitude),
+        },
+      },
+      { duration: 800 }
+    );
+  }, [autoFollow, hasRiderLocation, rider?.latitude, rider?.longitude]);
 
   // -------------------- Render states --------------------
   if (loading) {
@@ -336,35 +385,141 @@ function TrackScreenAuthed() {
     <SafeAreaView style={styles.screen} edges={['top']}>
       <TrackHeader live />
 
-      {/* Map — Leaflet + OSM inside a WebView. See LeafletMap.js. */}
+      {/* Map — native Google Maps via react-native-maps */}
       <View style={styles.mapContainer}>
-        <LeafletMap
+        <MapView
           ref={mapRef}
-          center={
-            hasRiderLocation
-              ? { latitude: Number(rider.latitude), longitude: Number(rider.longitude) }
-              : DEFAULT_CENTER
-          }
-          zoom={15}
-          markers={mapMarkers}
-          polyline={mapPolyline}
-        />
+          provider={PROVIDER_GOOGLE}
+          style={styles.map}
+          initialRegion={initialRegion}
+          // User pan disables auto-follow so the map doesn't fight them.
+          // Recenter button re-arms it.
+          onPanDrag={() => {
+            if (autoFollow) setAutoFollow(false);
+          }}
+          showsCompass={false}
+          showsMyLocationButton={false}
+          showsPointsOfInterest={false}
+          toolbarEnabled={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+          loadingEnabled
+          loadingIndicatorColor={colors.teal}
+          loadingBackgroundColor={colors.paperSoft}
+        >
+          {hasRiderLocation && (
+            <Marker
+              identifier="rider"
+              coordinate={{
+                latitude:  Number(rider.latitude),
+                longitude: Number(rider.longitude),
+              }}
+              // anchor at the visual centre of our custom pin
+              anchor={{ x: 0.5, y: 0.5 }}
+              // Custom themed pin — deep teal disk with a bicycle glyph
+              // (or checkered flag once arrived). Bypasses Google's
+              // default red pin so the map matches the app's identity.
+              // `tracksViewChanges` set to false after mount for perf on
+              // Android — a moving marker on Android otherwise redraws
+              // the tile layer under it (jank).
+              tracksViewChanges={false}
+              title={rider.name || 'Rider'}
+              description={hasArrived ? 'Arrived at your address' : 'On the way'}
+            >
+              <View style={hasArrived ? styles.riderMarkerArrived : styles.riderMarker}>
+                <Ionicons
+                  name={hasArrived ? 'flag' : 'bicycle'}
+                  size={18}
+                  color={colors.paper}
+                />
+              </View>
+            </Marker>
+          )}
+          {userPin && (
+            <Marker
+              identifier="home"
+              coordinate={userPin}
+              anchor={{ x: 0.5, y: 1 }}
+              tracksViewChanges={false}
+              title="Your PG"
+              description="Delivery destination"
+            >
+              {/* Gold parchment tag with a home glyph — matches the
+                  app's warm-tone chips and cards. */}
+              <View style={styles.homeMarkerWrap}>
+                <View style={styles.homeMarker}>
+                  <Ionicons name="home" size={14} color={colors.gold} />
+                </View>
+                <View style={styles.homeMarkerTail} />
+              </View>
+            </Marker>
+          )}
+          {mapPolyline && mapPolyline.length >= 2 && (
+            <Polyline
+              coordinates={mapPolyline}
+              strokeColor={colors.teal}
+              strokeWidth={4}
+              lineCap="round"
+              lineJoin="round"
+              // Faint dashed style when we're falling back to a straight
+              // rider↔home line (no real Directions data yet); solid
+              // stroke for the real road route. `route` state is the
+              // decoded Directions path.
+              lineDashPattern={route && route.length >= 2 ? undefined : [8, 6]}
+              geodesic
+            />
+          )}
+        </MapView>
 
-        {/* Recenter button — small overlay, top-right */}
+        {/* Recenter button — small overlay, top-right. Re-arms auto-follow. */}
         <Pressable
           onPress={() => {
             if (!hasRiderLocation || !mapRef.current) return;
-            mapRef.current.animateTo({
-              latitude:  Number(rider.latitude),
-              longitude: Number(rider.longitude),
-            });
+            setAutoFollow(true);
+            lastFollowRef.current = 0;
+            mapRef.current.animateCamera(
+              {
+                center: {
+                  latitude:  Number(rider.latitude),
+                  longitude: Number(rider.longitude),
+                },
+              },
+              { duration: 500 }
+            );
           }}
           style={({ pressed }) => [styles.recenterBtn, pressed && styles.recenterBtnPressed]}
-          accessibilityLabel="Recenter map on rider"
+          accessibilityLabel={autoFollow ? 'Auto-follow on' : 'Recenter map on rider'}
           accessibilityRole="button"
         >
-          <Ionicons name="locate" size={20} color={colors.tealDark} />
+          <Ionicons
+            name={autoFollow ? 'locate' : 'locate-outline'}
+            size={20}
+            color={autoFollow ? colors.tealDark : colors.inkMuted}
+          />
         </Pressable>
+
+        {/* Fit-both button — one-tap way to zoom back to include both
+            markers after zooming in on the rider. */}
+        {hasRiderLocation && userPin && (
+          <Pressable
+            onPress={() => {
+              if (!mapRef.current) return;
+              setAutoFollow(false);
+              mapRef.current.animateToRegion(
+                regionForMarkers(
+                  { latitude: Number(rider.latitude), longitude: Number(rider.longitude) },
+                  userPin,
+                ),
+                600
+              );
+            }}
+            style={({ pressed }) => [styles.fitBothBtn, pressed && styles.recenterBtnPressed]}
+            accessibilityLabel="Fit rider and home on screen"
+            accessibilityRole="button"
+          >
+            <Ionicons name="scan-outline" size={18} color={colors.tealDark} />
+          </Pressable>
+        )}
       </View>
 
       {/* -------- Bottom info panel — status + ETA + rider identity -------- */}
@@ -373,7 +528,7 @@ function TrackScreenAuthed() {
           <Chip
             label={statusCfg.label}
             tone={statusCfg.tone}
-            icon={rider?.status === 'delivering' ? 'radio-outline' : 'time-outline'}
+            icon={hasArrived ? 'checkmark-circle-outline' : rider?.status === 'delivering' ? 'radio-outline' : 'time-outline'}
           />
           <View style={styles.livePill}>
             <View style={styles.livePulse} />
@@ -494,7 +649,7 @@ const styles = StyleSheet.create({
 
   // Rider marker — teal disk with a bicycle glyph.
   riderMarker: {
-    width: 36, height: 36, borderRadius: 18,
+    width: 40, height: 40, borderRadius: 20,
     backgroundColor: colors.teal,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
@@ -503,12 +658,38 @@ const styles = StyleSheet.create({
       android: { elevation: 6 },
     }),
   },
-  // User home marker — parchment tile with a home glyph.
+  // Same disk, tinted success (green) once the rider has arrived —
+  // flag glyph replaces the bicycle.
+  riderMarkerArrived: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: colors.success,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 3, borderColor: colors.paper,
+    ...Platform.select({
+      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      android: { elevation: 6 },
+    }),
+  },
+  // Destination marker — warm parchment tag with a small triangle
+  // pointing down to the anchor point (bottom-centre).
+  homeMarkerWrap: { alignItems: 'center' },
   homeMarker: {
-    width: 28, height: 28, borderRadius: 6,
+    width: 32, height: 32, borderRadius: radius.md,
     backgroundColor: colors.goldSoft,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.goldBorder,
+    ...Platform.select({
+      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.18, shadowRadius: 2 },
+      android: { elevation: 3 },
+    }),
+  },
+  homeMarkerTail: {
+    width: 0, height: 0,
+    borderLeftWidth:  6, borderRightWidth:  6, borderTopWidth: 6,
+    borderLeftColor:  'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor:   colors.goldBorder,
+    marginTop: -1,
   },
 
   recenterBtn: {
@@ -523,21 +704,19 @@ const styles = StyleSheet.create({
       android: { elevation: 4 },
     }),
   },
+  fitBothBtn: {
+    position: 'absolute',
+    top: 68, right: 16,
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: colors.paper,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: colors.ruleSoft,
+    ...Platform.select({
+      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+      android: { elevation: 4 },
+    }),
+  },
   recenterBtnPressed: { backgroundColor: colors.tealSoft },
-
-  mapFallback: {
-    flex: 1, justifyContent: 'center', alignItems: 'center',
-    padding: space[8], gap: space[2],
-  },
-  fallbackTitle: { ...type.bodyStrong, color: colors.inkMuted },
-  fallbackHint:  { ...type.meta, textAlign: 'center' },
-  coordsBox: {
-    marginTop: space[3],
-    backgroundColor: colors.ruleFaint,
-    paddingHorizontal: space[3], paddingVertical: space[2],
-    borderRadius: radius.md,
-  },
-  coordsText: { ...type.meta, color: colors.inkMuted, fontVariant: ['tabular-nums'] },
 
   panel: {
     backgroundColor: colors.paper,

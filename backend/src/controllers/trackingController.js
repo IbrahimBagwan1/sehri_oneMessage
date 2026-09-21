@@ -24,6 +24,44 @@ const getTodaysPoll = async () => {
 };
 
 // ---------------------------------------------------------------------------
+// Internal helper — resolve the SHARED delivery coordinate for a user.
+//
+// The tracking destination is per-location, not per-individual. Two
+// users at the same PG must see the identical rider→destination path
+// and the same ETA. To guarantee that we walk the Location parent
+// chain — starting from the user's assigned location — and return the
+// first row that has both latitude AND longitude set. This means every
+// user at "Rehmat PG" resolves to that PG's single pinned coord (set
+// once by super admin via the coordinate picker), never to a
+// geocoded-from-free-text address which would produce subtly different
+// coords per user.
+//
+// Returns { lat, lng, source_location_id, source_location_type,
+//           source_location_name } or null if nothing in the chain has coords.
+// ---------------------------------------------------------------------------
+const resolveDeliveryDestination = async (locationId) => {
+  if (!locationId) return null;
+  let current = await Location.findByPk(locationId);
+  let hops = 0;
+  const MAX_HOPS = 10; // safety guard against accidental cycles
+  while (current && hops < MAX_HOPS) {
+    if (current.latitude != null && current.longitude != null) {
+      return {
+        lat: Number(current.latitude),
+        lng: Number(current.longitude),
+        source_location_id: current.id,
+        source_location_type: current.type,
+        source_location_name: current.name,
+      };
+    }
+    if (!current.parent_id) return null;
+    current = await Location.findByPk(current.parent_id);
+    hops += 1;
+  }
+  return null;
+};
+
+// ---------------------------------------------------------------------------
 // POST /api/tracking/rider-login
 // Access: Public
 //
@@ -218,19 +256,28 @@ const createRider = async (req, res, next) => {
 // Access: super_admin
 //
 // Returns all riders with their zone name. Used by the admin management screen.
+//
+// Each row includes `is_assigned_today` so the frontend can visibly mark
+// the currently-assigned rider (and swap the "Assign today" button for
+// an "Assigned / Remove" pair) without a second round-trip.
 // ---------------------------------------------------------------------------
 const getAllRiders = async (req, res, next) => {
   try {
-    const riders = await Rider.findAll({
-      include: [
-        {
-          model: Location,
-          as: 'zone',
-          attributes: ['id', 'name'],
-        },
-      ],
-      order: [['created_at', 'ASC']],
-    });
+    const [riders, todaysPoll] = await Promise.all([
+      Rider.findAll({
+        include: [
+          {
+            model: Location,
+            as: 'zone',
+            attributes: ['id', 'name'],
+          },
+        ],
+        order: [['created_at', 'ASC']],
+      }),
+      getTodaysPoll(),
+    ]);
+
+    const assignedRiderId = todaysPoll?.assigned_rider_id || null;
 
     return success(res, {
       statusCode: 200,
@@ -247,6 +294,7 @@ const getAllRiders = async (req, res, next) => {
         longitude: r.longitude,
         current_address: r.current_address,
         eta_minutes: r.eta_minutes,
+        is_assigned_today: assignedRiderId === r.id,
         created_at: r.created_at,
       })),
     });
@@ -305,6 +353,78 @@ const assignTodaysRider = async (req, res, next) => {
           phone: rider.phone,
           zone: rider.zone ? { id: rider.zone.id, name: rider.zone.name } : null,
         },
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/tracking/unassign-today
+// Access: super_admin
+//
+// Clears today's rider assignment. There is only ever one assigned rider
+// per day, so this is a no-arg operation — no rider id needed. Idempotent:
+// returns 200 with a friendly message whether or not anyone was assigned.
+//
+// Notes:
+//   • If the assigned rider is mid-delivery (rider.status === 'delivering'),
+//     we DO NOT touch rider.status — the rider app owns that flag. Clearing
+//     the assignment stops the user track screen from showing them, which
+//     is the intent (super admin wants them off today's roster).
+//   • Kept as a dedicated route rather than overloading assignTodaysRider
+//     with a null id so validation stays trivial and the audit log is
+//     legible.
+// ---------------------------------------------------------------------------
+const unassignTodaysRider = async (req, res, next) => {
+  try {
+    const poll = await getTodaysPoll();
+    if (!poll) {
+      return error(res, {
+        statusCode: 404,
+        message: 'No poll found for today.',
+      });
+    }
+
+    if (!poll.assigned_rider_id) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No rider was assigned for today.',
+        data: { poll_id: poll.id, poll_date: poll.date, cleared: false },
+      });
+    }
+
+    const priorRiderId = poll.assigned_rider_id;
+    poll.assigned_rider_id = null;
+    await poll.save();
+
+    // Best-effort: emit a done event so any open user track screens
+    // hide the rider marker immediately instead of waiting for the next
+    // poll cycle. Wrapped in try/catch — the response must still succeed
+    // if the socket layer is missing (tests, etc.).
+    try {
+      const rider = await Rider.findByPk(priorRiderId, { attributes: ['zone_location_id', 'name'] });
+      if (rider) {
+        socketService.emitRiderPosition(rider.zone_location_id, {
+          rider_id: priorRiderId,
+          name:     rider.name,
+          status:   'done',
+          at:       new Date().toISOString(),
+        });
+      }
+    } catch (_) { /* noop */ }
+
+    logger.info(`[tracking] super_admin=${req.auth.id} cleared today's rider assignment (was ${priorRiderId})`);
+
+    return success(res, {
+      statusCode: 200,
+      message: "Today's rider assignment cleared.",
+      data: {
+        poll_id: poll.id,
+        poll_date: poll.date,
+        cleared: true,
+        prior_rider_id: priorRiderId,
       },
     });
   } catch (err) {
@@ -592,28 +712,62 @@ const getEta = async (req, res, next) => {
       });
     }
 
-    const user = await User.findByPk(req.actingUserId, { attributes: ['id', 'address', 'city'] });
-    if (!user || !user.address) {
-      return error(res, {
-        statusCode: 422,
-        message: 'Your profile does not have an address — update your profile first',
-      });
+    const user = await User.findByPk(req.actingUserId, {
+      attributes: ['id', 'address', 'city', 'location_id'],
+    });
+    if (!user) {
+      return error(res, { statusCode: 404, message: 'User not found' });
+    }
+
+    // SHARED-DESTINATION SEMANTICS
+    // ----------------------------
+    // Prefer the fixed coordinate pinned on the user's Location (or the
+    // nearest ancestor Location that has one). Every user at the same PG
+    // resolves to the same lat/lng — critical so 10 users in one hostel
+    // see the same rider→home line and the same ETA numbers, not 10
+    // slightly-different geocoded results derived from their individual
+    // address text.
+    //
+    // Only fall back to geocoding the free-text address if NO Location
+    // in the parent chain has coords (super admin never pinned this PG).
+    // In that case each user gets a per-user degrade, which is the best
+    // we can do until the coord picker is used for that address.
+    let destination = await resolveDeliveryDestination(user.location_id);
+    let destination_source = destination ? 'location_pin' : null;
+
+    if (!destination) {
+      if (!googleMapsService.isConfigured()) {
+        return error(res, {
+          statusCode: 422,
+          message:
+            "Your PG doesn't have a map pin yet and no fallback geocoder is configured. " +
+            "Ask an admin to pin your PG's location.",
+        });
+      }
+      if (!user.address) {
+        return error(res, {
+          statusCode: 422,
+          message:
+            "Your PG doesn't have a map pin yet and your profile has no address to " +
+            "fall back on. Ask an admin to pin your PG's location.",
+        });
+      }
+      const fullAddress = user.city ? `${user.address}, ${user.city}` : user.address;
+      const geo = await googleMapsService.geocode(fullAddress);
+      if (!geo) {
+        return error(res, {
+          statusCode: 422,
+          message: 'Could not locate your address on the map',
+        });
+      }
+      destination = geo;
+      destination_source = 'geocoded_fallback';
     }
 
     if (!googleMapsService.isConfigured()) {
       return error(res, {
         statusCode: 503,
         message: 'ETA service is not configured on the server',
-      });
-    }
-
-    // Include the city in the geocode query so it disambiguates in India.
-    const fullAddress = user.city ? `${user.address}, ${user.city}` : user.address;
-    const destination = await googleMapsService.geocode(fullAddress);
-    if (!destination) {
-      return error(res, {
-        statusCode: 422,
-        message: 'Could not locate your address on the map',
       });
     }
 
@@ -670,9 +824,14 @@ const getEta = async (req, res, next) => {
           status: rider.status,
         },
         // Destination coords so the frontend can drop a "your home" marker.
+        // `source` tells the client whether these came from the PG's fixed
+        // pin (shared across every user at that PG — the correct case) or
+        // from a per-user geocode fallback (informational only, not shown
+        // in normal UI but useful for debugging).
         destination: {
           latitude:  destination.lat,
           longitude: destination.lng,
+          source:    destination_source,
         },
         // Real driving route (Google Directions). Null when Directions
         // fell back or both APIs failed — frontend draws a straight line
@@ -908,6 +1067,7 @@ module.exports = {
   createRider,
   getAllRiders,
   assignTodaysRider,
+  unassignTodaysRider,
   toggleRider,
   updateLocationManual,
   pushLocation,

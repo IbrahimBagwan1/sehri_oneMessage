@@ -182,30 +182,59 @@ const updateETAsForRider = async (rider, lat, lng) => {
       return;
     }
 
-    // One HTTP call, N cells. Distance Matrix supports up to 25 dests
-    // per origin per call — chunk if needed.
+    // One HTTP call per destination (Directions gives us both the ETA
+    // AND the polyline — cheaper than distanceMatrix for our purposes
+    // since we need to draw the road-following route on the map anyway).
+    //
+    // SHARED-DESTINATION DEDUP:
+    //   destByKey already collapsed multiple users at the same PG into a
+    //   single destination entry. So Directions is called ONCE per PG per
+    //   recompute — 10 users at the same hostel = 1 API call, not 10 —
+    //   and the resulting polyline is shared among all their eta_update
+    //   emits. This is what guarantees they see the identical map view.
     const CHUNK = 25;
     const dests = Array.from(destByKey.values());
     const etaByResponseId = new Map();
+    const routeByResponseId = new Map();
 
     for (let i = 0; i < dests.length; i += CHUNK) {
       const slice = dests.slice(i, i + CHUNK);
       await Promise.all(
         slice.map(async (dest) => {
           try {
-            const dm = await googleMapsService.distanceMatrix({
+            const dir = await googleMapsService.directions({
               origin: { lat, lng },
               destination: { lat: dest.lat, lng: dest.lng },
               mode: 'driving',
             });
-            const etaMin =
-              dm.durationSeconds != null ? Math.max(0, Math.round(dm.durationSeconds / 60)) : null;
+            let etaMin = null;
+            let path = null;
+            if (dir && dir.durationSeconds != null) {
+              etaMin = Math.max(0, Math.round(dir.durationSeconds / 60));
+              // Convert Directions' [[lat,lng], ...] to the
+              // {latitude, longitude}[] shape the RN client expects.
+              if (Array.isArray(dir.path) && dir.path.length >= 2) {
+                path = dir.path.map(([la, ln]) => ({ latitude: la, longitude: ln }));
+              }
+            } else {
+              // Directions failed or hit a rate limit — fall back to
+              // distanceMatrix for the number, drop the polyline.
+              const dm = await googleMapsService.distanceMatrix({
+                origin: { lat, lng },
+                destination: { lat: dest.lat, lng: dest.lng },
+                mode: 'driving',
+              });
+              etaMin = dm.durationSeconds != null
+                ? Math.max(0, Math.round(dm.durationSeconds / 60))
+                : null;
+            }
             for (const responseId of dest.responseIds) {
               etaByResponseId.set(responseId, etaMin);
+              if (path) routeByResponseId.set(responseId, path);
             }
           } catch (err) {
             // Silent per-destination failure — others still succeed.
-            logger.warn(`[eta] Distance Matrix failed for ${dest.lat},${dest.lng}: ${err.message}`);
+            logger.warn(`[eta] directions/distanceMatrix failed for ${dest.lat},${dest.lng}: ${err.message}`);
           }
         })
       );
@@ -229,11 +258,17 @@ const updateETAsForRider = async (rider, lat, lng) => {
 
       // Per-user socket event so their track screen shows the new ETA
       // instantly, without waiting for the wider zone broadcast.
+      // `route` is the shared road-following polyline for this user's
+      // destination — dedup guaranteed by routeByResponseId being keyed
+      // off destByKey, so every user at the same PG receives the same
+      // array here (React Native compares by ref elsewhere, but each
+      // socket payload is a fresh JSON per user).
       try {
         socketService.emitEtaUpdate(r.user.id, {
           poll_id: poll.id,
           response_id: r.id,
           eta_minutes: etaMin,
+          route: routeByResponseId.get(r.id) || null,
           rider: { id: rider.id, name: rider.name, latitude: lat, longitude: lng },
           at: now.toISOString(),
         });

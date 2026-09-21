@@ -7,6 +7,7 @@ const {
   createRider,
   getAllRiders,
   assignTodaysRider,
+  unassignTodaysRider,
   toggleRider,
   updateLocationManual,
   pushLocation,
@@ -68,6 +69,12 @@ router.get('/all', verifyToken, requireRole('super_admin'), getAllRiders);
 // Body (Mode A — promote user): { user_id, zone_location_id?, password }
 // Body (Mode B — standalone):   { name, phone, password, zone_location_id? }
 router.post('/', verifyToken, requireRole('super_admin'), createRider);
+
+// PATCH /api/tracking/unassign-today
+// Clear today's rider assignment. No-arg (one assignment per day).
+// Literal segment — MUST come before /:id/assign-today so Express
+// doesn't match "unassign-today" as an :id UUID.
+router.patch('/unassign-today', verifyToken, requireRole('super_admin'), unassignTodaysRider);
 
 // PATCH /api/tracking/:id/assign-today
 // Assign a rider to today's poll. Replaces any existing assignment.

@@ -63,6 +63,13 @@ export const trackingApi = {
     return response.data;
   },
 
+  // PATCH /api/tracking/unassign-today — clear today's rider assignment.
+  // No rider id needed (there's only ever one assignment per day).
+  unassignTodayRider: async () => {
+    const response = await apiClient.patch('/tracking/unassign-today');
+    return response.data;
+  },
+
   // PATCH /api/tracking/:id/toggle — flip is_active (on-duty / off-duty)
   toggleRider: async (riderId) => {
     const response = await apiClient.patch(`/tracking/${riderId}/toggle`);

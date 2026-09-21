@@ -99,6 +99,29 @@ export default function SuperAdminRidersScreen() {
     );
   };
 
+  const handleUnassign = (rider) => {
+    Alert.alert(
+      `Remove ${rider.name} from today?`,
+      "Their marker stops broadcasting to users' track screens. You can reassign anyone active before Sehri time.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setBusyId(rider.id);
+            try {
+              await trackingApi.unassignTodayRider();
+              await load(true);
+            } catch (err) {
+              Alert.alert("Couldn't remove", err?.response?.data?.message || 'Try again.');
+            } finally { setBusyId(null); }
+          },
+        },
+      ]
+    );
+  };
+
   const handleToggle = (rider) => {
     const nextState = rider.is_active ? 'deactivate' : 'activate';
     Alert.alert(
@@ -208,6 +231,7 @@ export default function SuperAdminRidersScreen() {
                 rider={item}
                 busy={busyId === item.id}
                 onAssign={() => handleAssign(item)}
+                onUnassign={() => handleUnassign(item)}
                 onToggle={() => handleToggle(item)}
                 onDelete={() => handleDelete(item)}
               />
@@ -226,16 +250,33 @@ export default function SuperAdminRidersScreen() {
 }
 
 // -----------------------------------------------------------------------------
-// RiderRow — one rider card with quick actions
+// RiderRow — one rider card with quick actions.
+//
+// Assignment state: when this rider is today's assigned rider
+// (`is_assigned_today` set by the backend), the primary action swaps
+// from "Assign today" to a "Remove" button so the super admin can clear
+// the assignment without navigating anywhere. A green "Assigned today"
+// chip appears in the header so the state is obvious at a glance from
+// a scroll list of many riders.
 // -----------------------------------------------------------------------------
-function RiderRow({ rider, busy, onAssign, onToggle, onDelete }) {
-  const status = STATUS_TONE[rider.status] || STATUS_TONE.idle;
+function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
+  const status     = STATUS_TONE[rider.status] || STATUS_TONE.idle;
+  const isAssigned = !!rider.is_assigned_today;
   return (
-    <Card>
+    <Card style={isAssigned ? styles.rowAssignedCard : undefined}>
       <View style={styles.rowHead}>
         <Avatar name={rider.name} size={40} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.rowName}>{rider.name}</Text>
+          <View style={styles.rowNameRow}>
+            <Text style={styles.rowName}>{rider.name}</Text>
+            {isAssigned && (
+              <Chip
+                label="Assigned today"
+                tone="success"
+                icon="checkmark-circle-outline"
+              />
+            )}
+          </View>
           <Text style={styles.rowPhone}>{rider.phone}</Text>
         </View>
         {rider.is_active
@@ -250,15 +291,32 @@ function RiderRow({ rider, busy, onAssign, onToggle, onDelete }) {
       </View>
 
       <View style={styles.rowActions}>
-        <Button
-          label="Assign today"
-          onPress={onAssign}
-          size="sm"
-          icon="calendar-outline"
-          disabled={!rider.is_active || busy}
-          loading={busy}
-          style={{ flex: 1 }}
-        />
+        {isAssigned ? (
+          // Assigned state → primary action becomes "Remove". Kept as
+          // the primary button (not variant='secondary') so it's the
+          // obvious way out; destructive coloring via the danger tone
+          // on the delete button remains the "harder" action.
+          <Button
+            label="Remove from today"
+            onPress={onUnassign}
+            size="sm"
+            icon="close-circle-outline"
+            disabled={busy}
+            loading={busy}
+            variant="secondary"
+            style={{ flex: 1 }}
+          />
+        ) : (
+          <Button
+            label="Assign today"
+            onPress={onAssign}
+            size="sm"
+            icon="calendar-outline"
+            disabled={!rider.is_active || busy}
+            loading={busy}
+            style={{ flex: 1 }}
+          />
+        )}
         <Button
           label={rider.is_active ? 'Deactivate' : 'Activate'}
           onPress={onToggle}
@@ -438,8 +496,18 @@ const styles = StyleSheet.create({
   list:   { padding: space[4], paddingBottom: space[8] },
 
   rowHead:  { flexDirection: 'row', alignItems: 'center', gap: space[3] },
+  rowNameRow: { flexDirection: 'row', alignItems: 'center', gap: space[2], flexWrap: 'wrap' },
   rowName:  { ...type.bodyStrong },
   rowPhone: { ...type.meta, marginTop: 2 },
+
+  // Card gets a subtle green tint + border when this rider is the one
+  // assigned for today. Deliberately understated — the "Assigned today"
+  // chip carries the primary signal; this is peripheral reinforcement.
+  rowAssignedCard: {
+    borderColor: colors.success,
+    borderWidth: 1,
+    backgroundColor: colors.successSoft,
+  },
 
   rowMeta: {
     flexDirection: 'row',
