@@ -6,6 +6,7 @@ const { success, error } = require('../utils/response');
 const { resolveZone } = require('../utils/resolveZone');
 const logger = require('../utils/logger');
 const { VALID_ZONES } = require('../constants/zones');
+const { describeMember } = require('../utils/memberDisplay');
 const {
   getPollPhase,
   isVotingOpen,
@@ -469,7 +470,10 @@ const getZoneVoters = async (req, res, next) => {
         special_case_at: r.special_case_at,
         sehri_allowed: r.sehri_allowed,
         voted_at: r.created_at,
-        user: r.user,
+        // Votes cast by members who have since erased their account keep
+        // counting (that is the point of the zone snapshot) but carry no
+        // identity — see utils/memberDisplay.js.
+        user: describeMember(r.user, ['id', 'name', 'phone']),
       });
     }
 

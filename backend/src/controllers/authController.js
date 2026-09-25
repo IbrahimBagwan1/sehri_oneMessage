@@ -17,6 +17,25 @@ const { User, Location, Admin, SuperAdmin, Rider } = db;
 // ---------------------------------------------------------------------------
 
 /**
+ * "No account at all" is a genuinely different answer from "wrong
+ * password" and from "your account is suspended", and the three used to
+ * be muddled — a deleted member was told their account was *deactivated*,
+ * which is both wrong and a dead end (there is nothing to reactivate).
+ *
+ * Keeping them distinct is safe here: registration already tells an
+ * unknown caller whether a number is taken ("An account with this number
+ * already exists. Log in instead."), so the login side leaks nothing new,
+ * and the person who just deleted their account gets the one instruction
+ * that actually helps them.
+ *
+ * NO_ACCOUNT_CODE lets the client offer "Create an account" inline
+ * instead of string-matching the copy.
+ */
+const NO_ACCOUNT_CODE = 'NO_ACCOUNT_FOUND';
+const NO_ACCOUNT_MESSAGE =
+  'No account found for this number. Create a new account to get started.';
+
+/**
  * Builds the JWT payload for a given role + account record.
  *
  * user_id is included in admin/super_admin tokens when the account has a
@@ -74,12 +93,18 @@ const findAllRolesForPhone = async (phone) => {
 /**
  * Derives the list of role strings held by a phone number.
  * Used to populate available_roles in the login response.
+ *
+ * A suspended role is left out: switchRole would reject it anyway, so
+ * advertising it only puts a chip on the dashboard that errors when
+ * tapped. (riderAccount is already looked up with is_active: true.)
  */
+const isUsable = (account) => !!account && account.is_active !== false;
+
 const deriveAvailableRoles = ({ superAdminAccount, adminAccount, userAccount, riderAccount }) => {
   const roles = [];
-  if (userAccount) roles.push('user');
-  if (adminAccount) roles.push('admin');
-  if (superAdminAccount) roles.push('super_admin');
+  if (isUsable(userAccount)) roles.push('user');
+  if (isUsable(adminAccount)) roles.push('admin');
+  if (isUsable(superAdminAccount)) roles.push('super_admin');
   if (riderAccount) roles.push('rider');
   return roles;
 };
@@ -197,34 +222,39 @@ const loginUser = async (req, res, next) => {
     const accounts = await findAllRolesForPhone(phone);
     const { superAdminAccount, adminAccount, userAccount } = accounts;
 
-    // Determine which account to authenticate against (highest privilege first).
-    let account = null;
-    let role = null;
+    // Authenticate under the highest privilege this number holds — but
+    // only counting roles that are actually usable. Suspending someone's
+    // zone-admin role must not cost them their membership: previously the
+    // inactive admin row won the priority contest and the whole number was
+    // reported as deactivated, so a perfectly fine member could not sign in.
+    const byPrivilege = [
+      [superAdminAccount, 'super_admin'],
+      [adminAccount,      'admin'],
+      [userAccount,       'user'],
+    ].filter(([candidate]) => candidate);
 
-    if (superAdminAccount) {
-      account = superAdminAccount;
-      role = 'super_admin';
-    } else if (adminAccount) {
-      account = adminAccount;
-      role = 'admin';
-    } else if (userAccount) {
-      account = userAccount;
-      role = 'user';
-    }
-
-    if (!account) {
+    if (byPrivilege.length === 0) {
       return error(res, {
-        statusCode: 401,
-        message: 'Invalid phone or password',
+        statusCode: 404,
+        message: NO_ACCOUNT_MESSAGE,
+        code: NO_ACCOUNT_CODE,
       });
     }
 
-    if (account.is_active === false) {
+    const usable = byPrivilege.filter(([candidate]) => candidate.is_active !== false);
+
+    // Every role this number holds is suspended. 'Deactivated' means
+    // exactly this — a super admin turned the account off and can turn it
+    // back on. It is never how a deleted account presents itself, because
+    // deletion removes the rows entirely.
+    if (usable.length === 0) {
       return error(res, {
         statusCode: 403,
-        message: 'This account has been deactivated',
+        message: 'This account has been deactivated. Contact an admin to restore it.',
       });
     }
+
+    const [account, role] = usable[0];
 
     // User-role accounts must be approved before they can log in.
     // For admin/super_admin the active flag is the only gate.

@@ -9,9 +9,12 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: DataTypes.UUIDV4,
         primaryKey: true,
       },
+      // Nullable on purpose — see donation.js. An erased account leaves
+      // its feedback in the admin inbox, detached from any identity, so
+      // an open complaint doesn't silently disappear mid-review.
       user_id: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
         references: { model: 'users', key: 'id' },
       },
       category: {

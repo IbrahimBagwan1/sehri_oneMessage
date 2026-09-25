@@ -182,13 +182,18 @@ const updateETAsForRider = async (rider, lat, lng) => {
           },
         ],
       });
-      inZoneResponses = responses;
+      // Responses whose member has erased their account carry no
+      // location, so there is nothing to compute an ETA to. The
+      // multi-rider path above already drops them via the
+      // `stopLocationIds.has(r.user?.location_id)` filter.
+      inZoneResponses = responses.filter((r) => r.user);
       if (rider.zone_location_id) {
-        inZoneResponses = [];
-        for (const r of responses) {
+        const scoped = [];
+        for (const r of inZoneResponses) {
           const zone = await resolveZone(r.user.location_id, db);
-          if (zone && zone.id === rider.zone_location_id) inZoneResponses.push(r);
+          if (zone && zone.id === rider.zone_location_id) scoped.push(r);
         }
+        inZoneResponses = scoped;
       }
     }
 

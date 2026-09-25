@@ -36,11 +36,12 @@ const TABS = [
   { key: 'rejected', label: 'Rejected' },
 ];
 
+// A deleted account has no users row at all, so there is no 'deleted'
+// tone to map — the person simply stops appearing in these lists.
 const STATUS_TONE = {
   pending:  'warn',
   approved: 'success',
   rejected: 'danger',
-  deleted:  'neutral',
 };
 
 const resolveZoneName = (location) => {
@@ -103,7 +104,11 @@ export default function SuperAdminUsers() {
   const handleDelete = (id, name) => {
     Alert.alert(
       `Delete ${name}?`,
-      'This anonymizes their personal information and prevents sign-in. Their poll history stays.',
+      'Their account and personal details are permanently removed, along with any '
+        + 'zone admin, super admin or rider role on the same number — and that number '
+        + 'becomes free to register again.\n\n'
+        + 'Their past votes still count towards those nights and verified donations stay '
+        + 'in the books, without their name.',
       [
         { text: 'Cancel', style: 'cancel' },
         {

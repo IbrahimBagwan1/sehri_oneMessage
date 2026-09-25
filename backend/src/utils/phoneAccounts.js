@@ -41,7 +41,7 @@ const PHONE_TAKEN_CODE = 'PHONE_ALREADY_REGISTERED';
  */
 const findAccountsForPhone = async (phone) => {
   const [user, admin, superAdmin, rider] = await Promise.all([
-    User.findOne({ where: { phone }, attributes: ['id', 'status'] }),
+    User.findOne({ where: { phone }, attributes: ['id'] }),
     Admin.findOne({ where: { phone }, attributes: ['id'] }),
     SuperAdmin.findOne({ where: { phone }, attributes: ['id'] }),
     Rider.findOne({ where: { phone }, attributes: ['id'] }),
@@ -67,20 +67,15 @@ const findAccountsForPhone = async (phone) => {
  * Plain-language reason a phone can't be registered, tailored to which
  * kind of account already holds it. Returns null when the number is free.
  *
- * A soft-deleted user (status='deleted') still occupies the phone —
- * userController's delete flow anonymizes the row but keeps it for
- * community records, and the unique index still applies. We say so
- * explicitly rather than showing "log in instead" for an account that
- * can no longer sign in.
+ * There is deliberately no "previously deleted" case any more. Deleting an
+ * account removes every row holding the number (see
+ * services/accountDeletionService.js), so a deleted member's phone is
+ * indistinguishable from one that was never used — which is the point.
  */
 const describePhoneConflict = (accounts) => {
   if (!accounts.exists) return null;
 
   if (accounts.user) {
-    if (accounts.user.status === 'deleted') {
-      return 'This number was used by an account that has since been deleted. '
-           + 'Contact an admin to have it freed up.';
-    }
     return 'An account with this number already exists. Log in instead.';
   }
 

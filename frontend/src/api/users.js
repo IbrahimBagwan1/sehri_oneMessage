@@ -18,7 +18,7 @@ export const usersApi = {
     return response.data;
   },
 
-  // DELETE /api/users/me — self-delete (soft, anonymized)
+  // DELETE /api/users/me — permanently erases the account and frees the phone
   deleteMe: async () => {
     const response = await apiClient.delete('/users/me');
     return response.data;

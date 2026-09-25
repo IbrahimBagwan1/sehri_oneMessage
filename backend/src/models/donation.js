@@ -9,9 +9,13 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: DataTypes.UUIDV4,
         primaryKey: true,
       },
+      // Nullable on purpose: when a member erases their account the
+      // donation record survives them with user_id set to NULL, because
+      // the community reconciles its books against these rows. Treat a
+      // null user as "a former member" — never as a missing donation.
       user_id: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
         references: { model: 'users', key: 'id' },
       },
       // Rupees + paise. Max 10 digits — up to 99,999,999.99.

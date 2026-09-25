@@ -52,10 +52,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       status: {
-        // 'deleted' is used by the account soft-delete flow. Rows in that
-        // state have their PII anonymized but keep their id so FKs from
-        // poll_responses, donations, etc. stay valid.
-        type: DataTypes.ENUM('pending', 'approved', 'rejected', 'deleted'),
+        // Lifecycle of a *live* member: awaiting review, admitted, or
+        // turned away. There is deliberately no 'deleted' value — an
+        // erased account has no users row at all (see
+        // services/accountDeletionService.js), so a "deleted but still
+        // here" state cannot be expressed.
+        type: DataTypes.ENUM('pending', 'approved', 'rejected'),
         defaultValue: 'pending',
       },
       is_phone_verified: {

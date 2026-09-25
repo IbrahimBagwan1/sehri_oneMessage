@@ -3,6 +3,7 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
+const { FORMER_MEMBER_LABEL } = require('../utils/memberDisplay');
 const {
   emitNewMessage,
   emitMessageDeleted,
@@ -43,7 +44,12 @@ const resolveProfile = async (userId, userType) => {
   } else if (userType === 'super_admin') {
     record = await SuperAdmin.findByPk(userId, { attributes: ['id', 'name', 'phone'] });
   }
-  if (!record) return null;
+  // A null record means the account was erased. Callers render whatever
+  // comes back next to the message, so hand them a labelled placeholder
+  // rather than null — the message stays in the thread, unattributed.
+  if (!record) {
+    return { id: userId, name: FORMER_MEMBER_LABEL, phone: null, role: userType, is_former_member: true };
+  }
   return { id: record.id, name: record.name, phone: record.phone, role: userType };
 };
 
@@ -84,7 +90,7 @@ const resolveMemberProfiles = async (members) => {
     user_id: m.user_id,
     user_type: m.user_type,
     last_read_at: m.last_read_at,
-    ...(profileMap[m.user_id] || { name: 'Unknown', phone: null }),
+    ...(profileMap[m.user_id] || { name: FORMER_MEMBER_LABEL, phone: null, is_former_member: true }),
   }));
 };
 
@@ -392,7 +398,8 @@ const getMessages = async (req, res, next) => {
     const shaped = messages.map((msg) =>
       shapeMessage(
         msg,
-        profileMap[msg.sender_id] || { id: msg.sender_id, name: 'Unknown', role: msg.sender_type },
+        profileMap[msg.sender_id]
+          || { id: msg.sender_id, name: FORMER_MEMBER_LABEL, role: msg.sender_type, is_former_member: true },
         msg.reply_to_id ? (repliedToMap[msg.reply_to_id] || null) : null
       )
     );

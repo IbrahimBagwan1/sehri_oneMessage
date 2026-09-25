@@ -147,14 +147,20 @@ const riderLogin = async (req, res, next) => {
 
     const rider = await Rider.scope('withPassword').findOne({ where: { phone } });
 
+    // Same three-way split as the member login (see authController):
+    // no account / suspended / wrong password are different answers.
     if (!rider) {
-      return error(res, { statusCode: 401, message: 'Invalid phone or password' });
+      return error(res, {
+        statusCode: 404,
+        message: 'No rider account found for this number. Ask a super admin to add you.',
+        code: 'NO_ACCOUNT_FOUND',
+      });
     }
 
     if (!rider.is_active) {
       return error(res, {
         statusCode: 403,
-        message: 'Your rider account has been deactivated',
+        message: 'Your rider account has been deactivated. Contact a super admin to restore it.',
       });
     }
 
@@ -1181,9 +1187,17 @@ const getDeliveryList = async (req, res, next) => {
       order: [[{ model: User, as: 'user' }, 'address', 'ASC']],
     });
 
-    // Group by zone so the rider can deliver zone-by-zone
+    // Group by zone so the rider can deliver zone-by-zone.
+    //
+    // A response whose member has erased their account has user_id NULL
+    // and so no address to deliver to. Erasure already withdraws votes on
+    // today's and future polls, so this should never fire for a live
+    // round — but the delivery list can be pulled for any poll, and a
+    // rider must never be handed a stop with no destination.
     const byZone = {};
+    let orphaned = 0;
     for (const r of responses) {
+      if (!r.user) { orphaned += 1; continue; }
       const z = r.zone;
       if (!byZone[z]) byZone[z] = [];
       byZone[z].push({
@@ -1206,7 +1220,7 @@ const getDeliveryList = async (req, res, next) => {
       message: 'Delivery list fetched',
       data: {
         poll_date: poll.date,
-        total: responses.length,
+        total: responses.length - orphaned,
         by_zone: byZone,
       },
     });

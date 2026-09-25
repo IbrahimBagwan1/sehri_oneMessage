@@ -28,6 +28,7 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const cloudinaryService = require('../services/cloudinaryService');
 const logger = require('../utils/logger');
+const { describeMember } = require('../utils/memberDisplay');
 
 const { Donation, User, SuperAdmin } = db;
 
@@ -168,10 +169,18 @@ const listAll = async (req, res, next) => {
       offset,
     });
 
+    // A donation outlives the member who made it (user_id goes NULL on
+    // erasure), so the association is shaped through describeMember
+    // rather than handed to the client raw.
+    const donations = rows.map((row) => ({
+      ...row.get({ plain: true }),
+      user: describeMember(row.user, ['id', 'name', 'phone', 'address']),
+    }));
+
     return success(res, {
       statusCode: 200,
       message: 'Donations fetched.',
-      data: { total: count, page, limit, donations: rows },
+      data: { total: count, page, limit, donations },
     });
   } catch (err) {
     next(err);

@@ -27,6 +27,7 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const { VALID_ZONES } = require('../constants/zones');
+const { describeMember } = require('../utils/memberDisplay');
 const { resolveZone } = require('../utils/resolveZone');
 const {
   getPollPhase,
@@ -315,19 +316,24 @@ const getSpecialCases = async (req, res, next) => {
       order: [['special_case_at', 'ASC']],
     });
 
+    const shaped = cases.map((c) => ({
+      ...c.get({ plain: true }),
+      user: describeMember(c.user, ['id', 'name', 'phone']),
+    }));
+
     // Split into pending and already reviewed for convenience
-    const pending  = cases.filter((c) => c.sehri_allowed === null);
-    const reviewed = cases.filter((c) => c.sehri_allowed !== null);
+    const pending  = shaped.filter((c) => c.sehri_allowed === null);
+    const reviewed = shaped.filter((c) => c.sehri_allowed !== null);
 
     return success(res, {
       statusCode: 200,
       message: 'Special cases fetched',
       data: {
         poll: { id: poll.id, date: poll.date, phase: getPollPhase(poll) },
-        total: cases.length,
+        total: shaped.length,
         pending_count: pending.length,
         reviewed_count: reviewed.length,
-        cases,
+        cases: shaped,
       },
     });
   } catch (err) {

@@ -19,6 +19,7 @@ const {
   buildLocationInclude,
   resolveZoneFromLoaded,
 } = require('../utils/zoneScope');
+const { describeMember } = require('../utils/memberDisplay');
 
 const { Feedback, User } = db;
 
@@ -143,6 +144,10 @@ const listFeedback = async (req, res, next) => {
       offset,
     });
 
+    // Feedback from an erased member has no user row, so it has no zone
+    // to match on. A zone admin therefore stops seeing it (it is no
+    // longer "theirs"); the super admin still does, labelled as coming
+    // from a former member.
     let visible = rows;
     if (role === 'admin') {
       visible = rows.filter((f) => {
@@ -151,6 +156,11 @@ const listFeedback = async (req, res, next) => {
       });
     }
 
+    const feedback = visible.map((f) => ({
+      ...f.get({ plain: true }),
+      user: describeMember(f.user, ['id', 'name', 'phone']),
+    }));
+
     return success(res, {
       statusCode: 200,
       message: 'Feedback fetched',
@@ -158,7 +168,7 @@ const listFeedback = async (req, res, next) => {
         total: count,
         page,
         limit,
-        feedback: visible,
+        feedback,
       },
     });
   } catch (err) {

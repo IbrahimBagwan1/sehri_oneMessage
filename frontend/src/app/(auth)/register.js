@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   Pressable,
@@ -31,6 +32,12 @@ import { colors, radius, space, type } from '../../theme';
 // Area → Zone → PG), which walks whatever hierarchy the backend actually
 // has rather than assuming a fixed depth.
 // -----------------------------------------------------------------------------
+
+// PLACEHOLDER — onemessage.app/privacy-policy is a stub page. Swap this
+// for the real policy URL before the store submissions go out; both
+// Play Console and App Store Connect fetch the link shown in the signup
+// flow and reject a listing whose policy page is missing or empty.
+const PRIVACY_POLICY_URL = 'https://onemessage.app/privacy-policy';
 
 const GENDERS = [
   { value: 'male',   label: 'Male'   },
@@ -136,6 +143,24 @@ export default function RegisterScreen() {
 
   // Render nothing while the guard redirect is in flight.
   if (!verifiedPhone || !verificationToken) return null;
+
+  /**
+   * Opens the privacy policy in the device browser rather than an in-app
+   * WebView — same approach as the payment link in (user)/donate.js, and
+   * the behaviour reviewers expect from a policy link.
+   */
+  const openPrivacyPolicy = async () => {
+    try {
+      const supported = await Linking.canOpenURL(PRIVACY_POLICY_URL);
+      if (!supported) throw new Error('unsupported');
+      await Linking.openURL(PRIVACY_POLICY_URL);
+    } catch {
+      Alert.alert(
+        "Couldn't open the privacy policy",
+        `Visit ${PRIVACY_POLICY_URL} in your browser.`
+      );
+    }
+  };
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
@@ -256,6 +281,18 @@ export default function RegisterScreen() {
             icon="checkmark-circle-outline"
             style={styles.submitBtn}
           />
+
+          <Pressable
+            onPress={openPrivacyPolicy}
+            hitSlop={8}
+            accessibilityRole="link"
+            accessibilityLabel="View Privacy Policy, opens in your browser"
+            style={({ pressed }) => [styles.policyRow, pressed && { opacity: 0.6 }]}
+          >
+            <Ionicons name="shield-checkmark-outline" size={14} color={colors.tealDark} />
+            <Text style={styles.policyLink}>View Privacy Policy</Text>
+            <Ionicons name="open-outline" size={13} color={colors.tealDark} />
+          </Pressable>
 
           <Pressable
             onPress={() => router.replace('/(auth)/login')}
@@ -397,6 +434,21 @@ const styles = StyleSheet.create({
   errorText: { ...type.meta, color: colors.danger, flex: 1, fontWeight: '600', lineHeight: 18 },
 
   submitBtn: { marginTop: space[4] },
+
+  // Same shape as the "View all prayers ›" action link in PrayerWidget —
+  // centred row, tealDark label, small trailing glyph — but with
+  // open-outline instead of a chevron, because this one leaves the app.
+  // tealDark clears 5.2:1 against paperSoft; paddingVertical gives the
+  // row a 42px target on top of hitSlop.
+  policyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: space[3],
+    marginTop: space[2],
+  },
+  policyLink: { ...type.meta, color: colors.tealDark, fontWeight: '700' },
 
   footer:       { alignItems: 'center', paddingVertical: space[4] },
   footerText:   { ...type.body, color: colors.inkFaint },

@@ -69,13 +69,12 @@ function ProfileScreenAuthed() {
   const logout      = useAuthStore((s) => s.logout);
   const activeRole  = useAuthStore((s) => s.active_role);
 
-  // Self-delete is a user-account action. An admin or super admin
-  // deleting themselves here would orphan their zone (and, for the last
-  // super admin, lock the whole community out of administration) — the
-  // backend's DELETE /users/me only anonymizes the linked users row and
-  // wouldn't clean up the admin/super_admin row anyway. Removing a
-  // privileged account is a deliberate super-admin action from the
-  // Zone admins screen, not a self-service button.
+  // Self-delete is a user-account action. DELETE /users/me now removes
+  // the linked admin / super_admin / rider rows too (it has to — that is
+  // what frees the phone number), so a zone admin tapping this would
+  // silently give up their zone. Removing a privileged account stays a
+  // deliberate super-admin action from the Zone admins screen. The
+  // backend refuses to delete the last active super admin regardless.
   const canDeleteAccount = activeRole === 'user' || activeRole == null;
 
   const [loading, setLoading]     = useState(true);
@@ -197,7 +196,12 @@ function ProfileScreenAuthed() {
   const handleDeleteAccount = () => {
     Alert.alert(
       'Delete account?',
-      'This anonymizes your personal information and prevents sign-in. Your poll history and donations stay for community records but your name, phone, and address are permanently removed.',
+      'Your account and personal details — name, phone number, address, profile '
+        + 'and chat messages — are permanently removed. Nothing is kept on hold, '
+        + 'and your number becomes free to register again.\n\n'
+        + "The community's records of what happened stay: your past votes still "
+        + 'count towards those nights, and verified donations remain in the books. '
+        + 'They no longer carry your name.',
       [
         { text: 'Cancel', style: 'cancel' },
         {

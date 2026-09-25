@@ -385,8 +385,8 @@ const linkUserToAdmin = async (req, res, next) => {
 // substring) or PHONE (substring; non-digit characters in the query
 // are stripped so "+91 96327 16392" and "9632716392" both match).
 //
-// Standard pagination envelope (page/limit/total). Soft-deleted rows
-// are excluded. Each row includes `existing_roles` so the frontend can
+// Standard pagination envelope (page/limit/total). Each row includes
+// `existing_roles` so the frontend can
 // decide whether promoting to admin/super_admin is still available.
 // ---------------------------------------------------------------------------
 const searchUsers = async (req, res, next) => {
@@ -417,10 +417,7 @@ const searchUsers = async (req, res, next) => {
     }
 
     const { count, rows } = await User.findAndCountAll({
-      where: {
-        status: { [Op.ne]: 'deleted' },
-        [Op.or]: orClauses,
-      },
+      where: { [Op.or]: orClauses },
       include: [buildLocationInclude()],
       order: [['name', 'ASC']],
       limit,

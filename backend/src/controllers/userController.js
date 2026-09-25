@@ -1,13 +1,11 @@
 'use strict';
 
-const bcrypt = require('bcryptjs');
-const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const { buildLocationInclude, resolveZoneFromLoaded } = require('../utils/zoneScope');
-const logger = require('../utils/logger');
+const { eraseUserAccount } = require('../services/accountDeletionService');
 
-const { User, Location, ProfileEditRequest, Admin, SuperAdmin, Rider } = db;
+const { User, Location, ProfileEditRequest } = db;
 
 // ---------------------------------------------------------------------------
 // Fields the user is allowed to change via the profile-edit-request flow.
@@ -30,13 +28,10 @@ const listUsers = async (req, res, next) => {
     const { status } = req.query;
     const { role, zone_location_id } = req.auth;
 
+    // No exclusion clause needed: a deleted account has no users row at
+    // all, so every row here belongs to a member who actually exists.
     const where = {};
-    if (status) {
-      where.status = status;
-    } else {
-      // Never surface soft-deleted rows in the default list.
-      where.status = { [Op.ne]: 'deleted' };
-    }
+    if (status) where.status = status;
 
     const users = await User.findAll({
       where,
@@ -73,7 +68,7 @@ const listUsers = async (req, res, next) => {
 // Body: { status: 'approved' | 'rejected' }
 //
 // Admins are scoped to users in their own zone; super_admins may act on
-// anyone. Refuses to touch soft-deleted rows.
+// anyone.
 // ---------------------------------------------------------------------------
 const updateUserStatus = async (req, res, next) => {
   try {
@@ -92,7 +87,7 @@ const updateUserStatus = async (req, res, next) => {
       include: [buildLocationInclude()],
     });
 
-    if (!user || user.status === 'deleted') {
+    if (!user) {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
 
@@ -133,7 +128,7 @@ const getMe = async (req, res, next) => {
       include: [buildLocationInclude()],
     });
 
-    if (!user || user.status === 'deleted') {
+    if (!user) {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
 
@@ -318,8 +313,10 @@ const reviewProfileEditRequest = async (req, res, next) => {
     }
 
     if (decision === 'approved') {
+      // The request itself is cascade-deleted with the user, so a miss
+      // here means a genuinely unexpected state rather than an erasure.
       const user = await User.findByPk(request.user_id, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!user || user.status === 'deleted') {
+      if (!user) {
         await t.rollback();
         return error(res, { statusCode: 404, message: 'User no longer exists' });
       }
@@ -359,101 +356,30 @@ const reviewProfileEditRequest = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// Shared account soft-delete + PII anonymization.
+// Account deletion.
 //
-// Referential integrity is preserved (poll_responses, donations, feedback,
-// chat messages all keep the FK). Personal data is scrubbed so a deleted
-// account cannot be re-identified. Any linked admin / super_admin / rider
-// rows are also unlinked and deactivated so the deleted person can't log
-// back in through a parallel role.
+// The mechanics live in services/accountDeletionService.js — that file
+// documents what happens to every affected table and why. These two
+// handlers only translate its result into HTTP.
 // ---------------------------------------------------------------------------
-const softDeleteUser = async (userId) => {
-  const t = await db.sequelize.transaction();
-  try {
-    const user = await User.scope('withPassword').findByPk(userId, {
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
-    if (!user) {
-      await t.rollback();
-      return { notFound: true };
-    }
-    if (user.status === 'deleted') {
-      await t.rollback();
-      return { alreadyDeleted: true };
-    }
+const LAST_SUPER_ADMIN_MESSAGE =
+  'You are the only active super admin. Promote another super admin first — '
+  + 'deleting this account now would leave the community with no administrator.';
 
-    // The phone column has a UNIQUE index, so the placeholder must also be
-    // unique. Prefix with DEL- and stamp the id + a timestamp.
-    const anonymizedPhone = `DEL-${user.id.slice(0, 8)}-${Date.now()}`.slice(0, 15);
-
-    user.name = 'Deleted User';
-    user.phone = anonymizedPhone;
-    user.address = 'DELETED';
-    user.fcm_token = null;
-    user.profile_picture = null;
-    user.status = 'deleted';
-    // Overwrite the password so no leaked hash is ever useful.
-    user.password = await bcrypt.hash(`deleted-${user.id}-${Date.now()}`, 10);
-
-    // Skip model validators + hooks: the anonymized values are intentionally
-    // shaped to break the "valid Indian mobile / real user" invariants
-    // those validators enforce. Without this, `user.save()` throws a
-    // Sequelize ValidationError on the phone regex and the delete silently
-    // fails with a generic 500.
-    await user.save({ transaction: t, validate: false, hooks: false });
-
-    // Deactivate any linked privileged accounts so the person cannot log
-    // back in via admin/super_admin/rider role.
-    await Admin.update(
-      { user_id: null, is_active: false },
-      { where: { user_id: userId }, transaction: t }
-    );
-    await SuperAdmin.update(
-      { user_id: null, is_active: false },
-      { where: { user_id: userId }, transaction: t }
-    );
-    if (Rider) {
-      await Rider.update(
-        { user_id: null, is_active: false },
-        { where: { user_id: userId }, transaction: t }
-      );
-    }
-
-    await t.commit();
-    logger.info(`[users] Account soft-deleted and anonymized: ${userId} (phone→${anonymizedPhone})`);
-    return { deleted: true };
-  } catch (err) {
-    // Best-effort rollback; ignore double-rollback errors if the txn
-    // was already released (e.g. connection reset mid-save).
-    try { await t.rollback(); } catch (_) { /* noop */ }
-    logger.error(`[users] softDeleteUser(${userId}) failed: ${err.name}: ${err.message}`);
-    throw err;
-  }
-};
-
-// ---------------------------------------------------------------------------
-// DELETE /api/users/me
-// Access: any authenticated user (via requireUserAccess).
-//
-// Anonymizes the calling user's own account. Poll history, donations, chat
-// messages remain (with the anonymized display name) so aggregate stats
-// and audit trails stay consistent.
-// ---------------------------------------------------------------------------
 const deleteMyAccount = async (req, res, next) => {
   try {
-    const result = await softDeleteUser(req.actingUserId);
+    const result = await eraseUserAccount(req.actingUserId);
 
     if (result.notFound) {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
-    if (result.alreadyDeleted) {
-      return error(res, { statusCode: 410, message: 'This account is already deleted' });
+    if (result.blocked === 'LAST_SUPER_ADMIN') {
+      return error(res, { statusCode: 409, message: LAST_SUPER_ADMIN_MESSAGE });
     }
 
     return success(res, {
       statusCode: 200,
-      message: 'Account deleted. You have been logged out.',
+      message: 'Your account and personal details have been deleted.',
     });
   } catch (err) {
     next(err);
@@ -462,34 +388,32 @@ const deleteMyAccount = async (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // DELETE /api/users/:id
-// Access: super_admin only.
-//
-// Admin-initiated soft delete. Same anonymization as self-delete.
+// Access: super_admin only. Same erasure as self-delete.
 // ---------------------------------------------------------------------------
 const deleteUserById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    if (id === req.auth.id) {
+    if (id === req.auth.id || id === req.auth.user_id) {
       return error(res, {
         statusCode: 400,
         message: 'Use DELETE /api/users/me to delete your own account',
       });
     }
 
-    const result = await softDeleteUser(id);
+    const result = await eraseUserAccount(id);
 
     if (result.notFound) {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
-    if (result.alreadyDeleted) {
-      return error(res, { statusCode: 410, message: 'This account is already deleted' });
+    if (result.blocked === 'LAST_SUPER_ADMIN') {
+      return error(res, { statusCode: 409, message: LAST_SUPER_ADMIN_MESSAGE });
     }
 
     return success(res, {
       statusCode: 200,
-      message: 'User account deleted and anonymized',
-      data: { id },
+      message: 'Account deleted.',
+      data: { id, removed: result.removed },
     });
   } catch (err) {
     next(err);
@@ -521,14 +445,11 @@ const setPushToken = async (req, res, next) => {
     }
 
     const user = await User.findByPk(req.actingUserId);
-    if (!user || user.status === 'deleted') {
+    if (!user) {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
 
     user.fcm_token = token || null;
-    // Anonymized rows fail phone validation, so we save without validators.
-    // For a normal token save, `validate: true` is fine — the anonymization
-    // path is inside softDeleteUser, not here.
     await user.save({ hooks: false });
 
     return success(res, {

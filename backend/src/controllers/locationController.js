@@ -427,16 +427,10 @@ const deleteAddress = async (req, res, next) => {
       });
     }
 
-    // Guard: block if active users are still linked here.
-    // status='deleted' users are anonymized soft-deletes elsewhere in
-    // the app — we ignore them since they're not going to log in and
-    // wouldn't notice the missing PG.
-    const linkedUserCount = await User.count({
-      where: {
-        location_id: row.id,
-        status: { [Op.ne]: 'deleted' },
-      },
-    });
+    // Guard: block if users are still linked here. Deleted accounts
+    // leave no users row behind, so this count is exactly the set of
+    // real residents who would be stranded on a hidden PG.
+    const linkedUserCount = await User.count({ where: { location_id: row.id } });
     if (linkedUserCount > 0 && !force) {
       return error(res, {
         statusCode: 409,

@@ -17,9 +17,13 @@ module.exports = (sequelize, DataTypes) => {
           key: 'id',
         },
       },
+      // Nullable on purpose. When a member erases their account, their
+      // past votes stay and this becomes NULL — the `zone` snapshot below
+      // is what every count actually reads, so the kitchen's historical
+      // numbers are unaffected by the person disappearing.
       user_id: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
         references: {
           model: 'users',
           key: 'id',
