@@ -1,7 +1,11 @@
 'use strict';
 
 const { success, error } = require('../utils/response');
-const { getPrayerTimings, getTodayISTString } = require('../services/prayerService');
+const {
+  getPrayerTimings,
+  getTodayISTString,
+  warmTomorrow,
+} = require('../services/prayerService');
 
 // ---------------------------------------------------------------------------
 // GET /api/prayers
@@ -26,6 +30,11 @@ const { getPrayerTimings, getTodayISTString } = require('../services/prayerServi
 const getTodayPrayers = async (req, res, next) => {
   try {
     const record = await getPrayerTimings();
+
+    // Warm tomorrow in the background so the first request after
+    // midnight isn't the one paying for (and potentially failing) a
+    // live upstream call. Fire-and-forget — never blocks this response.
+    warmTomorrow();
 
     return success(res, {
       statusCode: 200,

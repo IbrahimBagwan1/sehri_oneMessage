@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,15 +7,17 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
-  Dimensions,
-  AppState,
+  Modal,
+  Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useIsFocused, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
 import { prayersApi } from '../../api/prayers';
 import { pollsApi } from '../../api/polls';
+import PrayerWidget from '../../components/prayer/PrayerWidget';
 import {
   Avatar,
   Button,
@@ -42,333 +44,37 @@ const PHASE = {
 };
 
 /**
- * Canonical order of the ribbon. Tahajjud + Imsak sit at the start
- * during Ramadan because they matter for the community's rhythm; the
- * six daily prayers follow in their natural time order.
+ * NAMING — this is a Bangalore community app whose vocabulary is Urdu-
+ * inflected throughout (Sehri, Dua, Imsak, Tahajjud), so the namaz names
+ * follow South Asian usage rather than Gulf transliteration:
+ *   • "namaz", not "prayer"
+ *   • "Zuhr" (ظہر), not "Dhuhr" — Dhuhr is the Arabic-transliterated form
+ *     used in Gulf/Western apps; Indian Muslims say Zuhr.
+ * The Arabic script is shown alongside because Amiri is already loaded
+ * app-wide (see app/_layout.tsx) for the Qur'an and Dua screens.
+ *
+ * NOTE: `t.Dhuhr` etc. elsewhere in this file are AlAdhan API FIELD names
+ * coming off the backend — those are wire format and must not be renamed.
  */
-const PRAYER_TIMELINE = [
-  { key: 'tahajjud', label: 'Tahajjud', extended: true  },
-  { key: 'imsak',    label: 'Imsak',    extended: true  },
-  { key: 'fajr',     label: 'Fajr',     extended: false },
-  { key: 'sunrise',  label: 'Sunrise',  extended: false },
-  { key: 'dhuhr',    label: 'Dhuhr',    extended: false },
-  { key: 'asr',      label: 'Asr',      extended: false },
-  { key: 'maghrib',  label: 'Maghrib',  extended: false },
-  { key: 'isha',     label: 'Isha',     extended: false },
-];
-
 /**
- * Ribbon nodes that are NOT obligatory prayers. They stay on the
- * timeline because the community needs them, but they can never be the
- * "current prayer" and the caption stops them being read as one:
- *   • Sunrise — the moment Fajr's window closes
- *   • Imsak   — when the fast begins in Ramadan
- *   • Tahajjud — voluntary night prayer
+ * The roles a signed-in person can hold, and how each is presented in
+ * the switcher. Keyed by the role string the backend issues.
+ *
+ * `user` is included so the sheet can show which role you're currently
+ * in, and so someone who switched INTO this screen from an admin role
+ * still sees "Member" marked as active.
  */
-const NON_PRAYER_NOTE = {
-  sunrise:  'Fajr ends',
-  imsak:    'fast begins',
-  tahajjud: 'voluntary',
+const ROLE_META = {
+  user:        { label: 'Member',      icon: 'person-outline',           blurb: 'Vote, track delivery, and chat' },
+  rider:       { label: 'Rider',       icon: 'bicycle-outline',          blurb: "Today's delivery route and stops" },
+  admin:       { label: 'Zone admin',  icon: 'shield-outline',           blurb: 'Approve members and see your zone' },
+  super_admin: { label: 'Super admin', icon: 'key-outline',              blurb: 'Full community administration' },
 };
 
-// -------------------------------------------------------------------------
-// Pure helpers — deterministic, testable
-//
-// IMPORTANT — timezone strategy:
-// Prayer times are IST wall-clock strings ("05:30") produced by the
-// backend prayerService. The countdown, next-prayer picker, and
-// isPast checks must all reason in IST regardless of the device's
-// local timezone (a traveler in Dubai on an IST community app is a
-// real user segment). We therefore:
-//   1. read "now" as IST wall-clock components via Intl.DateTimeFormat
-//      (matches the safe pattern in backend/utils/pollPhase.js — plain
-//      `toLocaleString(..., { hour12: false })` returns "24" at
-//      midnight on some Node/V8 versions),
-//   2. anchor every prayer's clock time to TODAY's IST calendar date,
-//   3. convert that IST wall-clock instant into a real epoch-based Date
-//      by subtracting the fixed +05:30 IST offset (IST has no DST, so
-//      this is exact),
-//   4. compare using .getTime(), which is UTC-epoch and therefore
-//      device-timezone-independent.
-// -------------------------------------------------------------------------
-
-const IST_TZ = 'Asia/Kolkata';
-const IST_OFFSET_MIN = 5 * 60 + 30;   // +05:30, fixed year-round
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Parse "HH:MM" into { h, m } with range validation. */
-const parseHM = (t) => {
-  if (typeof t !== 'string') return null;
-  const [hs, ms] = t.split(':');
-  const h = Number.parseInt(hs, 10);
-  const m = Number.parseInt(ms, 10);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return { h, m };
-};
-
-/**
- * Read the current IST wall clock as { y, m, d, h, min } — device-tz-safe.
- * `Intl.DateTimeFormat({ hour12: false }).formatToParts()` reliably returns
- * 0–23 across supported Node/RN versions; we still `% 24` the hour as a
- * defense against the historical "24 at midnight" quirk.
- */
-const readIST = () => {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: IST_TZ,
-    year:   'numeric',
-    month:  '2-digit',
-    day:    '2-digit',
-    hour:   '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-  const map: Record<string, string> = {};
-  for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value;
-  return {
-    y:   Number.parseInt(map.year, 10),
-    m:   Number.parseInt(map.month, 10),
-    d:   Number.parseInt(map.day, 10),
-    h:   Number.parseInt(map.hour, 10) % 24,
-    min: Number.parseInt(map.minute, 10),
-  };
-};
-
-/**
- * Convert IST wall-clock components to an epoch-anchored Date instant.
- * IST is fixed +05:30 (no DST), so `Date.UTC(y, m-1, d, h-5, min-30)`
- * yields the exact UTC instant matching that IST moment.
- */
-const istWallClockToDate = (y: number, m: number, d: number, h: number, min: number) =>
-  new Date(Date.UTC(y, m - 1, d, h, min) - IST_OFFSET_MIN * 60 * 1000);
-
-/** Format an "HH:MM" IST clock string as "h:mm am/pm". */
-const format12h = (t) => {
-  const hm = parseHM(t);
-  if (!hm) return '—';
-  const suffix = hm.h >= 12 ? 'pm' : 'am';
-  const h12 = ((hm.h + 11) % 12) + 1;
-  return `${h12}:${String(hm.m).padStart(2, '0')} ${suffix}`;
-};
-
-/**
- * Format a Date as an IST wall clock time ("4:30 pm"). Used for the
- * window start/end labels, which are real Date instants rather than the
- * raw "HH:MM" strings format12h takes.
- */
-const formatClock = (date) => {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
-  return date
-    .toLocaleTimeString('en-IN', {
-      timeZone: IST_TZ,
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
-    .toLowerCase();
-};
-
+// Gregorian date line for the hero. All namaz-time logic now lives in
+// components/prayer/prayerTimes.js and is consumed by PrayerWidget.
 const gregorianLine = () =>
   new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' });
-
-/**
- * Turn the AlAdhan-shaped response into the ordered ribbon rows.
- * Each row: { key, label, time (raw IST string), at (Date), isPast, extended }.
- */
-const buildTimeline = (data) => {
-  if (!data) return [];
-  const t = data.timings || {};
-  const source = {
-    tahajjud: data.tahajjud_time,
-    imsak:    data.imsak_time || t.Imsak,
-    fajr:     t.Fajr,
-    sunrise:  t.Sunrise,
-    dhuhr:    t.Dhuhr,
-    asr:      t.Asr,
-    maghrib:  t.Maghrib,
-    isha:     t.Isha,
-  };
-
-  const nowIST = readIST();
-  const nowMs  = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, nowIST.h, nowIST.min).getTime();
-
-  return PRAYER_TIMELINE
-    .map((row) => {
-      const time = source[row.key];
-      const hm = parseHM(time);
-      if (!hm) return null;
-      let at = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, hm.h, hm.m);
-      // Tahajjud sits in the last third of the night (~2 AM IST). Once
-      // today's IST clock time for it has passed, the *next* Tahajjud is
-      // tomorrow's — roll the anchor forward one full day so the
-      // countdown and ribbon stay meaningful.
-      if (row.key === 'tahajjud' && at.getTime() < nowMs) {
-        at = new Date(at.getTime() + DAY_MS);
-      }
-      return { ...row, time, at, isPast: at.getTime() < nowMs };
-    })
-    .filter(Boolean);
-};
-
-/**
- * Build the five obligatory prayer WINDOWS for the current moment.
- *
- * A namaz is valid for a span of time, not an instant — the window for
- * each prayer runs until the next one begins. Getting this right means
- * modelling three things the naive "list of times" view gets wrong:
- *
- *   1. SUNRISE ENDS FAJR. Sunrise is not a prayer; it is the moment
- *      Fajr's window closes. Treating it as a prayer would tell a user
- *      at 7 AM that "Sunrise" is their current namaz, which is wrong.
- *
- *   2. SUNRISE → DHUHR IS A GAP. There is no obligatory prayer in that
- *      stretch. We surface it honestly as "no prayer right now, Dhuhr
- *      is next" rather than pretending one is active.
- *
- *   3. ISHA CROSSES MIDNIGHT. Its window ends at the NEXT day's Fajr,
- *      so at 1 AM the current prayer is Isha — anchored to yesterday.
- *
- * To cover all 24 hours without gaps we build a chain spanning
- * yesterday's Isha through tomorrow's Fajr, then pick whichever window
- * brackets "now".
- *
- * Tomorrow's / yesterday's Fajr are approximated as today's Fajr ±24h.
- * Real Fajr drifts about a minute a day, so the boundary is accurate to
- * within ~60 s — immaterial for a countdown, and it avoids a second API
- * call for adjacent dates.
- */
-const buildPrayerWindows = (data) => {
-  if (!data) return [];
-  const t = data.timings || {};
-
-  const nowIST = readIST();
-  const at = (timeStr, dayOffset = 0) => {
-    const hm = parseHM(timeStr);
-    if (!hm) return null;
-    const d = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, hm.h, hm.m);
-    return dayOffset ? new Date(d.getTime() + dayOffset * DAY_MS) : d;
-  };
-
-  const fajr    = at(t.Fajr);
-  const sunrise = at(t.Sunrise);
-  const dhuhr   = at(t.Dhuhr);
-  const asr     = at(t.Asr);
-  const maghrib = at(t.Maghrib);
-  const isha    = at(t.Isha);
-
-  // Without Fajr and Dhuhr we can't anchor anything meaningful.
-  if (!fajr || !dhuhr) return [];
-
-  const fajrTomorrow  = new Date(fajr.getTime() + DAY_MS);
-  const ishaYesterday = isha ? new Date(isha.getTime() - DAY_MS) : null;
-
-  const windows = [];
-  const push = (key, label, start, end, extra = {}) => {
-    if (start && end && end.getTime() > start.getTime()) {
-      windows.push({ key, label, start, end, ...extra });
-    }
-  };
-
-  // Yesterday's Isha still running into this morning's Fajr.
-  push('isha', 'Isha', ishaYesterday, fajr);
-  // Fajr closes at sunrise, not at Dhuhr.
-  push('fajr', 'Fajr', fajr, sunrise || dhuhr);
-  // The no-obligatory-prayer stretch after sunrise.
-  push('gap', 'Dhuhr', sunrise, dhuhr, { isGap: true });
-  push('dhuhr',   'Dhuhr',   dhuhr,   asr || maghrib);
-  push('asr',     'Asr',     asr,     maghrib || isha);
-  push('maghrib', 'Maghrib', maghrib, isha);
-  // Tonight's Isha runs to tomorrow's Fajr.
-  push('isha', 'Isha', isha, fajrTomorrow);
-
-  return windows;
-};
-
-/**
- * Which window are we inside right now?
- *
- * Returns { key, label, start, end, isGap, elapsedMs, totalMs } or null
- * if the data was too incomplete to build a chain. The chain covers a
- * continuous 48-hour span, so under normal data a match always exists.
- */
-const findCurrentWindow = (windows) => {
-  if (!windows || windows.length === 0) return null;
-
-  // Window boundaries are already epoch-anchored Dates (istWallClockToDate
-  // converts IST wall clock to a real UTC instant), so a plain Date.now()
-  // comparison is both correct and full-precision — no timezone maths
-  // needed at this layer.
-  const nowMs = Date.now();
-
-  const match = windows.find((w) => nowMs >= w.start.getTime() && nowMs < w.end.getTime());
-  if (!match) return null;
-
-  const totalMs   = match.end.getTime() - match.start.getTime();
-  const elapsedMs = nowMs - match.start.getTime();
-  return { ...match, elapsedMs, totalMs };
-};
-
-/**
- * Split a duration into h/m/s parts for the segmented countdown display.
- * Clamped at zero so a boundary crossing never renders negative numbers
- * in the moment before the window recomputes.
- */
-const splitDuration = (ms) => {
-  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
-  return {
-    h: Math.floor(total / 3600),
-    m: Math.floor((total % 3600) / 60),
-    s: total % 60,
-    totalSeconds: total,
-  };
-};
-
-// -------------------------------------------------------------------------
-// Live countdown hook — ticks every second so the counter visibly runs.
-//
-// A once-a-minute tick (what this used to do) makes a "time left" readout
-// look frozen, which is the whole thing the user watches. One render per
-// second is cheap for a single card, and we keep it honest by suspending
-// the interval whenever the screen isn't actually being looked at:
-//   • screen not focused (user on another tab) — useIsFocused
-//   • app backgrounded — AppState
-// On resume we recompute immediately rather than waiting a tick, so the
-// number is never stale for a second after the user returns.
-// -------------------------------------------------------------------------
-const useLiveCountdown = (targetMs, enabled = true) => {
-  const isFocused = useIsFocused();
-  const [remaining, setRemaining] = useState(() =>
-    targetMs ? Math.max(0, targetMs - Date.now()) : 0
-  );
-
-  useEffect(() => {
-    if (!targetMs || !enabled) return undefined;
-
-    const compute = () => setRemaining(Math.max(0, targetMs - Date.now()));
-    compute(); // immediate, so resuming never shows a stale value
-
-    if (!isFocused) return undefined;
-
-    let interval = setInterval(compute, 1000);
-
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        compute();
-        if (!interval) interval = setInterval(compute, 1000);
-      } else if (interval) {
-        clearInterval(interval);
-        interval = null;
-      }
-    });
-
-    return () => {
-      if (interval) clearInterval(interval);
-      sub.remove();
-    };
-  }, [targetMs, enabled, isFocused]);
-
-  return remaining;
-};
 
 // =========================================================================
 // Screen
@@ -378,6 +84,7 @@ export default function HomeScreen() {
   const user            = useAuthStore((s) => s.user);
   const isGuest         = useAuthStore((s) => s.isGuest);
   const available_roles = useAuthStore((s) => s.available_roles);
+  const active_role     = useAuthStore((s) => s.active_role);
   const switchRole      = useAuthStore((s) => s.switchRole);
 
   const [prayerData,    setPrayerData]  = useState<any>(null);
@@ -389,6 +96,22 @@ export default function HomeScreen() {
   const [submittingVote,    setSubmitting]        = useState(false);
   const [submittingSpecial, setSubmittingSpecial] = useState(false);
   const [refreshing,    setRefreshing]  = useState(false);
+  const [roleSheetOpen, setRoleSheetOpen] = useState(false);
+  const [switchingRole, setSwitchingRole] = useState(null);
+
+  // Roles this person can switch INTO (everything they hold except the
+  // one they're already using). Drives whether the header button renders
+  // at all — a plain member has nothing to switch to and sees nothing.
+  //
+  // Falls back to 'user' when active_role is unset: this IS the member
+  // home screen, so that's what you're in. Without the fallback a null
+  // role would leave 'user' in the switchable list and show a button
+  // whose only option is the view you're already looking at.
+  const switchableRoles = useMemo(() => {
+    const current = active_role || 'user';
+    return (available_roles || []).filter((r) => r !== current && ROLE_META[r]);
+  }, [available_roles, active_role]);
+  const canSwitchRole = !isGuest && switchableRoles.length > 0;
 
   // Full name, not just the first word — the greeting reads as a proper
   // salaam to the person. Internal whitespace is collapsed so a stray
@@ -405,7 +128,7 @@ export default function HomeScreen() {
       const res = await prayersApi.getToday();
       if (res.success) setPrayerData(res.data);
     } catch {
-      setPrayerErr("Couldn't load today's prayer times.");
+      setPrayerErr("Couldn't load today's namaz times.");
     } finally {
       setLoadingP(false);
     }
@@ -496,39 +219,21 @@ export default function HomeScreen() {
   };
 
   const handleSwitch = async (role) => {
+    if (switchingRole) return; // ignore double-taps mid-switch
+    setSwitchingRole(role);
     try {
       const result = await switchRole(role);
+      setRoleSheetOpen(false);
       if (result.isRider) return router.push('/(rider)/map');
       if (role === 'super_admin') return router.replace('/super-admin/superadmin-dashboard');
       if (role === 'admin') return router.replace('/(admin)');
+      // Switching back to 'user' keeps us on this screen — just close.
     } catch (err) {
       Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
+    } finally {
+      setSwitchingRole(null);
     }
   };
-
-  // ---- Derived ---------------------------------------------------------
-  const timeline = useMemo(() => buildTimeline(prayerData), [prayerData]);
-  const windows  = useMemo(() => buildPrayerWindows(prayerData), [prayerData]);
-
-  // `windowTick` forces the current-window lookup to re-run when a
-  // boundary is crossed. Without it the card would keep counting down
-  // past zero into a window that already ended, because findCurrentWindow
-  // is a useMemo and nothing else would invalidate it.
-  const [windowTick, setWindowTick] = useState(0);
-  const current = useMemo(
-    () => findCurrentWindow(windows),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [windows, windowTick]
-  );
-
-  const remainingMs = useLiveCountdown(current?.end?.getTime());
-
-  // Roll over to the next window the moment this one expires.
-  useEffect(() => {
-    if (!current?.end) return;
-    if (remainingMs > 0) return;
-    setWindowTick((n) => n + 1);
-  }, [remainingMs, current?.end]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -544,12 +249,30 @@ export default function HomeScreen() {
               onPress={() => router.push('/(auth)/login')}
             />
           ) : (
-            <Avatar
-              name={user?.name}
-              size={38}
-              onPress={() => router.push('/profile')}
-              accessibilityLabel="Open profile"
-            />
+            <View style={styles.headerActions}>
+              {/* Role switcher — only rendered when this person actually
+                  holds another role, so an ordinary member never sees it.
+                  Sits beside the avatar rather than in a band under the
+                  hero: it's an account-level action, same family as the
+                  profile button, and it no longer costs a row of vertical
+                  space on the busiest screen in the app. */}
+              {canSwitchRole && (
+                <Pressable
+                  onPress={() => setRoleSheetOpen(true)}
+                  style={({ pressed }) => [styles.switchBtn, pressed && styles.switchBtnPressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Switch role. You are signed in as ${ROLE_META[active_role]?.label || 'member'}.`}
+                >
+                  <Ionicons name="swap-horizontal" size={19} color={colors.tealDark} />
+                </Pressable>
+              )}
+              <Avatar
+                name={user?.name}
+                size={38}
+                onPress={() => router.push('/profile')}
+                accessibilityLabel="Open profile"
+              />
+            </View>
           )
         }
       />
@@ -576,45 +299,14 @@ export default function HomeScreen() {
           }
         />
 
-        {available_roles.length > 1 && (
-          <View style={styles.roleRow}>
-            <Text style={styles.roleLabel}>Switch to</Text>
-            <View style={styles.roleChips}>
-              {available_roles.includes('rider') && (
-                <Chip label="Rider" tone="teal" icon="bicycle-outline" onPress={() => handleSwitch('rider')} />
-              )}
-              {available_roles.includes('admin') && (
-                <Chip label="Zone admin" tone="teal" icon="shield-outline" onPress={() => handleSwitch('admin')} />
-              )}
-              {available_roles.includes('super_admin') && (
-                <Chip label="Super admin" tone="teal" icon="key-outline" onPress={() => handleSwitch('super_admin')} />
-              )}
-            </View>
-          </View>
-        )}
-
         {/* -------------------- Prayer timeline card -------------------- */}
         <View style={styles.section}>
-          <SectionHeader
-            title="Prayer times"
-            subtitle={prayerData?.city ? `${prayerData.city}, ${prayerData.country || 'India'}` : undefined}
-            ornament="star"
+          <PrayerWidget
+            data={prayerData}
+            loading={loadingPrayer}
+            error={prayerError}
+            onRetry={loadPrayer}
           />
-
-          {loadingPrayer ? (
-            <Card><LoadingState message="Loading today's prayer times…" compact /></Card>
-          ) : prayerError ? (
-            <Card><ErrorState message={prayerError} onRetry={loadPrayer} /></Card>
-          ) : timeline.length === 0 ? (
-            <Card><ErrorState message="No prayer times available right now." onRetry={loadPrayer} /></Card>
-          ) : (
-            <PrayerCard
-              timeline={timeline}
-              current={current}
-              remainingMs={remainingMs}
-              isFallback={prayerData?.is_from_api === false}
-            />
-          )}
         </View>
 
         {/* -------------------- Sehri poll card -------------------- */}
@@ -642,219 +334,99 @@ export default function HomeScreen() {
           )}
         </View>
       </ScrollView>
+
+      <RoleSwitchSheet
+        visible={roleSheetOpen}
+        onClose={() => setRoleSheetOpen(false)}
+        activeRole={active_role}
+        roles={switchableRoles}
+        switching={switchingRole}
+        onPick={handleSwitch}
+      />
     </SafeAreaView>
   );
 }
 
 // -------------------------------------------------------------------------
-// PrayerCard — hero countdown + horizontal ribbon timeline
+// RoleSwitchSheet — pick which hat you're wearing.
+//
+// A bottom sheet rather than inline chips: the number of roles varies
+// per person (1–3), a sheet scales to any of them without reflowing the
+// header, and it matches the pattern this app already uses everywhere
+// else for "choose one of these" (profile pickers, PG actions, voter
+// drill-downs).
 // -------------------------------------------------------------------------
-function PrayerCard({ timeline, current, remainingMs, isFallback }) {
-  const scrollRef = useRef(null);
-  const nodePositions = useRef({});
-  const screenWidth = Dimensions.get('window').width;
-
-  // The ribbon node to bring into view: the prayer currently running, or
-  // during the post-sunrise gap the one coming up next.
-  const focusKey = current?.isGap ? 'dhuhr' : current?.key;
-
-  useEffect(() => {
-    if (!focusKey) return;
-    const t = setTimeout(() => {
-      const x = nodePositions.current[focusKey];
-      if (x != null) {
-        const targetX = Math.max(0, x - screenWidth * 0.28);
-        scrollRef.current?.scrollTo({ x: targetX, animated: true });
-      }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [focusKey, screenWidth]);
-
-  const { h, m, s } = splitDuration(remainingMs);
-  // Progress through the current window, 0–1. During the gap this shows
-  // how close Dhuhr is rather than how much of a prayer is left.
-  const progress = current?.totalMs
-    ? Math.min(1, Math.max(0, current.elapsedMs / current.totalMs))
-    : 0;
-
-  // Under five minutes left is the "hurry" state — the window is about
-  // to close and that deserves visual weight rather than a quiet number.
-  const isUrgent = !current?.isGap && remainingMs > 0 && remainingMs < 5 * 60_000;
+function RoleSwitchSheet({ visible, onClose, activeRole, roles, switching, onPick }) {
+  const activeMeta = ROLE_META[activeRole];
 
   return (
-    <Card padding={false}>
-      {/* ---- Countdown hero -------------------------------------------- */}
-      <View style={[styles.hero, isUrgent && styles.heroUrgent]}>
-        <View style={styles.heroTopRow}>
-          <View style={styles.heroEyebrowRow}>
-            <RubStar size={11} />
-            <Text style={[styles.heroEyebrow, isUrgent && styles.heroEyebrowUrgent]}>
-              {current?.isGap ? 'Up next' : 'Current prayer'}
-            </Text>
-          </View>
-          {!current?.isGap && current ? (
-            <View style={[styles.liveBadge, isUrgent && styles.liveBadgeUrgent]}>
-              <View style={[styles.livePulse, isUrgent && styles.livePulseUrgent]} />
-              <Text style={[styles.liveBadgeText, isUrgent && styles.liveBadgeTextUrgent]}>
-                In progress
-              </Text>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={() => (switching ? null : onClose())}
+    >
+      <Pressable style={styles.roleOverlay} onPress={() => (switching ? null : onClose())}>
+        <Pressable style={styles.roleSheet} onPress={() => { /* absorb */ }}>
+          <View style={styles.roleHandle} />
+
+          <View style={styles.roleHead}>
+            <View style={styles.roleOrnamentRow}>
+              <View style={styles.roleOrnamentRule} />
+              <RubStar size={11} />
+              <View style={styles.roleOrnamentRule} />
             </View>
-          ) : null}
-        </View>
+            <Text style={styles.roleTitle}>Switch role</Text>
+            {activeMeta ? (
+              <Text style={styles.roleSubtitle}>
+                You&apos;re currently in <Text style={styles.roleSubtitleStrong}>{activeMeta.label}</Text> view
+              </Text>
+            ) : null}
+          </View>
 
-        <Text style={styles.heroPrayerName}>{current?.label || '—'}</Text>
-
-        {/* Segmented live counter — ticks every second */}
-        <Text style={[styles.heroCountLabel, isUrgent && styles.heroCountLabelUrgent]}>
-          {current?.isGap ? 'Begins in' : 'Time left'}
-        </Text>
-        <View
-          style={styles.counterRow}
-          accessibilityRole="timer"
-          accessibilityLabel={
-            current
-              ? `${current.isGap ? `${current.label} begins in` : `${current.label} ends in`} ${h} hours ${m} minutes ${s} seconds`
-              : 'Prayer times unavailable'
-          }
-        >
-          {h > 0 && (
-            <>
-              <CounterSegment value={h} unit="hr" urgent={isUrgent} />
-              <Text style={[styles.counterColon, isUrgent && styles.counterColonUrgent]}>:</Text>
-            </>
-          )}
-          <CounterSegment value={m} unit="min" urgent={isUrgent} pad={h > 0} />
-          <Text style={[styles.counterColon, isUrgent && styles.counterColonUrgent]}>:</Text>
-          <CounterSegment value={s} unit="sec" urgent={isUrgent} pad />
-        </View>
-
-        {/* Window progress — how far through this prayer's time we are */}
-        {current ? (
-          <View style={styles.progressWrap}>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  isUrgent && styles.progressFillUrgent,
-                  { width: `${Math.round(progress * 100)}%` },
+          {roles.map((role) => {
+            const meta = ROLE_META[role];
+            const busy = switching === role;
+            return (
+              <Pressable
+                key={role}
+                onPress={() => onPick(role)}
+                disabled={!!switching}
+                style={({ pressed }) => [
+                  styles.roleOption,
+                  pressed && !switching && styles.roleOptionPressed,
+                  !!switching && !busy && styles.roleOptionMuted,
                 ]}
-              />
-            </View>
-            <View style={styles.windowRow}>
-              <Text style={styles.windowEdge}>{formatClock(current.start)}</Text>
-              <Text style={styles.windowMid}>
-                {current.isGap ? 'no prayer due' : 'window'}
-              </Text>
-              <Text style={styles.windowEdge}>{formatClock(current.end)}</Text>
-            </View>
-          </View>
-        ) : null}
-      </View>
+                accessibilityRole="button"
+                accessibilityLabel={`Switch to ${meta.label}. ${meta.blurb}.`}
+              >
+                <View style={styles.roleOptionIcon}>
+                  <Ionicons name={meta.icon} size={19} color={colors.tealDark} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.roleOptionLabel}>{meta.label}</Text>
+                  <Text style={styles.roleOptionBlurb}>{meta.blurb}</Text>
+                </View>
+                {busy ? (
+                  <ActivityIndicator size="small" color={colors.teal} />
+                ) : (
+                  <Ionicons name="chevron-forward" size={17} color={colors.inkGhost} />
+                )}
+              </Pressable>
+            );
+          })}
 
-      {/* ---- Ornament divider ------------------------------------------ */}
-      <View style={styles.ornamentDivider}>
-        <View style={styles.ornamentRule} />
-        <RubStar size={11} />
-        <View style={styles.ornamentRule} />
-      </View>
-
-      {/* ---- Horizontal timeline --------------------------------------- */}
-      <ScrollView
-        ref={scrollRef}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.timeline}
-      >
-        {timeline.map((row, i) => {
-          // The prayer whose window is running right now gets the filled
-          // marker. During the post-sunrise gap nothing is "current", so
-          // we ring the upcoming Dhuhr instead.
-          const isCurrent = !current?.isGap && current?.key === row.key;
-          const isUpNext  = current?.isGap && row.key === 'dhuhr';
-          const isPast    = row.isPast && !isCurrent && !isUpNext;
-          const isFirst = i === 0;
-          const isLast  = i === timeline.length - 1;
-
-          const leadPastColored  = i > 0 && (timeline[i].isPast || isCurrent || isUpNext);
-          const trailPastColored = i < timeline.length - 1 && timeline[i].isPast;
-
-          return (
-            <View
-              key={row.key}
-              style={styles.node}
-              onLayout={(e) => { nodePositions.current[row.key] = e.nativeEvent.layout.x; }}
-            >
-              {/* Rail — left half + right half so each segment can be tinted */}
-              <View style={styles.rail}>
-                <View style={[
-                  styles.railSegment,
-                  isFirst && { opacity: 0 },
-                  leadPastColored ? styles.railPast : styles.railFuture,
-                ]} />
-                <View style={[
-                  styles.railSegment,
-                  isLast && { opacity: 0 },
-                  trailPastColored ? styles.railPast : styles.railFuture,
-                ]} />
-              </View>
-
-              {/* Dot */}
-              <View style={[
-                styles.dot,
-                isPast && styles.dotPast,
-                isUpNext && styles.dotNext,
-                isCurrent && styles.dotCurrent,
-              ]}>
-                {isCurrent && <View style={styles.dotCurrentInner} />}
-                {isUpNext && <View style={styles.dotInner} />}
-              </View>
-
-              {/* Label + time */}
-              <Text style={[
-                styles.nodeLabel,
-                (isCurrent || isUpNext) && styles.nodeLabelNext,
-                isPast && styles.nodeLabelPast,
-              ]} numberOfLines={1}>{row.label}</Text>
-              <Text style={[
-                styles.nodeTime,
-                (isCurrent || isUpNext) && styles.nodeTimeNext,
-                isPast && styles.nodeTimePast,
-              ]} numberOfLines={1}>{format12h(row.time)}</Text>
-
-              {/* Sunrise and the two Ramadan markers are not prayers —
-                  a one-word caption stops them reading as one on a
-                  timeline whose other nodes all are. */}
-              {NON_PRAYER_NOTE[row.key] ? (
-                <Text style={styles.nodeNote} numberOfLines={1}>{NON_PRAYER_NOTE[row.key]}</Text>
-              ) : null}
-            </View>
-          );
-        })}
-      </ScrollView>
-
-      {isFallback && (
-        <View style={styles.calcHint}>
-          <Ionicons name="calculator-outline" size={12} color={colors.inkFaint} />
-          <Text style={styles.calcHintText}>Calculated locally — the online almanac was unreachable.</Text>
-        </View>
-      )}
-    </Card>
-  );
-}
-
-/**
- * One h/m/s block of the live counter. Tabular numerals keep the digits
- * from shifting horizontally as they tick, which is what makes a running
- * counter feel steady instead of twitchy.
- */
-function CounterSegment({ value, unit, urgent, pad }) {
-  return (
-    <View style={styles.counterSegment}>
-      <Text style={[styles.counterValue, urgent && styles.counterValueUrgent]}>
-        {pad ? String(value).padStart(2, '0') : String(value)}
-      </Text>
-      <Text style={[styles.counterUnit, urgent && styles.counterUnitUrgent]}>{unit}</Text>
-    </View>
+          <Button
+            label="Cancel"
+            variant="secondary"
+            onPress={onClose}
+            disabled={!!switching}
+            fullWidth
+            style={{ marginTop: space[3] }}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -871,9 +443,9 @@ function GuestPollInvite({ onSignIn }) {
         <RubStar size={12} />
         <View style={styles.inviteOrnamentRule} />
       </View>
-      <Text style={styles.inviteTitle}>Join today's Sehri poll</Text>
+      <Text style={styles.inviteTitle}>Join today&apos;s Sehri poll</Text>
       <Text style={styles.inviteBody}>
-        Sign in to tell your zone whether you'll be having Sehri tomorrow —
+        Sign in to tell your zone whether you&apos;ll be having Sehri tomorrow —
         the kitchen prepares food for exactly the count they get from the poll.
       </Text>
       <Button
@@ -1051,9 +623,9 @@ function PollCard({ data, submittingVote, submittingSpecial, onVote, onSpecialCa
     // 3. User didn't vote at all — nothing to change.
     return (
       <Card>
-        <Text style={styles.pollHeadline}>You didn't vote today.</Text>
+        <Text style={styles.pollHeadline}>You didn&apos;t vote today.</Text>
         <Text style={styles.pollBody}>
-          Only users who voted can raise a special case. Voting reopens at 10 pm for tomorrow's Sehri.
+          Only users who voted can raise a special case. Voting reopens at 10 pm for tomorrow&apos;s Sehri.
         </Text>
       </Card>
     );
@@ -1125,8 +697,6 @@ function PollCard({ data, submittingVote, submittingSpecial, onVote, onSpecialCa
 // =========================================================================
 // Styles
 // =========================================================================
-const NODE_WIDTH = 84;
-
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.paperSoft },
   scroll: { paddingBottom: space[8] },
@@ -1136,207 +706,89 @@ const styles = StyleSheet.create({
   wordmarkDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.teal, marginRight: space[2] },
   wordmark:    { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
 
-  // Role switcher
-  roleRow:    { paddingHorizontal: space[5], paddingBottom: space[3], gap: space[2] },
-  roleLabel:  { ...type.meta, color: colors.inkFaint },
-  roleChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  // ---- Header actions (role switch + avatar) ---------------------------
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space[2] },
+  switchBtn: {
+    width: 38, height: 38, borderRadius: 19,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.tealSoft,
+    borderWidth: 1, borderColor: colors.tealBorder,
+  },
+  switchBtnPressed: { backgroundColor: colors.tealBorder },
+
+  // ---- Role switch sheet ------------------------------------------------
+  roleOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },
+  roleSheet: {
+    backgroundColor: colors.paper,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    paddingHorizontal: space[5],
+    paddingTop: space[3],
+    paddingBottom: space[5],
+  },
+  roleHandle: {
+    alignSelf: 'center',
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: colors.ruleSoft,
+    marginBottom: space[3],
+  },
+  roleHead: { alignItems: 'center', marginBottom: space[4] },
+  roleOrnamentRow: {
+    flexDirection: 'row', alignItems: 'center', gap: space[2],
+    width: 130, marginBottom: space[1],
+  },
+  roleOrnamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
+  roleTitle:    { ...type.h2, color: colors.ink },
+  roleSubtitle: { ...type.meta, color: colors.inkMuted, marginTop: 3 },
+  roleSubtitleStrong: { fontWeight: '800', color: colors.tealDark },
+
+  roleOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    paddingVertical: space[3],
+    paddingHorizontal: space[3],
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.ruleSoft,
+    marginBottom: space[2],
+  },
+  roleOptionPressed: { backgroundColor: colors.tealSoft, borderColor: colors.tealBorder },
+  roleOptionMuted:   { opacity: 0.45 },
+  roleOptionIcon: {
+    width: 38, height: 38, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.tealSoft,
+    borderWidth: 1, borderColor: colors.tealBorder,
+  },
+  roleOptionLabel: { ...type.bodyStrong, color: colors.ink },
+  roleOptionBlurb: { ...type.micro, color: colors.inkFaint, marginTop: 2 },
 
   // Section wrapper
   section:    { paddingHorizontal: space[4], paddingTop: space[4] },
 
   // ---- Prayer HERO ------------------------------------------------------
-  hero: {
-    paddingHorizontal: space[5],
-    paddingTop: space[4],
-    paddingBottom: space[4],
-    backgroundColor: colors.tealSoft,
-    borderBottomWidth: 0,
-  },
   // Urgent = under 5 minutes of the window left. Warm amber wash rather
   // than red: the window closing is a nudge, not an error.
-  heroUrgent:      { backgroundColor: colors.warnSoft },
-
-  heroTopRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  heroEyebrowRow:  { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  heroEyebrow:     { ...type.micro, color: colors.tealDark, fontWeight: '700' },
-  heroEyebrowUrgent: { color: colors.warn },
-  heroPrayerName:  { fontSize: 30, fontWeight: '800', color: colors.ink, letterSpacing: -0.5, marginBottom: space[3] },
-
-  liveBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: colors.paper,
-    borderWidth: 1, borderColor: colors.tealBorder,
-    borderRadius: radius.pill,
-    paddingHorizontal: space[2], paddingVertical: 3,
-  },
-  liveBadgeUrgent:     { borderColor: colors.warn },
-  livePulse:           { width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.teal },
-  livePulseUrgent:     { backgroundColor: colors.warn },
-  liveBadgeText:       { ...type.micro, color: colors.tealDark, fontWeight: '700' },
-  liveBadgeTextUrgent: { color: colors.warn },
-
-  heroCountLabel:       { ...type.micro, color: colors.inkFaint, fontWeight: '700', marginBottom: 2 },
-  heroCountLabelUrgent: { color: colors.warn },
 
   // Segmented running counter
-  counterRow:     { flexDirection: 'row', alignItems: 'flex-end' },
-  counterSegment: { alignItems: 'center', minWidth: 46 },
-  counterValue: {
-    fontSize: 38,
-    fontWeight: '800',
-    color: colors.tealDark,
-    letterSpacing: -1,
-    // Tabular numerals stop the digits jittering sideways each tick.
-    fontVariant: ['tabular-nums'],
-    lineHeight: 42,
-  },
-  counterValueUrgent: { color: colors.warn },
-  counterUnit:        { ...type.micro, color: colors.inkFaint, fontWeight: '700', marginTop: -2 },
-  counterUnitUrgent:  { color: colors.warn },
-  counterColon: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: colors.tealBorder,
-    marginHorizontal: 2,
-    lineHeight: 42,
-  },
-  counterColonUrgent: { color: colors.warn, opacity: 0.5 },
 
   // Window progress bar
-  progressWrap:  { marginTop: space[4] },
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.paper,
-    borderWidth: 1,
-    borderColor: colors.tealBorder,
-    overflow: 'hidden',
-  },
-  progressFill:       { height: '100%', backgroundColor: colors.teal, borderRadius: 3 },
-  progressFillUrgent: { backgroundColor: colors.warn },
-  windowRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  windowEdge: { ...type.micro, color: colors.inkFaint, fontVariant: ['tabular-nums'] },
-  windowMid:  { ...type.micro, color: colors.inkGhost, fontStyle: 'italic' },
 
   // ---- Ornament divider between hero + ribbon --------------------------
-  ornamentDivider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[2],
-    paddingHorizontal: space[6],
-    paddingVertical: space[3],
-    backgroundColor: colors.paper,
-    borderTopWidth: 1,
-    borderTopColor: colors.tealBorder,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.ruleFaint,
-  },
-  ornamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
 
   // ---- Horizontal ribbon timeline --------------------------------------
-  timeline: {
-    paddingHorizontal: space[2],
-    paddingTop: space[5],
-    paddingBottom: space[5],
-    backgroundColor: colors.paper,
-  },
-  node: {
-    width: NODE_WIDTH,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingTop: 12, // room for the rail + dot
-    position: 'relative',
-  },
   // Rail: two halves so past/future can be tinted independently
-  rail: {
-    position: 'absolute',
-    top: 22,
-    left: 0,
-    right: 0,
-    height: 2,
-    flexDirection: 'row',
-  },
-  railSegment: { flex: 1, height: 2 },
-  railPast:    { backgroundColor: colors.tealBorder },
-  railFuture:  { backgroundColor: colors.ruleSoft },
 
   // Dot styles
-  dot: {
-    width: 14, height: 14, borderRadius: 7,
-    backgroundColor: colors.paper,
-    borderWidth: 2, borderColor: colors.ruleSoft,
-    marginBottom: space[3],
-    zIndex: 1,
-  },
-  dotPast: {
-    backgroundColor: colors.tealBorder,
-    borderColor: colors.tealBorder,
-  },
   // "Up next" — hollow gold ring. Used during the post-sunrise gap.
-  dotNext: {
-    width: 20, height: 20, borderRadius: 10,
-    backgroundColor: colors.paper,
-    borderWidth: 2, borderColor: colors.gold,
-    marginTop: -3,
-    marginBottom: space[3] - 3,
-    alignItems: 'center', justifyContent: 'center',
-    // subtle glow ring
-    shadowColor: colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  dotInner: {
-    width: 10, height: 10, borderRadius: 5,
-    backgroundColor: colors.teal,
-  },
   // "Currently running" — filled teal with a gold ring. Deliberately the
   // heaviest marker on the ribbon: it's the answer to the question the
   // user opened this screen to ask.
-  dotCurrent: {
-    width: 22, height: 22, borderRadius: 11,
-    backgroundColor: colors.teal,
-    borderWidth: 2.5, borderColor: colors.gold,
-    marginTop: -4,
-    marginBottom: space[3] - 4,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: colors.teal,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.45,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  dotCurrentInner: {
-    width: 7, height: 7, borderRadius: 3.5,
-    backgroundColor: colors.paper,
-  },
 
   // Node text
-  nodeLabel:     { ...type.meta, color: colors.inkMuted, fontWeight: '600', textAlign: 'center' },
-  nodeLabelNext: { color: colors.tealDark, fontWeight: '800' },
-  nodeLabelPast: { color: colors.inkFaint, fontWeight: '500' },
-  nodeTime:      { ...type.micro, color: colors.inkFaint, textAlign: 'center', marginTop: 2, fontVariant: ['tabular-nums'] },
-  nodeTimeNext:  { color: colors.tealDark, fontWeight: '700' },
-  nodeTimePast:  { color: colors.inkGhost },
-  nodeNote:      { ...type.micro, color: colors.inkGhost, textAlign: 'center', marginTop: 1, fontSize: 9, fontStyle: 'italic' },
 
   // Fallback hint
-  calcHint: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[1],
-    paddingHorizontal: space[4],
-    paddingVertical: space[3],
-    borderTopWidth: 1,
-    borderTopColor: colors.ruleFaint,
-  },
-  calcHintText: { ...type.micro, fontWeight: '500', color: colors.inkFaint },
 
   // ---- Poll ------------------------------------------------------------
   pollHeadline: { ...type.h3, marginBottom: space[1] },

@@ -160,12 +160,18 @@ export default function RiderMapScreen() {
     ]);
   };
 
-  const initialRegion = useMemo(
-    () => regionFor(currentLocation, myStops),
-    // Compute once on first useable data. Post-mount we drive imperatively.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [currentLocation != null, (myStops || []).length]
-  );
+  // Computed inline rather than memoised, deliberately.
+  //
+  // MapView reads `initialRegion` ONCE at mount and ignores it after, so
+  // there's nothing to memoise against — and the map only mounts once
+  // loadingLocation is false, by which point currentLocation is already
+  // set. Stops that arrive later are handled by the fit-to-route effect
+  // above, and the camera is driven imperatively from then on.
+  //
+  // (The previous version memoised on `[currentLocation != null, ...]` —
+  // a boolean that latches true, so the memo never recomputed. It worked
+  // by accident and hid the intent.)
+  const initialRegion = regionFor(currentLocation, myStops);
 
   const pendingStops = useMemo(
     () => (myStops || []).filter((s) => s.status === 'pending' && s.has_pin),
