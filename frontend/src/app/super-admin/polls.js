@@ -7,6 +7,7 @@ import {
   ScrollView,
   Pressable,
   Alert,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -15,12 +16,12 @@ import { pollsApi } from '../../api/polls';
 import { adminApi } from '../../api/admin';
 import {
   Button,
+  Calendar,
   Card,
   Chip,
   EmptyState,
   ErrorState,
   Header,
-  Input,
   LoadingState,
   SectionHeader,
 } from '../../components/ui';
@@ -63,6 +64,26 @@ const formatDate = (dateStr) => {
 };
 
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+/**
+ * Render a vote timestamp in IST. Votes are cast against an IST schedule,
+ * so showing them in the viewer's device timezone would misrepresent
+ * "just before the 10 AM cutoff". Mirrors the admin dashboard's helper.
+ */
+const formatVoteTime = (isoString) => {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return '';
+  const time = d.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+  const dayIST = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  if (dayIST === todayIST()) return `${time} IST`;
+  const date = d.toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short',
+  });
+  return `${date}, ${time} IST`;
+};
 
 /**
  * Read the current IST hour (0–23) using Intl.DateTimeFormat.formatToParts —
@@ -570,6 +591,62 @@ function DateStatsTab() {
   const [data, setData]           = useState(null);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState(null);
+  // Dates that actually have a poll, so the calendar can dot them and
+  // the super admin isn't tapping blindly into "no poll on record".
+  const [pollDates, setPollDates] = useState({});
+
+  // Voter drill-down — "who voted, and at what time". Super admins see
+  // both yes and no voters (?response=all); the admin dashboard's
+  // equivalent modal stays yes-only.
+  const [votersZone, setVotersZone]       = useState(null);
+  const [voters, setVoters]               = useState([]);
+  const [votersLoading, setVotersLoading] = useState(false);
+  const [votersError, setVotersError]     = useState(null);
+
+  useEffect(() => {
+    if (!votersZone || !data?.poll?.id) return undefined;
+    let alive = true;
+    (async () => {
+      setVotersLoading(true);
+      setVotersError(null);
+      setVoters([]);
+      try {
+        const res = await adminApi.getZoneVoters(data.poll.id, votersZone, { response: 'all' });
+        if (!alive) return;
+        setVoters(res?.data?.voters?.[votersZone] || []);
+      } catch (err) {
+        if (alive) setVotersError(err?.response?.data?.message || "Couldn't load voters.");
+      } finally {
+        if (alive) setVotersLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [votersZone, data?.poll?.id]);
+
+  // Pull the poll history once to mark which days exist. Independent of
+  // the per-date stats fetch — a failure here just means no dots, not a
+  // broken screen.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const marks = {};
+        let page = 1;
+        let total = 0;
+        do {
+          const res = await pollsApi.getHistory(page, 50);
+          if (!res.success) break;
+          for (const p of res.data.polls || []) {
+            if (p.date) marks[p.date] = p.total_votes > 0 ? 'neutral' : 'special';
+          }
+          total = res.data.total || 0;
+          page += 1;
+        } while (Object.keys(marks).length < total && page <= 20);
+        if (alive) setPollDates(marks);
+      } catch { /* dots are a nicety — silent */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const fetchStats = async (date) => {
     if (!date) return;
@@ -584,22 +661,35 @@ function DateStatsTab() {
     }
   };
 
+  // Tapping a day both selects it and loads its stats — no separate
+  // "Look up" press needed for the common case.
+  const handlePickDate = (d) => {
+    setInputDate(d);
+    fetchStats(d);
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.list}>
-      <SectionHeader title="Look up a date" />
+      <SectionHeader title="Look up a date" ornament="star" />
       <Card>
-        <Text style={styles.label}>Date (YYYY-MM-DD)</Text>
-        <Input
-          value={inputDate}
-          onChangeText={setInputDate}
-          placeholder="YYYY-MM-DD"
-          keyboardType="numbers-and-punctuation"
-          autoCapitalize="none"
-          icon="calendar-outline"
+        <Calendar
+          selected={inputDate}
+          onSelect={handlePickDate}
+          markers={pollDates}
+          maxDate={todayIST()}
+          initialMonth={inputDate}
+          footerHint="Tap any day to see that date's zone breakdown. Dotted days have a poll on record."
         />
+        {/* Jump-to-today shortcut. The lookup itself happens on tap, so
+            there's no separate "Look up" button to press any more. */}
         <View style={styles.searchActions}>
-          <Button label="Today" onPress={() => { const t = todayIST(); setInputDate(t); fetchStats(t); }} variant="secondary" size="sm" />
-          <Button label="Look up" onPress={() => fetchStats(inputDate)} size="sm" icon="search-outline" />
+          <Button
+            label="Jump to today"
+            onPress={() => handlePickDate(todayIST())}
+            variant="secondary"
+            size="sm"
+            icon="today-outline"
+          />
         </View>
       </Card>
 
@@ -627,24 +717,131 @@ function DateStatsTab() {
               <StatCell label="Total" value={data.grand_total.total} color={colors.tealDark} />
             </View>
 
+            {/* Per-zone rows are tappable — opens the voter list with
+                names and vote timestamps for that zone. */}
             <View style={styles.zoneWrap}>
-              {Object.entries(data.by_zone).map(([zone, counts], idx, arr) => (
-                <View key={zone}>
-                  <View style={styles.zoneRow}>
-                    <Text style={styles.zoneLabel}>{ZONE_LABELS[zone] || zone}</Text>
-                    <View style={styles.zoneStats}>
-                      <Text style={[styles.zoneVal, { color: colors.success }]}>{counts.yes}</Text>
-                      <Text style={[styles.zoneVal, { color: colors.danger  }]}>{counts.no}</Text>
-                      <Text style={[styles.zoneVal, { color: colors.tealDark }]}>{counts.total}</Text>
-                    </View>
+              {Object.entries(data.by_zone).map(([zone, counts], idx, arr) => {
+                const canDrill = counts.total > 0;
+                return (
+                  <View key={zone}>
+                    <Pressable
+                      onPress={() => { if (canDrill) setVotersZone(zone); }}
+                      disabled={!canDrill}
+                      style={({ pressed }) => [styles.zoneRow, pressed && canDrill && { backgroundColor: colors.tealSoft }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        canDrill
+                          ? `${ZONE_LABELS[zone] || zone}: ${counts.total} votes, tap to see who voted`
+                          : `${ZONE_LABELS[zone] || zone}: no votes`
+                      }
+                    >
+                      <Text style={styles.zoneLabel}>{ZONE_LABELS[zone] || zone}</Text>
+                      <View style={styles.zoneStats}>
+                        <Text style={[styles.zoneVal, { color: colors.success }]}>{counts.yes}</Text>
+                        <Text style={[styles.zoneVal, { color: colors.danger  }]}>{counts.no}</Text>
+                        <Text style={[styles.zoneVal, { color: colors.tealDark }]}>{counts.total}</Text>
+                      </View>
+                      {canDrill && (
+                        <Ionicons name="chevron-forward" size={15} color={colors.inkGhost} style={{ marginLeft: space[2] }} />
+                      )}
+                    </Pressable>
+                    {idx < arr.length - 1 && <View style={styles.zoneRule} />}
                   </View>
-                  {idx < arr.length - 1 && <View style={styles.zoneRule} />}
-                </View>
-              ))}
+                );
+              })}
             </View>
           </Card>
         </View>
       )}
+
+      {/* --------------- Voter drill-down (who voted, and when) --------------- */}
+      <Modal
+        visible={!!votersZone}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setVotersZone(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>
+              {ZONE_LABELS[votersZone] || votersZone}
+            </Text>
+            <Text style={styles.modalBody}>
+              Everyone in this zone who voted on {data?.poll?.date ? formatDate(data.poll.date) : 'this date'}, newest first.
+            </Text>
+
+            {votersLoading ? (
+              <LoadingState message="Loading voters…" compact />
+            ) : votersError ? (
+              <View style={{ paddingVertical: space[4] }}>
+                <Text style={{ ...type.meta, color: colors.danger, textAlign: 'center' }}>{votersError}</Text>
+              </View>
+            ) : voters.length === 0 ? (
+              <View style={{ paddingVertical: space[6], alignItems: 'center' }}>
+                <Ionicons name="people-outline" size={32} color={colors.inkGhost} />
+                <Text style={{ ...type.meta, marginTop: space[2], color: colors.inkFaint }}>
+                  Nobody voted in this zone.
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={voters}
+                keyExtractor={(v) => v.response_id}
+                style={{ marginTop: space[2] }}
+                ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.ruleFaint }} />}
+                renderItem={({ item }) => (
+                  <View style={styles.voterRow}>
+                    <View style={[
+                      styles.voteBadge,
+                      item.response === 'yes' ? styles.voteBadgeYes : styles.voteBadgeNo,
+                    ]}>
+                      <Ionicons
+                        name={item.response === 'yes' ? 'checkmark' : 'close'}
+                        size={13}
+                        color={colors.paper}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.voterName}>{item.user?.name}</Text>
+                      <Text style={styles.voterPhone}>{item.user?.phone}</Text>
+                      {item.voted_at ? (
+                        <View style={styles.voterTimeRow}>
+                          <Ionicons name="time-outline" size={11} color={colors.inkGhost} />
+                          <Text style={styles.voterTime}>Voted {formatVoteTime(item.voted_at)}</Text>
+                        </View>
+                      ) : null}
+                      {item.is_special_case && item.special_case_at ? (
+                        <View style={styles.voterTimeRow}>
+                          <Ionicons name="swap-horizontal-outline" size={11} color={colors.gold} />
+                          <Text style={[styles.voterTime, { color: colors.gold }]}>
+                            {item.special_case_type === 'want' ? 'Asked to be added' : 'Asked to be removed'}
+                            {' · '}{formatVoteTime(item.special_case_at)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {item.sehri_allowed === 'approved' && (
+                      <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                    )}
+                    {item.sehri_allowed === 'rejected' && (
+                      <Ionicons name="close-circle" size={18} color={colors.danger} />
+                    )}
+                  </View>
+                )}
+              />
+            )}
+
+            <Button
+              label="Close"
+              variant="secondary"
+              onPress={() => setVotersZone(null)}
+              fullWidth
+              style={{ marginTop: space[3] }}
+            />
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -747,7 +944,6 @@ const styles = StyleSheet.create({
   statValue:  { fontSize: 20, fontWeight: '800' },
   statLabel:  { ...type.micro, color: colors.inkFaint, marginTop: 2 },
 
-  label:         { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
   searchActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space[2], marginTop: space[3] },
 
   dateHead:  { padding: space[4] },
@@ -771,6 +967,41 @@ const styles = StyleSheet.create({
     backgroundColor: colors.paper,
   },
   pageText: { ...type.meta, fontWeight: '600', color: colors.inkMuted },
+
+  // Voter drill-down modal (By date tab)
+  modalOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: colors.paper,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    padding: space[5],
+    maxHeight: '82%',
+  },
+  modalHandle: {
+    alignSelf: 'center',
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: colors.ruleSoft,
+    marginBottom: space[3],
+  },
+  modalTitle: { ...type.h2, textAlign: 'center' },
+  modalBody:  { ...type.meta, color: colors.inkMuted, textAlign: 'center', marginTop: space[1] },
+
+  voterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    paddingVertical: space[3],
+  },
+  voteBadge: {
+    width: 24, height: 24, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  voteBadgeYes: { backgroundColor: colors.success },
+  voteBadgeNo:  { backgroundColor: colors.danger },
+  voterName:    { ...type.bodyStrong },
+  voterPhone:   { ...type.meta, marginTop: 2 },
+  voterTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  voterTime:    { ...type.micro, color: colors.inkGhost, fontVariant: ['tabular-nums'] },
 
   // Live stats card (Today tab)
   statsGrandRow: {

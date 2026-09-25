@@ -1,7 +1,7 @@
 'use strict';
 const { Op } = require('sequelize');
 const db = require('../models');
-const { generateOtp, hashOtp, compareOtp } = require('../utils/otp');
+const { generateOtp, hashOtp, compareOtp, OTP_LENGTH } = require('../utils/otp');
 const messageCentralClient = require('./messageCentralClient');
 const AppError = require('../utils/appError');
 const logger = require('../utils/logger');
@@ -72,7 +72,11 @@ const sendOtp = async (phone, purpose, role = 'user') => {
     logger.info(`📱 OTP for ${phone} [${purpose}]: ${otp} (expires in ${expiryMinutes} min)`);
   }
 
-  return { expiresInMinutes: expiryMinutes };
+  // otpLength is returned so the client can size its input and copy
+  // ("Enter the N-digit code") off the server rather than hardcoding a
+  // number that drifts when the provider changes. Both the local
+  // generator and MessageCentral are pinned to OTP_LENGTH.
+  return { expiresInMinutes: expiryMinutes, otpLength: OTP_LENGTH };
 };
 
 const verifyOtp = async (phone, purpose, code) => {

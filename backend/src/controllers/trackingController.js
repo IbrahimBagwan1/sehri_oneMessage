@@ -1170,6 +1170,11 @@ const getDeliveryList = async (req, res, next) => {
           attributes: ['id', 'name', 'phone', 'address', 'location_id'],
           where: userWhere,
           required: !!userWhere, // INNER JOIN when we're filtering, LEFT JOIN otherwise
+          // Eager-load the PG row so the rider sees the real hostel name
+          // from the locations table, not just the resident's free-text
+          // "building / flat / landmark" string. Riders navigate by PG
+          // name; the free-text field is a within-PG detail.
+          include: [{ model: Location, as: 'location', attributes: ['id', 'name', 'type'] }],
         },
       ],
       attributes: ['id', 'zone', 'is_special_case', 'special_case_type'],
@@ -1186,6 +1191,11 @@ const getDeliveryList = async (req, res, next) => {
         is_special_case: r.is_special_case,
         name: r.user.name,
         phone: r.user.phone,
+        // pg_name is the locations-table name the rider navigates by.
+        // `address` stays as the resident's own free-text detail
+        // (flat number / landmark) shown as a secondary line.
+        pg_name: r.user.location?.name || null,
+        location_id: r.user.location_id,
         address: r.user.address,
         zone: z,
       });

@@ -11,11 +11,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../../api/auth';
 import { useAuthStore } from '../../store/useAuthStore';
 import { Button, Input, RubStar } from '../../components/ui';
 import PasswordInput from '../../components/PasswordInput';
-import { colors, space, type } from '../../theme';
+import { colors, radius, space, type } from '../../theme';
 
 export default function LoginScreen() {
   const router          = useRouter();
@@ -25,6 +26,13 @@ export default function LoginScreen() {
   const [phone,    setPhone]    = useState('');
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
+  // Inline error shown under the sign-in button. The backend returns
+  // genuinely useful copy here — "Your account is still pending
+  // approval", "Your account registration was rejected", "Invalid phone
+  // or password" — which used to be trapped in a dismissible Alert the
+  // user could tap away before reading. Keeping it on-screen also lets
+  // them re-read it while correcting the field.
+  const [formError, setFormError] = useState(null);
 
   const handleGuest = async () => {
     await continueAsGuest();
@@ -32,8 +40,9 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
-    if (!phone) return Alert.alert('Missing phone', 'Enter your phone number to sign in.');
-    if (!password) return Alert.alert('Missing password', 'Enter your password to sign in.');
+    setFormError(null);
+    if (!phone)    return setFormError('Enter your phone number to sign in.');
+    if (!password) return setFormError('Enter your password to sign in.');
 
     setLoading(true);
     try {
@@ -45,7 +54,15 @@ export default function LoginScreen() {
       else if (active_role === 'admin') router.replace('/(admin)');
       else router.replace('/(user)');
     } catch (err) {
-      Alert.alert("Couldn't sign in", err?.response?.data?.message || 'Check your phone and password and try again.');
+      // No network response at all reads differently from a rejected
+      // credential — say so rather than blaming the password.
+      const serverMessage = err?.response?.data?.message;
+      setFormError(
+        serverMessage ||
+        (err?.response
+          ? 'Check your phone and password and try again.'
+          : "Couldn't reach the server. Check your connection and try again.")
+      );
     } finally {
       setLoading(false);
     }
@@ -83,7 +100,7 @@ export default function LoginScreen() {
                 placeholder="10-digit mobile number"
                 keyboardType="phone-pad"
                 value={phone}
-                onChangeText={(v) => setPhone(v.replace(/\D/g, ''))}
+                onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setFormError(null); }}
                 maxLength={10}
                 icon="call-outline"
                 autoComplete="tel"
@@ -96,7 +113,7 @@ export default function LoginScreen() {
               <PasswordInput
                 placeholder="Your password"
                 value={password}
-                onChangeText={setPassword}
+                onChangeText={(v) => { setPassword(v); setFormError(null); }}
               />
             </View>
 
@@ -115,6 +132,17 @@ export default function LoginScreen() {
               fullWidth
               style={styles.primaryBtn}
             />
+
+            {formError ? (
+              <View
+                style={styles.errorBanner}
+                accessibilityLiveRegion="polite"
+                accessibilityRole="alert"
+              >
+                <Ionicons name="alert-circle" size={16} color={colors.danger} />
+                <Text style={styles.errorText}>{formError}</Text>
+              </View>
+            ) : null}
 
             <View style={styles.dividerRow}>
               <View style={styles.dividerLine} />
@@ -146,7 +174,7 @@ export default function LoginScreen() {
 
           {/* Footer link */}
           <Pressable
-            onPress={() => router.push('/(auth)/register')}
+            onPress={() => router.push('/(auth)/verify-phone')}
             hitSlop={8}
             style={({ pressed }) => [styles.footer, pressed && { opacity: 0.6 }]}
           >
@@ -189,6 +217,20 @@ const styles = StyleSheet.create({
   forgot:     { ...type.meta, color: colors.teal, fontWeight: '700' },
 
   primaryBtn: { marginTop: space[2] },
+
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space[2],
+    marginTop: space[3],
+    paddingHorizontal: space[3],
+    paddingVertical: space[3],
+    borderRadius: radius.md,
+    backgroundColor: colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  errorText: { ...type.meta, color: colors.danger, flex: 1, fontWeight: '600', lineHeight: 18 },
 
   dividerRow:  { flexDirection: 'row', alignItems: 'center', gap: space[3], marginVertical: space[5] },
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.ruleSoft },

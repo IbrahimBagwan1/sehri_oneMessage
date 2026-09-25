@@ -13,11 +13,17 @@ export const adminApi = {
   },
 
   // GET /api/polls/:id/zone-voters
-  // Names of Yes voters in a zone. Admin sees own zone; super_admin can pass ?zone=
-  getZoneVoters: async (pollId, zone = null) => {
-    const params = zone ? { zone } : {};
+  // Voters in a zone with their vote timestamps. Admin sees own zone;
+  // super_admin can pass ?zone=. `response` filters the vote value —
+  // 'yes' (default, preserves the admin drill-down), 'no', or 'all'.
+  getZoneVoters: async (pollId, zone = null, { response: responseFilter } = {}) => {
+    const params = {};
+    if (zone) params.zone = zone;
+    if (responseFilter) params.response = responseFilter;
     const response = await apiClient.get(`/polls/${pollId}/zone-voters`, { params });
-    return response.data; // { success, data: { poll, zone, voters, total_yes } }
+    // data: { poll, zone, response_filter, voters, total_yes, total_no, total }
+    // each voter: { response_id, response, voted_at, special_case_at, user, ... }
+    return response.data;
   },
 
   // GET /api/polls/history

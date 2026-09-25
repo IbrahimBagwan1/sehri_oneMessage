@@ -14,14 +14,25 @@ export const authApi = {
     return response.data;
   },
 
-  // Verify OTP code (forgot-password flow)
+  // Verify OTP + reset password in one call (forgot-password flow).
+  // Distinct from verifyPhone below — this one also sets the new password.
   verifyOtp: async (data) => {
     const response = await apiClient.post('/auth/forgot-password/verify-otp', data);
     return response.data;
   },
 
-  // Register new user
-  // data: { name, phone, password, gender, occupation, city, location_id, address, otp }
+  // Verify a phone number ahead of registration.
+  // Returns { phone, purpose, verification_token } — the token is a
+  // short-lived (15 min) ticket that `register` accepts in place of the
+  // OTP, because verifying consumes the code server-side.
+  verifyPhone: async ({ phone, otp, purpose = 'registration' }) => {
+    const response = await apiClient.post('/auth/verify-otp', { phone, otp, purpose });
+    return response.data;
+  },
+
+  // Register new user.
+  // data: { name, phone, password, gender, occupation, city, location_id,
+  //         address, verification_token }   (or legacy `otp`)
   register: async (data) => {
     const response = await apiClient.post('/auth/register', data);
     return response.data;

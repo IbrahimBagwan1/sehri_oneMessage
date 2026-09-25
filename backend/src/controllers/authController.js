@@ -2,6 +2,7 @@
 const bcrypt = require('bcryptjs');
 const db = require('../models');
 const otpService = require('../services/otpService');
+const { verifyVerificationTicket } = require('./otpController');
 const { success, error } = require('../utils/response');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { User, Location, Admin, SuperAdmin, Rider } = db;
@@ -93,11 +94,26 @@ const registerUser = async (req, res, next) => {
       location_id,
       address,
       otp,
+      verification_token: verificationToken,
     } = req.body;
 
-    const isOtpValid = await otpService.verifyOtp(phone, 'registration', otp);
-    if (!isOtpValid) {
-      return error(res, { statusCode: 400, message: 'Invalid OTP' });
+    // Phone ownership is proved by EITHER a verification ticket from the
+    // dedicated verify-OTP screen, OR a raw OTP from the legacy
+    // single-screen flow. The ticket path exists because verifying an
+    // OTP consumes it — see otpController.signVerificationTicket.
+    if (verificationToken) {
+      const ticket = verifyVerificationTicket(verificationToken, phone, 'registration');
+      if (!ticket) {
+        return error(res, {
+          statusCode: 400,
+          message: 'Your phone verification expired. Verify your number again.',
+        });
+      }
+    } else {
+      const isOtpValid = await otpService.verifyOtp(phone, 'registration', otp);
+      if (!isOtpValid) {
+        return error(res, { statusCode: 400, message: 'Invalid OTP' });
+      }
     }
 
     const existingUser = await User.findOne({ where: { phone } });

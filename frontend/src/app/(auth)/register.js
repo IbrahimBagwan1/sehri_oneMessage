@@ -10,16 +10,26 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { authApi, locationsApi } from '../../api/auth';
+import { authApi } from '../../api/auth';
+import LocationPicker from '../../components/LocationPicker';
 import PasswordInput from '../../components/PasswordInput';
-import ResendOtpButton from '../../components/ResendOtpButton';
-import { Button, Card, Chip, Header, Input, LoadingState } from '../../components/ui';
+import { Button, Header, Input, RubStar } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
-// One-screen registration: phone → OTP → identity → location.
+// Step 2 of registration — identity + location.
+//
+// Phone verification happens BEFORE this screen, on (auth)/verify-phone.
+// We arrive here with `phone` (already proven) and `verification_token`
+// (a short-lived ticket the backend accepts in place of the OTP, since
+// verifying the code consumes it). If someone lands here without a
+// ticket we bounce them back rather than showing a form they can't submit.
+//
+// Location uses the shared cascading LocationPicker (City → Region →
+// Area → Zone → PG), which walks whatever hierarchy the backend actually
+// has rather than assuming a fixed depth.
 // -----------------------------------------------------------------------------
 
 const GENDERS = [
@@ -35,228 +45,215 @@ const OCCUPATIONS = [
 
 export default function RegisterScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
 
-  const [name, setName]         = useState('');
-  const [phone, setPhone]       = useState('');
-  const [password, setPassword] = useState('');
+  const verifiedPhone     = typeof params.phone === 'string' ? params.phone : '';
+  const verificationToken = typeof params.verification_token === 'string'
+    ? params.verification_token
+    : '';
+
+  const [name, setName]             = useState('');
+  const [password, setPassword]     = useState('');
   const [gender, setGender]         = useState('');
   const [occupation, setOccupation] = useState('');
-  const [otp, setOtp] = useState('');
+  const [landmark, setLandmark]     = useState('');
   const city = 'Bangalore';
 
-  const [zones, setZones]                     = useState([]);
-  const [addresses, setAddresses]             = useState([]);
-  const [selectedZone, setSelectedZone]       = useState(null);
-  const [selectedAddress, setSelectedAddress] = useState(null);
-  const zoneHasAddresses = addresses.length > 0;
-  const locationId  = zoneHasAddresses ? selectedAddress?.id : selectedZone?.id;
-  const addressLabel = zoneHasAddresses ? selectedAddress?.name : selectedZone?.name;
+  // Deepest node the cascading picker landed on — this is what
+  // users.location_id stores.
+  const [location, setLocation] = useState(null); // { id, name, chain, isLeaf }
 
-  const [otpSent, setOtpSent]                 = useState(false);
-  const [loadingOtp, setLoadingOtp]           = useState(false);
-  const [loadingZones, setLoadingZones]       = useState(true);
-  const [loadingAddresses, setLoadingAddresses] = useState(false);
-  const [submitting, setSubmitting]           = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError]   = useState(null);
 
+  // Guard: this screen is only reachable with a verified phone. Anyone
+  // deep-linking straight here gets sent to step 1 instead of a form
+  // whose submit is guaranteed to fail.
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await locationsApi.getLocations({ type: 'zone' });
-        setZones(res.data || []);
-      } catch {
-        Alert.alert("Couldn't load zones", 'Restart the app and try again.');
-      } finally {
-        setLoadingZones(false);
-      }
-    })();
-  }, []);
-
-  const handleZoneSelect = async (zone) => {
-    setSelectedZone(zone);
-    setSelectedAddress(null);
-    setAddresses([]);
-    setLoadingAddresses(true);
-    try {
-      const res = await locationsApi.getLocations({ type: 'address', parent_id: zone.id });
-      setAddresses(res.data || []);
-    } catch {
-      Alert.alert("Couldn't load addresses", 'Try picking a different zone or restart the app.');
-    } finally {
-      setLoadingAddresses(false);
+    if (!verifiedPhone || !verificationToken) {
+      router.replace('/(auth)/verify-phone');
     }
-  };
-
-  const handleSendOtp = async () => {
-    if (!/^[6-9]\d{9}$/.test(phone)) {
-      return Alert.alert('Check the number', 'That doesn\'t look like a valid 10-digit Indian mobile number.');
-    }
-    setLoadingOtp(true);
-    try {
-      await authApi.sendOtp(phone, 'registration');
-      setOtpSent(true);
-      Alert.alert('OTP sent', 'Enter the 6-digit code we just sent to your phone.');
-    } catch (err) {
-      Alert.alert("Couldn't send OTP", err?.response?.data?.message || 'Try again in a moment.');
-    } finally {
-      setLoadingOtp(false);
-    }
-  };
+  }, [verifiedPhone, verificationToken, router]);
 
   const handleRegister = async () => {
-    if (!name || !phone || !password || !gender || !occupation || !otp || !locationId) {
-      return Alert.alert('A few things missing', 'Fill in every field and pick your location.');
+    setFormError(null);
+
+    if (!name.trim())      return setFormError('Enter your full name.');
+    if (password.length < 6) return setFormError('Your password needs at least 6 characters.');
+    if (!gender)           return setFormError('Select your gender.');
+    if (!occupation)       return setFormError('Select your occupation.');
+    if (!location?.id)     return setFormError('Pick your location, right down to your PG.');
+    // Delivery routing resolves a zone by walking up from location_id,
+    // so a selection that stops above the zone level can never route.
+    if (!location.hasZone) {
+      return setFormError(
+        `No delivery zones are set up under ${location.name} yet. Pick a different one, or ask an admin to add your PG.`
+      );
     }
-    if (!otpSent) return Alert.alert('OTP first', 'Send and enter the OTP before registering.');
 
     setSubmitting(true);
     try {
       await authApi.register({
-        name, phone, password, gender, occupation, city,
-        location_id: locationId, address: addressLabel, otp,
+        name: name.trim(),
+        phone: verifiedPhone,
+        password,
+        gender,
+        occupation,
+        city,
+        location_id: location.id,
+        // The backend requires a non-empty `address`. Prefer the
+        // resident's own landmark text; fall back to the PG name so the
+        // field is never blank for someone who skipped the optional box.
+        address: landmark.trim() || location.name,
+        verification_token: verificationToken,
       });
       Alert.alert(
         'Account created',
-        'Your account is pending admin approval. You\'ll be able to sign in once it\'s approved.',
+        "Your account is pending admin approval. You'll be able to sign in once it's approved.",
         [{ text: 'Go to sign-in', onPress: () => router.replace('/(auth)/login') }]
       );
     } catch (err) {
-      Alert.alert("Couldn't create account", err?.response?.data?.message || 'Try again in a moment.');
+      const msg = err?.response?.data?.message;
+      // An expired ticket is recoverable — send them back to re-verify
+      // rather than leaving them stuck on a form that won't submit.
+      if (err?.response?.status === 400 && msg && /verification expired/i.test(msg)) {
+        return Alert.alert(
+          'Verification expired',
+          'Your phone verification timed out. Verify your number again to continue.',
+          [{ text: 'Verify again', onPress: () => router.replace('/(auth)/verify-phone') }]
+        );
+      }
+      setFormError(
+        msg ||
+        (err?.response
+          ? "Couldn't create your account. Try again in a moment."
+          : "Couldn't reach the server. Check your connection and try again.")
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
+  // Render nothing while the guard redirect is in flight.
+  if (!verifiedPhone || !verificationToken) return null;
+
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-      <Header title="Create account" onBack={() => router.back()} />
+      <Header title="Your details" onBack={() => router.back()} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          {/* Identity */}
-          <SectionTitle>Your identity</SectionTitle>
-          <View style={styles.field}>
-            <Text style={styles.label}>Full name</Text>
-            <Input value={name} onChangeText={setName} placeholder="e.g. Ayesha Siddiqua" icon="person-outline" />
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Phone number</Text>
-            <View style={styles.phoneRow}>
-              <View style={{ flex: 1 }}>
-                <Input
-                  placeholder="10-digit mobile"
-                  keyboardType="phone-pad"
-                  value={phone}
-                  onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setOtpSent(false); }}
-                  maxLength={10}
-                  editable={!otpSent}
-                  icon="call-outline"
-                />
-              </View>
-              <Button
-                label={otpSent ? 'Sent' : 'Send OTP'}
-                onPress={handleSendOtp}
-                loading={loadingOtp}
-                variant={otpSent ? 'ghost' : 'primary'}
-                size="sm"
-                disabled={otpSent}
-                style={styles.phoneAction}
-              />
+          {/* Step indicator — mirrors verify-phone so the flow reads as one journey */}
+          <View style={styles.stepper}>
+            <View style={styles.stepDotDone}>
+              <Ionicons name="checkmark" size={14} color={colors.paper} />
+            </View>
+            <View style={styles.stepLineDone} />
+            <View style={styles.stepDotActive}>
+              <Text style={styles.stepDotTextActive}>2</Text>
             </View>
           </View>
+          <Text style={styles.stepCaption}>Step 2 of 2 · Your details</Text>
+
+          {/* Verified phone — shown as a confirmed, immutable fact */}
+          <View style={styles.verifiedCard}>
+            <View style={styles.verifiedIcon}>
+              <Ionicons name="shield-checkmark" size={18} color={colors.success} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.verifiedLabel}>Verified number</Text>
+              <Text style={styles.verifiedPhone}>+91 {verifiedPhone}</Text>
+            </View>
+            <Pressable
+              onPress={() => router.replace('/(auth)/verify-phone')}
+              hitSlop={8}
+              style={({ pressed }) => pressed && { opacity: 0.6 }}
+              accessibilityRole="button"
+              accessibilityLabel="Change phone number"
+            >
+              <Text style={styles.verifiedChange}>Change</Text>
+            </Pressable>
+          </View>
+
+          {/* Identity */}
+          <SectionTitle>Your identity</SectionTitle>
 
           <View style={styles.field}>
-            <Text style={styles.label}>OTP code</Text>
+            <Text style={styles.label}>Full name</Text>
             <Input
-              placeholder="6-digit code"
-              keyboardType="number-pad"
-              value={otp}
-              onChangeText={setOtp}
-              maxLength={6}
-              editable={otpSent}
-              icon="lock-closed-outline"
+              value={name}
+              onChangeText={(v) => { setName(v); setFormError(null); }}
+              placeholder="e.g. Ayesha Siddiqua"
+              autoCapitalize="words"
+              icon="person-outline"
             />
-            {otpSent && (
-              <ResendOtpButton onResend={() => authApi.sendOtp(phone, 'registration')} />
-            )}
           </View>
 
           <View style={styles.field}>
             <Text style={styles.label}>Password</Text>
-            <PasswordInput placeholder="At least 6 characters" value={password} onChangeText={setPassword} />
+            <PasswordInput
+              placeholder="At least 6 characters"
+              value={password}
+              onChangeText={(v) => { setPassword(v); setFormError(null); }}
+            />
           </View>
 
           <View style={styles.field}>
             <Text style={styles.label}>Gender</Text>
-            <ChoiceRow options={GENDERS} value={gender} onChange={setGender} />
+            <ChoiceRow options={GENDERS} value={gender} onChange={(v) => { setGender(v); setFormError(null); }} />
           </View>
 
           <View style={styles.field}>
             <Text style={styles.label}>Occupation</Text>
-            <ChoiceRow options={OCCUPATIONS} value={occupation} onChange={setOccupation} />
+            <ChoiceRow options={OCCUPATIONS} value={occupation} onChange={(v) => { setOccupation(v); setFormError(null); }} />
           </View>
 
           {/* Location */}
-          <SectionTitle style={{ marginTop: space[6] }}>Where you'll receive Sehri</SectionTitle>
-          <Text style={styles.helper}>Delivery is coordinated by zone. Pick yours below.</Text>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>City</Text>
-            <View style={styles.readonlyBox}>
-              <Ionicons name="location-outline" size={16} color={colors.inkFaint} />
-              <Text style={styles.readonlyText}>{city}</Text>
-            </View>
+          <View style={styles.ornamentRow}>
+            <View style={styles.ornamentRule} />
+            <RubStar size={12} />
+            <View style={styles.ornamentRule} />
           </View>
 
+          <SectionTitle>Where you'll receive Sehri</SectionTitle>
+          <Text style={styles.helper}>
+            Pick your location step by step, right down to your PG. The rider
+            delivers to the PG's pin, so this needs to be exact.
+          </Text>
+
+          <LocationPicker
+            value={location?.id}
+            onChange={(picked) => { setLocation(picked); setFormError(null); }}
+          />
+
           <View style={styles.field}>
-            <Text style={styles.label}>Zone</Text>
-            {loadingZones ? (
-              <LoadingState message="Loading zones…" compact />
-            ) : (
-              <View style={styles.chipWrap}>
-                {zones.map((z) => (
-                  <Chip
-                    key={z.id}
-                    label={z.name}
-                    tone={selectedZone?.id === z.id ? 'teal' : 'neutral'}
-                    selected={selectedZone?.id === z.id}
-                    onPress={() => handleZoneSelect(z)}
-                    style={styles.pickChip}
-                  />
-                ))}
-              </View>
-            )}
+            <Text style={styles.label}>
+              Building / flat / landmark <Text style={styles.optional}>· optional</Text>
+            </Text>
+            <Input
+              value={landmark}
+              onChangeText={setLandmark}
+              placeholder="e.g. 2nd floor, room 4"
+              multiline
+            />
+            <Text style={styles.fieldHint}>
+              Helps the rider find you inside the building.
+            </Text>
           </View>
 
-          {selectedZone && (
-            <View style={styles.field}>
-              <Text style={styles.label}>PG or hostel</Text>
-              {loadingAddresses ? (
-                <LoadingState message="Loading options…" compact />
-              ) : addresses.length === 0 ? (
-                <Text style={styles.hint}>No sub-address needed for {selectedZone.name}.</Text>
-              ) : (
-                <View style={styles.chipWrap}>
-                  {addresses.map((a) => (
-                    <Chip
-                      key={a.id}
-                      label={a.name}
-                      tone={selectedAddress?.id === a.id ? 'teal' : 'neutral'}
-                      selected={selectedAddress?.id === a.id}
-                      onPress={() => setSelectedAddress(a)}
-                      style={styles.pickChip}
-                    />
-                  ))}
-                </View>
-              )}
+          {formError ? (
+            <View style={styles.errorBanner} accessibilityLiveRegion="polite" accessibilityRole="alert">
+              <Ionicons name="alert-circle" size={16} color={colors.danger} />
+              <Text style={styles.errorText}>{formError}</Text>
             </View>
-          )}
+          ) : null}
 
           <Button
             label="Create account"
             onPress={handleRegister}
             loading={submitting}
             fullWidth
+            icon="checkmark-circle-outline"
             style={styles.submitBtn}
           />
 
@@ -312,33 +309,68 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.paperSoft },
   scroll: { padding: space[5], paddingBottom: space[10] },
 
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space[2],
+    marginTop: space[1],
+  },
+  stepDotDone: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.success,
+  },
+  stepDotActive: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.teal,
+  },
+  stepDotTextActive: { ...type.micro, color: colors.paper, fontWeight: '800' },
+  stepLineDone:      { width: 40, height: 2, backgroundColor: colors.success },
+  stepCaption: {
+    ...type.micro, color: colors.inkFaint,
+    textAlign: 'center', marginTop: space[2], marginBottom: space[4],
+  },
+
+  verifiedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    padding: space[3],
+    borderRadius: radius.md,
+    backgroundColor: colors.successSoft,
+    borderWidth: 1,
+    borderColor: colors.success,
+    marginBottom: space[6],
+  },
+  verifiedIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.paper,
+  },
+  verifiedLabel:  { ...type.micro, color: colors.success, fontWeight: '700' },
+  verifiedPhone:  { ...type.bodyStrong, color: colors.ink, marginTop: 1 },
+  verifiedChange: { ...type.meta, color: colors.teal, fontWeight: '700' },
+
   sectionTitle: { ...type.h2, marginBottom: space[3] },
   helper:       { ...type.meta, marginBottom: space[4], marginTop: -space[2] },
-  hint:         { ...type.meta, fontStyle: 'italic' },
+
+  ornamentRow: {
+    flexDirection: 'row', alignItems: 'center', gap: space[2],
+    marginTop: space[3], marginBottom: space[5],
+  },
+  ornamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
 
   field: { marginBottom: space[4] },
   label: { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
-
-  phoneRow:    { flexDirection: 'row', gap: space[2], alignItems: 'stretch' },
-  phoneAction: { minWidth: 92 },
-
-  readonlyBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[2],
-    backgroundColor: colors.ruleFaint,
-    paddingHorizontal: space[3],
-    paddingVertical: 12,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.ruleSoft,
-  },
-  readonlyText: { ...type.body, color: colors.inkMuted },
+  optional:  { color: colors.inkGhost, fontWeight: '500' },
+  fieldHint: { ...type.micro, color: colors.inkFaint, marginTop: space[2] },
 
   choiceRow: { flexDirection: 'row', gap: space[2] },
   choice: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: radius.md,
     backgroundColor: colors.paper,
     borderWidth: 1,
@@ -350,8 +382,19 @@ const styles = StyleSheet.create({
   choiceLabel:   { ...type.body, fontWeight: '600', color: colors.inkMuted },
   choiceLabelActive: { color: colors.paper },
 
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
-  pickChip: { paddingHorizontal: space[3], paddingVertical: 6 },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space[2],
+    marginTop: space[2],
+    paddingHorizontal: space[3],
+    paddingVertical: space[3],
+    borderRadius: radius.md,
+    backgroundColor: colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  errorText: { ...type.meta, color: colors.danger, flex: 1, fontWeight: '600', lineHeight: 18 },
 
   submitBtn: { marginTop: space[4] },
 

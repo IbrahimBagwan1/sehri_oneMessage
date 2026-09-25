@@ -1,0 +1,334 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Pressable,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { authApi } from '../../api/auth';
+import ResendOtpButton from '../../components/ResendOtpButton';
+import { Button, Header, Input, RubStar } from '../../components/ui';
+import { colors, radius, space, type } from '../../theme';
+
+// -----------------------------------------------------------------------------
+// Step 1 of registration — prove you own the phone number.
+//
+// Registration used to be one long screen where phone, OTP, identity and
+// location all lived together; a user could fill in everything and only
+// then discover their code was wrong. Splitting verification out means
+// the number is confirmed before any of that work is asked for.
+//
+// On success the backend returns a short-lived `verification_token`
+// (15 min) which we hand to the registration form via route params. The
+// form submits that instead of the OTP, because verifying the code
+// consumes it server-side — see backend otpController.
+//
+// The OTP length is read from the send-otp response rather than
+// hardcoded: the local dev generator and the SMS provider are both
+// pinned to the same length server-side, and this screen just follows
+// whatever the server says.
+// -----------------------------------------------------------------------------
+
+const STEP = { PHONE: 'phone', CODE: 'code' };
+
+export default function VerifyPhoneScreen() {
+  const router = useRouter();
+  const otpInputRef = useRef(null);
+
+  const [step, setStep]         = useState(STEP.PHONE);
+  const [phone, setPhone]       = useState('');
+  const [otp, setOtp]           = useState('');
+  const [otpLength, setOtpLength] = useState(6);
+  const [sending, setSending]   = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [formError, setFormError] = useState(null);
+
+  // Focus the code field as soon as we move to step 2 — one less tap.
+  useEffect(() => {
+    if (step === STEP.CODE) {
+      const t = setTimeout(() => otpInputRef.current?.focus?.(), 350);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [step]);
+
+  const handleSend = async () => {
+    setFormError(null);
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      return setFormError("That doesn't look like a valid 10-digit Indian mobile number.");
+    }
+    setSending(true);
+    try {
+      const res = await authApi.sendOtp(phone, 'registration');
+      // Server tells us how many digits to expect — never hardcode it.
+      const len = res?.data?.otpLength;
+      if (Number.isFinite(len) && len > 0) setOtpLength(len);
+      setOtp('');
+      setStep(STEP.CODE);
+    } catch (err) {
+      setFormError(
+        err?.response?.data?.message ||
+        (err?.response
+          ? "Couldn't send the code. Try again in a moment."
+          : "Couldn't reach the server. Check your connection and try again.")
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleVerify = async () => {
+    setFormError(null);
+    if (otp.trim().length < 4) {
+      return setFormError('Enter the code we sent you.');
+    }
+    setVerifying(true);
+    try {
+      const res = await authApi.verifyPhone({ phone, otp: otp.trim() });
+      const token = res?.data?.verification_token;
+      if (!token) {
+        return setFormError('Verification failed. Request a new code and try again.');
+      }
+      // Hand the verified phone + ticket to the registration form.
+      router.replace({
+        pathname: '/(auth)/register',
+        params: { phone, verification_token: token },
+      });
+    } catch (err) {
+      setFormError(
+        err?.response?.data?.message ||
+        (err?.response
+          ? 'That code is incorrect or has expired. Request a new one.'
+          : "Couldn't reach the server. Check your connection and try again.")
+      );
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const changeNumber = () => {
+    setStep(STEP.PHONE);
+    setOtp('');
+    setFormError(null);
+  };
+
+  return (
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <Header
+        title="Verify your number"
+        onBack={() => (step === STEP.CODE ? changeNumber() : router.back())}
+      />
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+      >
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          {/* Step indicator — makes it obvious this is 1 of 2 */}
+          <View style={styles.stepper}>
+            <View style={styles.stepDotActive}>
+              <Text style={styles.stepDotTextActive}>1</Text>
+            </View>
+            <View style={styles.stepLine} />
+            <View style={styles.stepDot}>
+              <Text style={styles.stepDotText}>2</Text>
+            </View>
+          </View>
+          <Text style={styles.stepCaption}>
+            Step 1 of 2 · Verify phone{'  '}›{'  '}Your details
+          </Text>
+
+          <View style={styles.ornamentRow}>
+            <View style={styles.ornamentRule} />
+            <RubStar size={12} />
+            <View style={styles.ornamentRule} />
+          </View>
+
+          {step === STEP.PHONE ? (
+            <>
+              <Text style={styles.title}>What's your number?</Text>
+              <Text style={styles.subtitle}>
+                We'll text you a code to confirm it's really you. This is the
+                number you'll sign in with.
+              </Text>
+
+              <View style={styles.field}>
+                <Text style={styles.label}>Phone number</Text>
+                <Input
+                  placeholder="10-digit mobile number"
+                  keyboardType="phone-pad"
+                  value={phone}
+                  onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setFormError(null); }}
+                  maxLength={10}
+                  icon="call-outline"
+                  autoComplete="tel"
+                  textContentType="telephoneNumber"
+                  returnKeyType="send"
+                  onSubmitEditing={handleSend}
+                />
+              </View>
+
+              {formError ? <ErrorBanner message={formError} /> : null}
+
+              <Button
+                label="Send code"
+                onPress={handleSend}
+                loading={sending}
+                disabled={phone.length !== 10}
+                fullWidth
+                icon="paper-plane-outline"
+                style={styles.primaryBtn}
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.title}>Enter the code</Text>
+              <Text style={styles.subtitle}>
+                We sent a {otpLength}-digit code to{' '}
+                <Text style={styles.subtitleStrong}>+91 {phone}</Text>.
+              </Text>
+
+              <Pressable
+                onPress={changeNumber}
+                hitSlop={8}
+                style={({ pressed }) => [styles.changeRow, pressed && { opacity: 0.6 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Change phone number"
+              >
+                <Ionicons name="create-outline" size={14} color={colors.teal} />
+                <Text style={styles.changeText}>Change number</Text>
+              </Pressable>
+
+              <View style={styles.field}>
+                <Text style={styles.label}>Verification code</Text>
+                <Input
+                  ref={otpInputRef}
+                  placeholder={`${otpLength}-digit code`}
+                  keyboardType="number-pad"
+                  value={otp}
+                  onChangeText={(v) => { setOtp(v.replace(/\D/g, '')); setFormError(null); }}
+                  maxLength={otpLength}
+                  icon="lock-closed-outline"
+                  autoComplete="sms-otp"
+                  textContentType="oneTimeCode"
+                  returnKeyType="done"
+                  onSubmitEditing={handleVerify}
+                />
+                <ResendOtpButton onResend={() => authApi.sendOtp(phone, 'registration')} />
+              </View>
+
+              {formError ? <ErrorBanner message={formError} /> : null}
+
+              <Button
+                label="Verify and continue"
+                onPress={handleVerify}
+                loading={verifying}
+                disabled={otp.length < 4}
+                fullWidth
+                icon="checkmark-circle-outline"
+                style={styles.primaryBtn}
+              />
+            </>
+          )}
+
+          <Pressable
+            onPress={() => router.replace('/(auth)/login')}
+            hitSlop={8}
+            style={({ pressed }) => [styles.footer, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={styles.footerText}>
+              Already have an account? <Text style={styles.footerAction}>Sign in</Text>
+            </Text>
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function ErrorBanner({ message }) {
+  return (
+    <View style={styles.errorBanner} accessibilityLiveRegion="polite" accessibilityRole="alert">
+      <Ionicons name="alert-circle" size={16} color={colors.danger} />
+      <Text style={styles.errorText}>{message}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.paperSoft },
+  scroll: { padding: space[5], paddingBottom: space[10] },
+
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space[2],
+    marginTop: space[2],
+  },
+  stepDot: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: colors.ruleSoft,
+    backgroundColor: colors.paper,
+  },
+  stepDotActive: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.teal,
+  },
+  stepDotText:       { ...type.micro, color: colors.inkFaint, fontWeight: '800' },
+  stepDotTextActive: { ...type.micro, color: colors.paper, fontWeight: '800' },
+  stepLine:          { width: 40, height: 2, backgroundColor: colors.ruleSoft },
+  stepCaption: {
+    ...type.micro,
+    color: colors.inkFaint,
+    textAlign: 'center',
+    marginTop: space[2],
+  },
+
+  ornamentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[2],
+    marginTop: space[4],
+    marginBottom: space[5],
+  },
+  ornamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
+
+  title:    { ...type.h1 },
+  subtitle: { ...type.body, color: colors.inkMuted, marginTop: space[2], lineHeight: 22 },
+  subtitleStrong: { fontWeight: '800', color: colors.ink },
+
+  changeRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: space[2] },
+  changeText: { ...type.meta, color: colors.teal, fontWeight: '700' },
+
+  field: { marginTop: space[5] },
+  label: { ...type.meta, color: colors.inkMuted, marginBottom: space[2], fontWeight: '600' },
+
+  primaryBtn: { marginTop: space[5] },
+
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space[2],
+    marginTop: space[4],
+    paddingHorizontal: space[3],
+    paddingVertical: space[3],
+    borderRadius: radius.md,
+    backgroundColor: colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  errorText: { ...type.meta, color: colors.danger, flex: 1, fontWeight: '600', lineHeight: 18 },
+
+  footer:       { alignItems: 'center', paddingVertical: space[5] },
+  footerText:   { ...type.body, color: colors.inkFaint },
+  footerAction: { color: colors.teal, fontWeight: '700' },
+});

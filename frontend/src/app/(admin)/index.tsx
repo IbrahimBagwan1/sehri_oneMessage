@@ -46,18 +46,26 @@ const ZONE_LABELS = {
   girls:       'Girls',
 };
 
-const toMinutes = (t) => {
-  if (!t || typeof t !== 'string') return null;
-  const [h, m] = t.split(':').map(Number);
-  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+/**
+ * Render a vote timestamp in IST. Votes are cast against an IST schedule
+ * (10 PM–10 AM window), so showing them in the viewer's device timezone
+ * would be actively misleading for an admin travelling — 9:40 AM IST is
+ * the meaningful "just before cutoff" reading, not its local equivalent.
+ * Same-day votes show the time only; older ones get the date too.
+ */
+const formatVoteTime = (isoString) => {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return '';
+  const opts = { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true };
+  const time = d.toLocaleTimeString('en-IN', opts);
+  const dayIST   = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  if (dayIST === todayIST) return `${time} IST`;
+  const date = d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' });
+  return `${date}, ${time} IST`;
 };
 
-const format12h = (t) => {
-  if (!t) return '—';
-  const [h, m] = t.split(':').map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return t;
-  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h >= 12 ? 'pm' : 'am'}`;
-};
 
 export default function AdminDashboard() {
   const router            = useRouter();
@@ -91,9 +99,13 @@ export default function AdminDashboard() {
   const [votersError,   setVotersError]   = useState(null);
 
   const [statsData,    setStatsData]    = useState<any>(null);
-  const [prayerData,   setPrayerData]   = useState<any>(null);
+  // Hijri date only. The admin dashboard deliberately does NOT show
+  // prayer timings — that's the user home screen's job. We still call
+  // the prayers endpoint because it is the only source of the Hijri
+  // date shown in the hero. Do not reintroduce a prayer strip here.
+  const [hijriDate,    setHijriDate]    = useState<string | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [loadingPrayer,setLoadingP]     = useState(true);
+  const [, setLoadingP]                 = useState(true);
   const [statsError,   setStatsError]   = useState<string | null>(null);
   const [refreshing,   setRefreshing]   = useState(false);
 
@@ -150,7 +162,12 @@ export default function AdminDashboard() {
     }
   };
 
-  const firstName = useMemo(() => (user?.name || 'Admin').trim().split(/\s+/)[0], [user?.name]);
+  // Full name, not just the first word — matches the user + super-admin
+  // dashboards so the greeting is consistent across every role.
+  const displayName = useMemo(
+    () => (user?.name || 'Admin').trim().replace(/\s+/g, ' '),
+    [user?.name]
+  );
 
   const fetchStats = useCallback(async () => {
     setStatsError(null);
@@ -164,12 +181,13 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  const fetchPrayer = useCallback(async () => {
+  const fetchHijriDate = useCallback(async () => {
     try {
       const res = await prayersApi.getToday();
-      if (res.success) setPrayerData(res.data);
+      if (res.success) setHijriDate(res.data?.date_hijri || null);
     } catch {
-      // silent — prayer strip is decorative
+      // Silent — the Hijri line is decorative; the dashboard is still
+      // fully usable without it.
     } finally {
       setLoadingP(false);
     }
@@ -177,14 +195,14 @@ export default function AdminDashboard() {
 
   useFocusEffect(useCallback(() => {
     fetchStats();
-    fetchPrayer();
+    fetchHijriDate();
     const t = setInterval(fetchStats, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, [fetchStats, fetchPrayer]));
+  }, [fetchStats, fetchHijriDate]));
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([fetchStats(), fetchPrayer()]);
+    await Promise.all([fetchStats(), fetchHijriDate()]);
     setRefreshing(false);
   };
 
@@ -197,37 +215,6 @@ export default function AdminDashboard() {
       Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
     }
   };
-
-  const nextPrayer = useMemo(() => {
-    if (!prayerData?.timings) return null;
-    // Prayer strings from the backend are IST wall-clock times. Comparing
-    // them against the device's local clock would give the wrong "next"
-    // prayer for anyone whose device isn't set to Asia/Kolkata. Read the
-    // current IST hour+minute directly instead — same pattern as the
-    // user home screen's readIST().
-    let nowMins = new Date().getHours() * 60 + new Date().getMinutes();
-    try {
-      const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Kolkata',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).formatToParts(new Date());
-      const h = parts.find((p) => p.type === 'hour');
-      const m = parts.find((p) => p.type === 'minute');
-      if (h && m) {
-        nowMins = (parseInt(h.value, 10) % 24) * 60 + parseInt(m.value, 10);
-      }
-    } catch { /* fall back to device local */ }
-    const rows = [
-      { key: 'Fajr',    time: prayerData.timings.Fajr    },
-      { key: 'Dhuhr',   time: prayerData.timings.Dhuhr   },
-      { key: 'Asr',     time: prayerData.timings.Asr     },
-      { key: 'Maghrib', time: prayerData.timings.Maghrib },
-      { key: 'Isha',    time: prayerData.timings.Isha    },
-    ];
-    return rows.find((r) => toMinutes(r.time) > nowMins) || rows[0];
-  }, [prayerData]);
 
   const phase      = statsData?.phase || 'closed';
   const phaseCfg   = PHASE[phase] || PHASE.closed;
@@ -258,8 +245,8 @@ export default function AdminDashboard() {
       >
         <Hero
           greeting={active_role === 'super_admin' ? 'Super admin' : 'Zone admin'}
-          name={firstName}
-          dateLine={prayerData?.date_hijri || undefined}
+          name={displayName}
+          dateLine={hijriDate || undefined}
         />
 
         {/* Role switcher — see comment in super-admin/superadmin-dashboard.js
@@ -309,21 +296,6 @@ export default function AdminDashboard() {
             </View>
           );
         })()}
-
-        {/* Prayer strip */}
-        {nextPrayer && (
-          <View style={styles.section}>
-            <Card tone="teal" padding={false}>
-              <View style={styles.prayerStrip}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.prayerEyebrow}>Next prayer</Text>
-                  <Text style={styles.prayerLabel}>{nextPrayer.key}</Text>
-                </View>
-                <Text style={styles.prayerTime}>{format12h(nextPrayer.time)}</Text>
-              </View>
-            </Card>
-          </View>
-        )}
 
         {/* Poll stats */}
         <View style={styles.section}>
@@ -450,6 +422,15 @@ export default function AdminDashboard() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.voterName}>{item.user?.name}</Text>
                       <Text style={styles.voterPhone}>{item.user?.phone}</Text>
+                      {/* When the vote was cast — lets an admin see
+                          turnout timing, and spot a late flurry of
+                          votes right before the 10 AM cutoff. */}
+                      {item.voted_at ? (
+                        <View style={styles.voterTimeRow}>
+                          <Ionicons name="time-outline" size={11} color={colors.inkGhost} />
+                          <Text style={styles.voterTime}>Voted {formatVoteTime(item.voted_at)}</Text>
+                        </View>
+                      ) : null}
                     </View>
                     {item.is_special_case && (
                       <Chip label="Special case" tone="gold" />
@@ -577,13 +558,6 @@ const styles = StyleSheet.create({
 
   section: { paddingHorizontal: space[4], paddingTop: space[4] },
 
-  prayerStrip: {
-    flexDirection: 'row', alignItems: 'center', padding: space[4],
-  },
-  prayerEyebrow: { ...type.micro, color: colors.tealDark, fontWeight: '700' },
-  prayerLabel:   { ...type.h2, marginTop: 2 },
-  prayerTime:    { fontSize: 22, fontWeight: '800', color: colors.tealDark, letterSpacing: -0.3 },
-
   totalStrip: {
     flexDirection: 'row',
     paddingVertical: space[3],
@@ -642,6 +616,8 @@ const styles = StyleSheet.create({
   },
   voterName:  { ...type.bodyStrong },
   voterPhone: { ...type.meta, marginTop: 2 },
+  voterTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  voterTime:  { ...type.micro, color: colors.inkGhost, fontVariant: ['tabular-nums'] },
 
   // Link-user-account modal
   modalOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },

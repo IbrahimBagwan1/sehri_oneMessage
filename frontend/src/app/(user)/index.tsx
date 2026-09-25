@@ -281,9 +281,12 @@ export default function HomeScreen() {
   const [submittingSpecial, setSubmittingSpecial] = useState(false);
   const [refreshing,    setRefreshing]  = useState(false);
 
-  const firstName = useMemo(() => {
+  // Full name, not just the first word — the greeting reads as a proper
+  // salaam to the person. Internal whitespace is collapsed so a stray
+  // double-space in the stored name doesn't render as a gap.
+  const displayName = useMemo(() => {
     if (isGuest) return 'friend';
-    return (user?.name || 'Friend').trim().split(/\s+/)[0];
+    return (user?.name || 'Friend').trim().replace(/\s+/g, ' ');
   }, [user?.name, isGuest]);
 
   // ---- Data loaders ----------------------------------------------------
@@ -437,7 +440,7 @@ export default function HomeScreen() {
       >
         <Hero
           greeting={isGuest ? 'Assalamu alaikum — welcome' : 'Assalamu alaikum'}
-          name={isGuest ? 'to OneMessage' : firstName}
+          name={isGuest ? 'to OneMessage' : displayName}
           dateLine={
             prayerData?.date_hijri
               ? `${prayerData.date_hijri} · ${gregorianLine()}`

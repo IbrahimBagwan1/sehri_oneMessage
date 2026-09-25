@@ -404,11 +404,22 @@ const getZoneVoters = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Poll not found' });
     }
 
+    // ?response=yes (default) | no | all
+    //
+    // Default stays 'yes' so the existing admin drill-down ("Yes voters")
+    // is unchanged. Super admins reviewing turnout need to see who said
+    // no as well, so 'all' is available — the caller decides.
+    const responseFilter = (req.query.response || 'yes').toLowerCase();
+    if (!['yes', 'no', 'all'].includes(responseFilter)) {
+      return error(res, {
+        statusCode: 400,
+        message: "response must be one of: 'yes', 'no', 'all'",
+      });
+    }
+
     // Build the where clause
-    const where = {
-      poll_id: pollId,
-      response: 'yes',
-    };
+    const where = { poll_id: pollId };
+    if (responseFilter !== 'all') where.response = responseFilter;
     if (targetZone) {
       where.zone = targetZone;
     }
@@ -422,19 +433,42 @@ const getZoneVoters = async (req, res, next) => {
           attributes: ['id', 'name', 'phone'],
         },
       ],
-      attributes: ['id', 'zone', 'is_special_case', 'sehri_allowed'],
-      order: [['zone', 'ASC']],
+      // created_at is the moment the vote was cast — the super admin
+      // needs it to audit turnout ("who voted and when"). special_case_at
+      // is the moment they later changed their mind, which is a
+      // different and equally useful timestamp.
+      attributes: [
+        'id',
+        'zone',
+        'response',
+        'is_special_case',
+        'special_case_type',
+        'special_case_at',
+        'sehri_allowed',
+        'created_at',
+      ],
+      // Newest vote first within each zone so the drill-down reads as a
+      // chronological feed rather than arbitrary insertion order.
+      order: [['zone', 'ASC'], ['created_at', 'DESC']],
     });
 
     // Group by zone for cleaner consumption by the admin UI
     const grouped = {};
+    let yesCount = 0;
+    let noCount  = 0;
     for (const r of responses) {
       const z = r.zone;
       if (!grouped[z]) grouped[z] = [];
+      if (r.response === 'yes') yesCount += 1;
+      else if (r.response === 'no') noCount += 1;
       grouped[z].push({
         response_id: r.id,
+        response: r.response,
         is_special_case: r.is_special_case,
+        special_case_type: r.special_case_type,
+        special_case_at: r.special_case_at,
         sehri_allowed: r.sehri_allowed,
+        voted_at: r.created_at,
         user: r.user,
       });
     }
@@ -445,8 +479,11 @@ const getZoneVoters = async (req, res, next) => {
       data: {
         poll: { id: poll.id, date: poll.date },
         zone: targetZone || 'all',
+        response_filter: responseFilter,
         voters: grouped,
-        total_yes: responses.length,
+        total_yes: yesCount,
+        total_no: noCount,
+        total: responses.length,
       },
     });
   } catch (err) {

@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuthStore } from '../store/useAuthStore';
 import { usersApi } from '../api/users';
-import { locationsApi } from '../api/auth';
+import LocationPicker from '../components/LocationPicker';
 import {
   Avatar,
   Button,
@@ -64,13 +64,29 @@ export default function ProfileScreen() {
 }
 
 function ProfileScreenAuthed() {
-  const router  = useRouter();
-  const user    = useAuthStore((s) => s.user);
-  const logout  = useAuthStore((s) => s.logout);
+  const router      = useRouter();
+  const user        = useAuthStore((s) => s.user);
+  const logout      = useAuthStore((s) => s.logout);
+  const activeRole  = useAuthStore((s) => s.active_role);
+
+  // Self-delete is a user-account action. An admin or super admin
+  // deleting themselves here would orphan their zone (and, for the last
+  // super admin, lock the whole community out of administration) — the
+  // backend's DELETE /users/me only anonymizes the linked users row and
+  // wouldn't clean up the admin/super_admin row anyway. Removing a
+  // privileged account is a deliberate super-admin action from the
+  // Zone admins screen, not a self-service button.
+  const canDeleteAccount = activeRole === 'user' || activeRole == null;
 
   const [loading, setLoading]     = useState(true);
   const [profile, setProfile]     = useState(null);
   const [zoneName, setZoneName]   = useState(null);
+  // The PG / hostel row the user is registered under, and the readable
+  // "PG · Zone · Area · Region · City" trail above it. Both come from
+  // the location chain the backend already eager-loads on GET /users/me —
+  // read mode used to throw all of it away and show only the zone.
+  const [pgName, setPgName]       = useState(null);
+  const [locationTrail, setLocationTrail] = useState(null);
 
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving]       = useState(false);
@@ -81,11 +97,12 @@ function ProfileScreenAuthed() {
   const [occupation, setOccupation] = useState('');
   const [address, setAddress]     = useState('');
 
-  const [zones, setZones]                     = useState([]);
-  const [addresses, setAddresses]             = useState([]);
-  const [selectedZone, setSelectedZone]       = useState(null);
-  const [selectedAddress, setSelectedAddress] = useState(null);
-  const [loadingZones, setLoadingZones]       = useState(false);
+  // Location editing goes through the shared cascading LocationPicker.
+  // `initialChain` pre-expands it to wherever the user already lives;
+  // `pickedLocation` is whatever they land on (null until they touch it,
+  // so an untouched picker submits no location change).
+  const [initialChain, setInitialChain]     = useState(null);
+  const [pickedLocation, setPickedLocation] = useState(null);
 
   const [modalType, setModalType]     = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
@@ -103,9 +120,25 @@ function ProfileScreenAuthed() {
         setOccupation(u.occupation || '');
         setAddress(u.address || '');
         const chain = resolveChain(u.location);
-        const zone  = chain.find((c) => c.type === 'zone');
-        setSelectedZone(zone ? { id: zone.id, name: zone.name } : null);
-        setSelectedAddress(u.location?.type === 'address' ? { id: u.location.id, name: u.location.name } : null);
+        const pg = u.location?.type === 'address'
+          ? { id: u.location.id, name: u.location.name }
+          : null;
+        setPgName(pg?.name || null);
+        // Root-first chain for the cascading picker to pre-expand from.
+        setInitialChain(
+          chain.length > 0
+            ? chain.map((c) => ({ id: c.id, name: c.name, type: c.type })).reverse()
+            : null
+        );
+        setPickedLocation(null);
+        // chain is ordered innermost-first (PG → zone → area → region →
+        // city); reverse it so the trail reads broad-to-specific the way
+        // an address normally does.
+        setLocationTrail(
+          chain.length > 1
+            ? chain.map((c) => c.name).reverse().join(' · ')
+            : null
+        );
       }
     } catch (err) {
       Alert.alert("Couldn't load profile", err?.response?.data?.message || 'Try again in a moment.');
@@ -116,34 +149,6 @@ function ProfileScreenAuthed() {
 
   useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
 
-  useEffect(() => {
-    if (!isEditing || zones.length > 0) return;
-    (async () => {
-      try {
-        setLoadingZones(true);
-        const res = await locationsApi.getLocations({ type: 'zone' });
-        setZones(res.data || []);
-      } catch {
-        Alert.alert("Couldn't load zones", 'Try again in a moment.');
-      } finally {
-        setLoadingZones(false);
-      }
-    })();
-  }, [isEditing, zones.length]);
-
-  const loadAddressesForZone = async (zoneId) => {
-    try {
-      const res = await locationsApi.getLocations({ type: 'address', parent_id: zoneId });
-      setAddresses(res.data || []);
-    } catch { setAddresses([]); }
-  };
-
-  const handleZonePick = async (z) => {
-    setSelectedZone(z);
-    setSelectedAddress(null);
-    await loadAddressesForZone(z.id);
-  };
-
   const handleSave = async () => {
     if (!profile) return;
     const changes = {};
@@ -151,8 +156,20 @@ function ProfileScreenAuthed() {
     if (gender && gender !== profile.gender) changes.gender = gender;
     if (occupation && occupation !== profile.occupation) changes.occupation = occupation;
     if (address.trim() && address.trim() !== profile.address) changes.address = address.trim();
-    const intendedLoc = selectedAddress?.id || selectedZone?.id;
-    if (intendedLoc && intendedLoc !== profile.location_id) changes.location_id = intendedLoc;
+    // Only submit a location change if the user actually touched the
+    // picker AND landed somewhere different from where they already are.
+    if (pickedLocation?.id && pickedLocation.id !== profile.location_id) {
+      // Same guard as registration: a location above the zone level
+      // can't be routed to, so refuse rather than submitting a request
+      // that would break their next vote if approved.
+      if (!pickedLocation.hasZone) {
+        return Alert.alert(
+          'Pick a delivery zone',
+          `No delivery zones are set up under ${pickedLocation.name} yet. Pick a different one, or ask an admin to add your PG.`
+        );
+      }
+      changes.location_id = pickedLocation.id;
+    }
 
     if (Object.keys(changes).length === 0) {
       return Alert.alert('Nothing to submit', 'No fields were changed.');
@@ -225,7 +242,6 @@ function ProfileScreenAuthed() {
 
   const openModal = (t) => { if (!isEditing) return; setModalType(t); setModalVisible(true); };
   const modalOptions = modalType === 'gender' ? GENDERS : OCCUPATIONS;
-  const zoneHasAddresses = addresses.length > 0;
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
@@ -286,45 +302,47 @@ function ProfileScreenAuthed() {
               {isEditing && <Ionicons name="chevron-down" size={16} color={colors.inkFaint} />}
             </Pressable>
 
-            <Text style={styles.label}>Zone</Text>
             {isEditing ? (
-              loadingZones ? (
-                <LoadingState message="Loading zones…" compact />
-              ) : (
-                <View style={styles.chipWrap}>
-                  {zones.map((z) => (
-                    <Chip
-                      key={z.id}
-                      label={z.name}
-                      tone={selectedZone?.id === z.id ? 'teal' : 'neutral'}
-                      selected={selectedZone?.id === z.id}
-                      onPress={() => handleZonePick(z)}
-                    />
-                  ))}
-                </View>
-              )
-            ) : (
-              <View style={[styles.select, styles.selectDisabled]}>
-                <Text style={styles.selectText}>{zoneName || '—'}</Text>
-              </View>
-            )}
-
-            {isEditing && zoneHasAddresses && (
               <>
-                <Text style={styles.label}>PG or address</Text>
-                <View style={styles.chipWrap}>
-                  {addresses.map((a) => (
-                    <Chip
-                      key={a.id}
-                      label={a.name}
-                      tone={selectedAddress?.id === a.id ? 'teal' : 'neutral'}
-                      selected={selectedAddress?.id === a.id}
-                      onPress={() => setSelectedAddress(a)}
-                    />
-                  ))}
+                <Text style={styles.label}>Location</Text>
+                <Text style={styles.editHint}>
+                  Pick again from the top, right down to your PG. Location
+                  changes need super-admin approval before they take effect.
+                </Text>
+                <LocationPicker
+                  initialChain={initialChain}
+                  onChange={(picked) => setPickedLocation(picked)}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={styles.label}>Zone</Text>
+                <View style={[styles.select, styles.selectDisabled]}>
+                  <Text style={styles.selectText}>{zoneName || '—'}</Text>
                 </View>
               </>
             )}
+
+            {/* PG / hostel — visible in read mode too, not just while
+                editing. This is the single most-asked-for line on the
+                profile: "which PG am I registered under?" */}
+            {!isEditing && (
+              <>
+                <Text style={styles.label}>PG or hostel</Text>
+                <View style={[styles.select, styles.selectDisabled]}>
+                  <Text style={styles.selectText}>{pgName || 'Not set'}</Text>
+                </View>
+                {locationTrail ? (
+                  <View style={styles.trailRow}>
+                    <Ionicons name="navigate-outline" size={13} color={colors.inkFaint} />
+                    <Text style={styles.trailText}>{locationTrail}</Text>
+                  </View>
+                ) : null}
+              </>
+            )}
+
+            {/* The PG step is part of the cascade above in edit mode, and
+                rendered in the read-mode block — no separate picker needed. */}
 
             <Field label="Building / flat / landmark" value={address} onChangeText={setAddress} editable={isEditing} multiline />
 
@@ -349,8 +367,12 @@ function ProfileScreenAuthed() {
               <ActionRow icon="chatbubble-outline"  label="Send feedback"  color={colors.teal}    onPress={() => router.push('/feedback')} />
               <View style={styles.rowRule} />
               <ActionRow icon="log-out-outline"     label="Sign out"       color={colors.danger}  onPress={handleLogout} />
-              <View style={styles.rowRule} />
-              <ActionRow icon="trash-outline"       label="Delete account" color={colors.danger}  onPress={handleDeleteAccount} loading={deleting} destructive />
+              {canDeleteAccount && (
+                <>
+                  <View style={styles.rowRule} />
+                  <ActionRow icon="trash-outline"    label="Delete account" color={colors.danger}  onPress={handleDeleteAccount} loading={deleting} destructive />
+                </>
+              )}
             </Card>
           </View>
         )}
@@ -438,6 +460,16 @@ const styles = StyleSheet.create({
   selectText:     { ...type.body, color: colors.ink, textTransform: 'capitalize' },
 
   chipWrap: { flexDirection: 'row', gap: space[2], flexWrap: 'wrap' },
+
+  trailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: space[2],
+    paddingHorizontal: 2,
+  },
+  trailText: { ...type.micro, color: colors.inkFaint, flex: 1 },
+  editHint:  { ...type.micro, color: colors.inkFaint, marginBottom: space[3], lineHeight: 16 },
 
   rowRule:    { height: 1, backgroundColor: colors.ruleFaint, marginLeft: space[4] + 20 + space[3] },
   actionRow:  { flexDirection: 'row', alignItems: 'center', gap: space[3], paddingHorizontal: space[4], paddingVertical: space[3] },

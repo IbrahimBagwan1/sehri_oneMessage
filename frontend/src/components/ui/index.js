@@ -8,6 +8,7 @@
  */
 export { default as Avatar }         from './Avatar';
 export { default as Button }         from './Button';
+export { default as Calendar, todayISO } from './Calendar';
 export { default as Card }           from './Card';
 export { default as Chip }           from './Chip';
 export { default as Divider }        from './Divider';

@@ -48,7 +48,9 @@ export default function SuperAdminDashboard() {
   const switchRole        = useAuthStore((s) => s.switchRole);
   const setAvailableRoles = useAuthStore((s) => s.setAvailableRoles);
 
-  const firstName = (user?.name || 'Super admin').trim().split(/\s+/)[0];
+  // Full name, not just the first word — consistent with the user and
+  // admin dashboards.
+  const displayName = (user?.name || 'Super admin').trim().replace(/\s+/g, ' ');
 
   const canSwitchToUser  = available_roles.includes('user');
   const canSwitchToAdmin = available_roles.includes('admin');
@@ -116,7 +118,7 @@ export default function SuperAdminDashboard() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Hero
           greeting="Super admin"
-          name={firstName}
+          name={displayName}
           dateLine={new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' })}
         />
 

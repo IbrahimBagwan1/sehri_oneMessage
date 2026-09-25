@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -63,13 +64,31 @@ export default function RiderLoginScreen() {
     >
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
 
-        {/* Icon */}
-        <View style={styles.iconContainer}>
-          <Ionicons name="bicycle-outline" size={56} color="#0D9488" />
+        {/* Brand block — the app logo, matching the wordmark treatment on
+            the main sign-in screen so riders land somewhere that clearly
+            belongs to OneMessage rather than a generic bicycle glyph. */}
+        <View style={styles.brand}>
+          <Image
+            source={require('../../../assets/images/icon.png')}
+            style={styles.logo}
+            resizeMode="contain"
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel="OneMessage"
+          />
+          <View style={styles.brandNameRow}>
+            <View style={styles.brandDot} />
+            <Text style={styles.brandName}>OneMessage</Text>
+          </View>
+          <View style={styles.brandRule}>
+            <View style={styles.brandRuleLine} />
+            <Ionicons name="bicycle" size={13} color="#B8860B" />
+            <View style={styles.brandRuleLine} />
+          </View>
         </View>
 
-        <Text style={styles.title}>Rider Login</Text>
-        <Text style={styles.subtitle}>Sign in to access your deliveries</Text>
+        <Text style={styles.title}>Rider sign-in</Text>
+        <Text style={styles.subtitle}>Sign in to see today's delivery route</Text>
 
         {/* Phone */}
         <Text style={styles.label}>Phone Number</Text>
@@ -133,9 +152,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 40,
   },
-  iconContainer: {
+  brand: {
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 24,
+  },
+  logo: {
+    width: 72,
+    height: 72,
+    borderRadius: 18,
+    marginBottom: 12,
+  },
+  brandNameRow: { flexDirection: 'row', alignItems: 'center' },
+  brandDot: {
+    width: 9, height: 9, borderRadius: 4.5,
+    backgroundColor: '#0D9488',
+    marginRight: 8,
+  },
+  brandName: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.4,
+  },
+  brandRule: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    width: 150,
+  },
+  brandRuleLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E8D8A8',
   },
   title: {
     fontSize: 28,

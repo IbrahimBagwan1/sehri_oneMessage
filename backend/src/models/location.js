@@ -13,8 +13,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(150),
         allowNull: false,
       },
+      // Hierarchy: city → region → area → zone → address.
+      // 'region' sits between city and area (e.g. "South Bangalore").
+      // Consumers must NOT assume a fixed depth — walk parent_id instead,
+      // since a chain may legitimately skip levels for smaller cities.
       type: {
-        type: DataTypes.ENUM('city', 'area', 'zone', 'address'),
+        type: DataTypes.ENUM('city', 'region', 'area', 'zone', 'address'),
         allowNull: false,
       },
       parent_id: {

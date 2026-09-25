@@ -46,10 +46,23 @@ const validateRegistration = [
     .notEmpty()
     .withMessage('Address is required'),
 
-  body('otp')
-    .trim()
-    .matches(/^\d{4,6}$/)
-    .withMessage('OTP must be 4 to 6 digits'),
+  // Registration proves phone ownership one of two ways:
+  //   • verification_token — issued by POST /api/auth/verify-otp, used by
+  //     the dedicated phone-verification screen that now precedes this form
+  //   • otp — the legacy single-screen path, still accepted so an older
+  //     client build doesn't break mid-rollout
+  // Exactly one is required; the controller enforces which.
+  body()
+    .custom((value, { req }) => {
+      const hasTicket = typeof req.body?.verification_token === 'string'
+        && req.body.verification_token.length > 0;
+      const hasOtp = typeof req.body?.otp === 'string'
+        && /^\d{4,8}$/.test(req.body.otp.trim());
+      if (!hasTicket && !hasOtp) {
+        throw new Error('Verify your phone number before creating an account.');
+      }
+      return true;
+    }),
 
   handleValidationErrors,
 ];
