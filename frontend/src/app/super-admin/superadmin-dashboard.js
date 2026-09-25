@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../store/useAuthStore';
+import RoleSwitcher from '../../components/RoleSwitcher';
 import { adminApi } from '../../api/admin';
 import { locationsApi } from '../../api/auth';
 import {
@@ -45,16 +46,15 @@ export default function SuperAdminDashboard() {
   const router            = useRouter();
   const user              = useAuthStore((s) => s.user);
   const available_roles   = useAuthStore((s) => s.available_roles);
-  const switchRole        = useAuthStore((s) => s.switchRole);
   const setAvailableRoles = useAuthStore((s) => s.setAvailableRoles);
 
   // Full name, not just the first word — consistent with the user and
   // admin dashboards.
   const displayName = (user?.name || 'Super admin').trim().replace(/\s+/g, ' ');
 
-  const canSwitchToUser  = available_roles.includes('user');
-  const canSwitchToAdmin = available_roles.includes('admin');
-  // The other-role list this super-admin can actually switch to.
+  // Whether this super-admin holds any other role. Only used to decide
+  // between the header switcher (RoleSwitcher renders itself when there is
+  // something to switch to) and the "link an account" prompt below.
   const otherRoles = available_roles.filter((r) => r !== 'super_admin');
 
   // Link-user-account sheet state
@@ -76,16 +76,6 @@ export default function SuperAdminDashboard() {
       finally  { setZonesLoading(false); }
     })();
   }, [linkOpen, zones.length]);
-
-  const handleSwitch = async (role) => {
-    try {
-      await switchRole(role);
-      if (role === 'user')  router.replace('/(user)');
-      if (role === 'admin') router.replace('/(admin)');
-    } catch (err) {
-      Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
-    }
-  };
 
   const handleLinkSubmit = async () => {
     if (!pickedZoneId) return;
@@ -111,7 +101,10 @@ export default function SuperAdminDashboard() {
       <Header
         leading={<Wordmark />}
         trailing={
-          <Avatar name={user?.name} size={38} onPress={() => router.push('/profile')} accessibilityLabel="Open profile" />
+          <View style={styles.headerActions}>
+            <RoleSwitcher fallbackRole="super_admin" />
+            <Avatar name={user?.name} size={38} onPress={() => router.push('/profile')} accessibilityLabel="Open profile" />
+          </View>
         }
       />
 
@@ -122,24 +115,13 @@ export default function SuperAdminDashboard() {
           dateLine={new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' })}
         />
 
-        {/* ------------------------------ Role switcher ------------------------------
-            Shows whichever OTHER roles this super-admin actually holds. If they
-            hold none (standalone super-admin — no linked user/admin), we render
-            a subtle "Link a user account" card that unlocks the switch chips
-            with one tap. See POST /api/admin/link-user-account. */}
-        {otherRoles.length > 0 ? (
-          <View style={styles.roleRow}>
-            <Text style={styles.roleLabel}>Switch to</Text>
-            <View style={styles.roleChips}>
-              {canSwitchToUser && (
-                <Chip label="User"       tone="teal" icon="person-outline"  onPress={() => handleSwitch('user')} />
-              )}
-              {canSwitchToAdmin && (
-                <Chip label="Zone admin" tone="teal" icon="shield-outline"  onPress={() => handleSwitch('admin')} />
-              )}
-            </View>
-          </View>
-        ) : (
+        {/* Switching roles lives in the header (see RoleSwitcher). What's
+            left here is the case where there is nothing to switch to yet: a
+            standalone super-admin holds no linked user or admin account, so
+            we prompt them to create one, which unlocks the header switcher.
+            That's onboarding, not a switcher, so it stays a card in the body.
+            See POST /api/admin/link-user-account. */}
+        {otherRoles.length === 0 && (
           <View style={styles.section}>
             <Card tone="warm">
               <View style={styles.linkCardRow}>
@@ -264,9 +246,8 @@ const styles = StyleSheet.create({
   wordmarkDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.teal, marginRight: space[2] },
   wordmark:    { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
 
-  roleRow:    { paddingHorizontal: space[5], paddingBottom: space[3], gap: space[2] },
-  roleLabel:  { ...type.meta, color: colors.inkFaint },
-  roleChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  // Role switching moved into the Header; this row holds what sits there now.
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space[2] },
 
   section: { paddingHorizontal: space[4], paddingTop: space[4] },
 

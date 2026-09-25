@@ -7,14 +7,12 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
-  Modal,
-  Pressable,
-  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
+import RoleSwitcher from '../../components/RoleSwitcher';
 import { prayersApi } from '../../api/prayers';
 import { pollsApi } from '../../api/polls';
 import PrayerWidget from '../../components/prayer/PrayerWidget';
@@ -56,21 +54,6 @@ const PHASE = {
  * NOTE: `t.Dhuhr` etc. elsewhere in this file are AlAdhan API FIELD names
  * coming off the backend — those are wire format and must not be renamed.
  */
-/**
- * The roles a signed-in person can hold, and how each is presented in
- * the switcher. Keyed by the role string the backend issues.
- *
- * `user` is included so the sheet can show which role you're currently
- * in, and so someone who switched INTO this screen from an admin role
- * still sees "Member" marked as active.
- */
-const ROLE_META = {
-  user:        { label: 'Member',      icon: 'person-outline',           blurb: 'Vote, track delivery, and chat' },
-  rider:       { label: 'Rider',       icon: 'bicycle-outline',          blurb: "Today's delivery route and stops" },
-  admin:       { label: 'Zone admin',  icon: 'shield-outline',           blurb: 'Approve members and see your zone' },
-  super_admin: { label: 'Super admin', icon: 'key-outline',              blurb: 'Full community administration' },
-};
-
 // Gregorian date line for the hero. All namaz-time logic now lives in
 // components/prayer/prayerTimes.js and is consumed by PrayerWidget.
 const gregorianLine = () =>
@@ -83,9 +66,6 @@ export default function HomeScreen() {
   const router          = useRouter();
   const user            = useAuthStore((s) => s.user);
   const isGuest         = useAuthStore((s) => s.isGuest);
-  const available_roles = useAuthStore((s) => s.available_roles);
-  const active_role     = useAuthStore((s) => s.active_role);
-  const switchRole      = useAuthStore((s) => s.switchRole);
 
   const [prayerData,    setPrayerData]  = useState<any>(null);
   const [pollData,      setPollData]    = useState<any>(null);
@@ -96,22 +76,6 @@ export default function HomeScreen() {
   const [submittingVote,    setSubmitting]        = useState(false);
   const [submittingSpecial, setSubmittingSpecial] = useState(false);
   const [refreshing,    setRefreshing]  = useState(false);
-  const [roleSheetOpen, setRoleSheetOpen] = useState(false);
-  const [switchingRole, setSwitchingRole] = useState(null);
-
-  // Roles this person can switch INTO (everything they hold except the
-  // one they're already using). Drives whether the header button renders
-  // at all — a plain member has nothing to switch to and sees nothing.
-  //
-  // Falls back to 'user' when active_role is unset: this IS the member
-  // home screen, so that's what you're in. Without the fallback a null
-  // role would leave 'user' in the switchable list and show a button
-  // whose only option is the view you're already looking at.
-  const switchableRoles = useMemo(() => {
-    const current = active_role || 'user';
-    return (available_roles || []).filter((r) => r !== current && ROLE_META[r]);
-  }, [available_roles, active_role]);
-  const canSwitchRole = !isGuest && switchableRoles.length > 0;
 
   // Full name, not just the first word — the greeting reads as a proper
   // salaam to the person. Internal whitespace is collapsed so a stray
@@ -218,23 +182,6 @@ export default function HomeScreen() {
     }
   };
 
-  const handleSwitch = async (role) => {
-    if (switchingRole) return; // ignore double-taps mid-switch
-    setSwitchingRole(role);
-    try {
-      const result = await switchRole(role);
-      setRoleSheetOpen(false);
-      if (result.isRider) return router.push('/(rider)/map');
-      if (role === 'super_admin') return router.replace('/super-admin/superadmin-dashboard');
-      if (role === 'admin') return router.replace('/(admin)');
-      // Switching back to 'user' keeps us on this screen — just close.
-    } catch (err) {
-      Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
-    } finally {
-      setSwitchingRole(null);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <Header
@@ -250,22 +197,10 @@ export default function HomeScreen() {
             />
           ) : (
             <View style={styles.headerActions}>
-              {/* Role switcher — only rendered when this person actually
-                  holds another role, so an ordinary member never sees it.
-                  Sits beside the avatar rather than in a band under the
-                  hero: it's an account-level action, same family as the
-                  profile button, and it no longer costs a row of vertical
-                  space on the busiest screen in the app. */}
-              {canSwitchRole && (
-                <Pressable
-                  onPress={() => setRoleSheetOpen(true)}
-                  style={({ pressed }) => [styles.switchBtn, pressed && styles.switchBtnPressed]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Switch role. You are signed in as ${ROLE_META[active_role]?.label || 'member'}.`}
-                >
-                  <Ionicons name="swap-horizontal" size={19} color={colors.tealDark} />
-                </Pressable>
-              )}
+              {/* Account-level action, same family as the profile button,
+                  and it costs no vertical space on the busiest screen in
+                  the app. Renders nothing for a plain member. */}
+              <RoleSwitcher fallbackRole="user" />
               <Avatar
                 name={user?.name}
                 size={38}
@@ -335,98 +270,7 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      <RoleSwitchSheet
-        visible={roleSheetOpen}
-        onClose={() => setRoleSheetOpen(false)}
-        activeRole={active_role}
-        roles={switchableRoles}
-        switching={switchingRole}
-        onPick={handleSwitch}
-      />
     </SafeAreaView>
-  );
-}
-
-// -------------------------------------------------------------------------
-// RoleSwitchSheet — pick which hat you're wearing.
-//
-// A bottom sheet rather than inline chips: the number of roles varies
-// per person (1–3), a sheet scales to any of them without reflowing the
-// header, and it matches the pattern this app already uses everywhere
-// else for "choose one of these" (profile pickers, PG actions, voter
-// drill-downs).
-// -------------------------------------------------------------------------
-function RoleSwitchSheet({ visible, onClose, activeRole, roles, switching, onPick }) {
-  const activeMeta = ROLE_META[activeRole];
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent
-      onRequestClose={() => (switching ? null : onClose())}
-    >
-      <Pressable style={styles.roleOverlay} onPress={() => (switching ? null : onClose())}>
-        <Pressable style={styles.roleSheet} onPress={() => { /* absorb */ }}>
-          <View style={styles.roleHandle} />
-
-          <View style={styles.roleHead}>
-            <View style={styles.roleOrnamentRow}>
-              <View style={styles.roleOrnamentRule} />
-              <RubStar size={11} />
-              <View style={styles.roleOrnamentRule} />
-            </View>
-            <Text style={styles.roleTitle}>Switch role</Text>
-            {activeMeta ? (
-              <Text style={styles.roleSubtitle}>
-                You&apos;re currently in <Text style={styles.roleSubtitleStrong}>{activeMeta.label}</Text> view
-              </Text>
-            ) : null}
-          </View>
-
-          {roles.map((role) => {
-            const meta = ROLE_META[role];
-            const busy = switching === role;
-            return (
-              <Pressable
-                key={role}
-                onPress={() => onPick(role)}
-                disabled={!!switching}
-                style={({ pressed }) => [
-                  styles.roleOption,
-                  pressed && !switching && styles.roleOptionPressed,
-                  !!switching && !busy && styles.roleOptionMuted,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel={`Switch to ${meta.label}. ${meta.blurb}.`}
-              >
-                <View style={styles.roleOptionIcon}>
-                  <Ionicons name={meta.icon} size={19} color={colors.tealDark} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.roleOptionLabel}>{meta.label}</Text>
-                  <Text style={styles.roleOptionBlurb}>{meta.blurb}</Text>
-                </View>
-                {busy ? (
-                  <ActivityIndicator size="small" color={colors.teal} />
-                ) : (
-                  <Ionicons name="chevron-forward" size={17} color={colors.inkGhost} />
-                )}
-              </Pressable>
-            );
-          })}
-
-          <Button
-            label="Cancel"
-            variant="secondary"
-            onPress={onClose}
-            disabled={!!switching}
-            fullWidth
-            style={{ marginTop: space[3] }}
-          />
-        </Pressable>
-      </Pressable>
-    </Modal>
   );
 }
 
@@ -708,61 +552,6 @@ const styles = StyleSheet.create({
 
   // ---- Header actions (role switch + avatar) ---------------------------
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: space[2] },
-  switchBtn: {
-    width: 38, height: 38, borderRadius: 19,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.tealSoft,
-    borderWidth: 1, borderColor: colors.tealBorder,
-  },
-  switchBtnPressed: { backgroundColor: colors.tealBorder },
-
-  // ---- Role switch sheet ------------------------------------------------
-  roleOverlay: { flex: 1, backgroundColor: colors.scrim, justifyContent: 'flex-end' },
-  roleSheet: {
-    backgroundColor: colors.paper,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    paddingHorizontal: space[5],
-    paddingTop: space[3],
-    paddingBottom: space[5],
-  },
-  roleHandle: {
-    alignSelf: 'center',
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: colors.ruleSoft,
-    marginBottom: space[3],
-  },
-  roleHead: { alignItems: 'center', marginBottom: space[4] },
-  roleOrnamentRow: {
-    flexDirection: 'row', alignItems: 'center', gap: space[2],
-    width: 130, marginBottom: space[1],
-  },
-  roleOrnamentRule: { flex: 1, height: 1, backgroundColor: colors.goldBorder, opacity: 0.6 },
-  roleTitle:    { ...type.h2, color: colors.ink },
-  roleSubtitle: { ...type.meta, color: colors.inkMuted, marginTop: 3 },
-  roleSubtitleStrong: { fontWeight: '800', color: colors.tealDark },
-
-  roleOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[3],
-    paddingVertical: space[3],
-    paddingHorizontal: space[3],
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.ruleSoft,
-    marginBottom: space[2],
-  },
-  roleOptionPressed: { backgroundColor: colors.tealSoft, borderColor: colors.tealBorder },
-  roleOptionMuted:   { opacity: 0.45 },
-  roleOptionIcon: {
-    width: 38, height: 38, borderRadius: radius.md,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.tealSoft,
-    borderWidth: 1, borderColor: colors.tealBorder,
-  },
-  roleOptionLabel: { ...type.bodyStrong, color: colors.ink },
-  roleOptionBlurb: { ...type.micro, color: colors.inkFaint, marginTop: 2 },
 
   // Section wrapper
   section:    { paddingHorizontal: space[4], paddingTop: space[4] },

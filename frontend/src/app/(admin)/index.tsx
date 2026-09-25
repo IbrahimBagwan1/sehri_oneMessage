@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
+import RoleSwitcher from '../../components/RoleSwitcher';
 import { adminApi } from '../../api/admin';
 import { prayersApi } from '../../api/prayers';
 import { locationsApi } from '../../api/auth';
@@ -72,7 +73,6 @@ export default function AdminDashboard() {
   const user              = useAuthStore((s) => s.user);
   const active_role       = useAuthStore((s) => s.active_role);
   const available_roles   = useAuthStore((s) => s.available_roles);
-  const switchRole        = useAuthStore((s) => s.switchRole);
   const setAvailableRoles = useAuthStore((s) => s.setAvailableRoles);
 
   // -----------------------------------------------------------------------
@@ -206,15 +206,13 @@ export default function AdminDashboard() {
     setRefreshing(false);
   };
 
-  const handleSwitch = async (role) => {
-    try {
-      await switchRole(role);
-      if (role === 'user') router.replace('/(user)');
-      else if (role === 'super_admin') router.replace('/super-admin/superadmin-dashboard');
-    } catch (err) {
-      Alert.alert("Couldn't switch role", err?.response?.data?.message || 'Try again in a moment.');
-    }
-  };
+  // Nothing to switch to AND no linked user account: this admin was created
+  // in standalone mode, so we prompt them to link one — that is what unlocks
+  // the header switcher. Onboarding, not a switcher, so it stays in the body.
+  const needsLinkedAccount =
+    available_roles.filter((r) => r !== active_role).length === 0
+    && active_role === 'admin'
+    && !available_roles.includes('user');
 
   const phase      = statsData?.phase || 'closed';
   const phaseCfg   = PHASE[phase] || PHASE.closed;
@@ -227,12 +225,15 @@ export default function AdminDashboard() {
       <Header
         leading={<Wordmark />}
         trailing={
-          <Avatar
-            name={user?.name}
-            size={38}
-            onPress={() => router.push('/profile')}
-            accessibilityLabel="Open profile"
-          />
+          <View style={styles.headerActions}>
+            <RoleSwitcher fallbackRole="admin" />
+            <Avatar
+              name={user?.name}
+              size={38}
+              onPress={() => router.push('/profile')}
+              accessibilityLabel="Open profile"
+            />
+          </View>
         }
       />
 
@@ -249,53 +250,31 @@ export default function AdminDashboard() {
           dateLine={hijriDate || undefined}
         />
 
-        {/* Role switcher — see comment in super-admin/superadmin-dashboard.js
-            for why we render a "link a user account" card when the admin
-            was created in standalone mode (no linked user_id). */}
-        {(() => {
-          const others = available_roles.filter((r) => r !== active_role);
-          if (others.length === 0 && active_role === 'admin' && !available_roles.includes('user')) {
-            return (
-              <View style={styles.section}>
-                <Card tone="warm">
-                  <View style={styles.linkCardRow}>
-                    <View style={styles.linkCardIcon}>
-                      <Ionicons name="swap-horizontal-outline" size={20} color={colors.gold} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.linkCardTitle}>Enable role switching</Text>
-                      <Text style={styles.linkCardBody}>
-                        You don't have a linked user account yet. Link one to switch to
-                        the user view and take part in polls, tracking, and chat.
-                      </Text>
-                    </View>
-                  </View>
-                  <Button
-                    label="Link a user account"
-                    onPress={() => setLinkOpen(true)}
-                    icon="link-outline"
-                    size="sm"
-                    style={{ marginTop: space[3], alignSelf: 'flex-start' }}
-                  />
-                </Card>
+        {needsLinkedAccount && (
+        <View style={styles.section}>
+          <Card tone="warm">
+            <View style={styles.linkCardRow}>
+              <View style={styles.linkCardIcon}>
+                <Ionicons name="swap-horizontal-outline" size={20} color={colors.gold} />
               </View>
-            );
-          }
-          if (others.length === 0) return null;
-          return (
-            <View style={styles.roleRow}>
-              <Text style={styles.roleLabel}>Switch to</Text>
-              <View style={styles.roleChips}>
-                {available_roles.includes('user') && (
-                  <Chip label="User" tone="teal" icon="person-outline" onPress={() => handleSwitch('user')} />
-                )}
-                {available_roles.includes('super_admin') && (
-                  <Chip label="Super admin" tone="teal" icon="key-outline" onPress={() => handleSwitch('super_admin')} />
-                )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.linkCardTitle}>Enable role switching</Text>
+                <Text style={styles.linkCardBody}>
+                  You don't have a linked user account yet. Link one to switch to
+                  the user view and take part in polls, tracking, and chat.
+                </Text>
               </View>
             </View>
-          );
-        })()}
+            <Button
+              label="Link a user account"
+              onPress={() => setLinkOpen(true)}
+              icon="link-outline"
+              size="sm"
+              style={{ marginTop: space[3], alignSelf: 'flex-start' }}
+            />
+          </Card>
+        </View>
+        )}
 
         {/* Poll stats */}
         <View style={styles.section}>
@@ -552,9 +531,8 @@ const styles = StyleSheet.create({
   wordmarkDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.teal, marginRight: space[2] },
   wordmark:    { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
 
-  roleRow:    { paddingHorizontal: space[5], paddingBottom: space[3], gap: space[2] },
-  roleLabel:  { ...type.meta, color: colors.inkFaint },
-  roleChips:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  // Role switching moved into the Header; this row holds what sits there now.
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space[2] },
 
   section: { paddingHorizontal: space[4], paddingTop: space[4] },
 
