@@ -48,6 +48,45 @@ export default function VerifyPhoneScreen() {
   const [sending, setSending]   = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [formError, setFormError] = useState(null);
+  // Distinct from formError: "this number already has an account" is a
+  // dead end with a specific way out (sign in), not a mistake to correct
+  // in place. It gets its own state so it can render a recovery card
+  // with actions rather than a red validation line.
+  const [takenMessage, setTakenMessage] = useState(null);
+
+  /**
+   * Route an API failure to the right piece of UI.
+   *
+   * Branches on the server's machine-readable `code` rather than matching
+   * the message text, so rewording the copy backend-side can't silently
+   * turn the recovery card back into a generic error.
+   */
+  const handleApiError = (err, fallback) => {
+    const body = err?.response?.data;
+    if (body?.code === 'PHONE_ALREADY_REGISTERED') {
+      setFormError(null);
+      setTakenMessage(body.message || 'An account with this number already exists.');
+      return;
+    }
+    setTakenMessage(null);
+    setFormError(
+      body?.message ||
+      (err?.response
+        ? fallback
+        : "Couldn't reach the server. Check your connection and try again.")
+    );
+  };
+
+  const clearErrors = () => {
+    setFormError(null);
+    setTakenMessage(null);
+  };
+
+  // Carry the number over so a returning user isn't retyping it on the
+  // sign-in screen they were just redirected to.
+  const goToLogin = () => {
+    router.replace({ pathname: '/(auth)/login', params: { phone } });
+  };
 
   // Focus the code field as soon as we move to step 2 — one less tap.
   useEffect(() => {
@@ -59,7 +98,7 @@ export default function VerifyPhoneScreen() {
   }, [step]);
 
   const handleSend = async () => {
-    setFormError(null);
+    clearErrors();
     if (!/^[6-9]\d{9}$/.test(phone)) {
       return setFormError("That doesn't look like a valid 10-digit Indian mobile number.");
     }
@@ -72,19 +111,16 @@ export default function VerifyPhoneScreen() {
       setOtp('');
       setStep(STEP.CODE);
     } catch (err) {
-      setFormError(
-        err?.response?.data?.message ||
-        (err?.response
-          ? "Couldn't send the code. Try again in a moment."
-          : "Couldn't reach the server. Check your connection and try again.")
-      );
+      // A taken number is rejected here, before any SMS is sent — the
+      // user never advances to the code step for a dead-end number.
+      handleApiError(err, "Couldn't send the code. Try again in a moment.");
     } finally {
       setSending(false);
     }
   };
 
   const handleVerify = async () => {
-    setFormError(null);
+    clearErrors();
     if (otp.trim().length < 4) {
       return setFormError('Enter the code we sent you.');
     }
@@ -101,12 +137,9 @@ export default function VerifyPhoneScreen() {
         params: { phone, verification_token: token },
       });
     } catch (err) {
-      setFormError(
-        err?.response?.data?.message ||
-        (err?.response
-          ? 'That code is incorrect or has expired. Request a new one.'
-          : "Couldn't reach the server. Check your connection and try again.")
-      );
+      // Also covers the race where the number got claimed between
+      // requesting the code and entering it.
+      handleApiError(err, 'That code is incorrect or has expired. Request a new one.');
     } finally {
       setVerifying(false);
     }
@@ -115,7 +148,7 @@ export default function VerifyPhoneScreen() {
   const changeNumber = () => {
     setStep(STEP.PHONE);
     setOtp('');
-    setFormError(null);
+    clearErrors();
   };
 
   return (
@@ -164,7 +197,7 @@ export default function VerifyPhoneScreen() {
                   placeholder="10-digit mobile number"
                   keyboardType="phone-pad"
                   value={phone}
-                  onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); setFormError(null); }}
+                  onChangeText={(v) => { setPhone(v.replace(/\D/g, '')); clearErrors(); }}
                   maxLength={10}
                   icon="call-outline"
                   autoComplete="tel"
@@ -174,13 +207,17 @@ export default function VerifyPhoneScreen() {
                 />
               </View>
 
-              {formError ? <ErrorBanner message={formError} /> : null}
+              {takenMessage ? (
+                <AccountExistsCard message={takenMessage} onLogin={goToLogin} />
+              ) : formError ? (
+                <ErrorBanner message={formError} />
+              ) : null}
 
               <Button
                 label="Send code"
                 onPress={handleSend}
                 loading={sending}
-                disabled={phone.length !== 10}
+                disabled={phone.length !== 10 || !!takenMessage}
                 fullWidth
                 icon="paper-plane-outline"
                 style={styles.primaryBtn}
@@ -212,7 +249,7 @@ export default function VerifyPhoneScreen() {
                   placeholder={`${otpLength}-digit code`}
                   keyboardType="number-pad"
                   value={otp}
-                  onChangeText={(v) => { setOtp(v.replace(/\D/g, '')); setFormError(null); }}
+                  onChangeText={(v) => { setOtp(v.replace(/\D/g, '')); clearErrors(); }}
                   maxLength={otpLength}
                   icon="lock-closed-outline"
                   autoComplete="sms-otp"
@@ -223,13 +260,17 @@ export default function VerifyPhoneScreen() {
                 <ResendOtpButton onResend={() => authApi.sendOtp(phone, 'registration')} />
               </View>
 
-              {formError ? <ErrorBanner message={formError} /> : null}
+              {takenMessage ? (
+                <AccountExistsCard message={takenMessage} onLogin={goToLogin} />
+              ) : formError ? (
+                <ErrorBanner message={formError} />
+              ) : null}
 
               <Button
                 label="Verify and continue"
                 onPress={handleVerify}
                 loading={verifying}
-                disabled={otp.length < 4}
+                disabled={otp.length < 4 || !!takenMessage}
                 fullWidth
                 icon="checkmark-circle-outline"
                 style={styles.primaryBtn}
@@ -257,6 +298,46 @@ function ErrorBanner({ message }) {
     <View style={styles.errorBanner} accessibilityLiveRegion="polite" accessibilityRole="alert">
       <Ionicons name="alert-circle" size={16} color={colors.danger} />
       <Text style={styles.errorText}>{message}</Text>
+    </View>
+  );
+}
+
+/**
+ * Shown when the number already has an account.
+ *
+ * Deliberately NOT styled as a red error: the person hasn't done
+ * anything wrong, they're just on the wrong screen. Warm gold reads as
+ * "here's where you actually want to go" rather than "you failed", and
+ * the primary action takes them straight there with the number already
+ * carried across.
+ */
+function AccountExistsCard({ message, onLogin }) {
+  return (
+    <View
+      style={styles.existsCard}
+      accessibilityLiveRegion="polite"
+      accessibilityRole="alert"
+    >
+      <View style={styles.existsHeadRow}>
+        <View style={styles.existsIcon}>
+          <Ionicons name="person-circle-outline" size={20} color={colors.gold} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.existsTitle}>You already have an account</Text>
+          <Text style={styles.existsBody}>{message}</Text>
+        </View>
+      </View>
+
+      <Button
+        label="Log in instead"
+        onPress={onLogin}
+        icon="log-in-outline"
+        fullWidth
+        style={styles.existsAction}
+      />
+      <Text style={styles.existsHint}>
+        Using a different number? Edit it above and try again.
+      </Text>
     </View>
   );
 }
@@ -327,6 +408,27 @@ const styles = StyleSheet.create({
     borderColor: colors.danger,
   },
   errorText: { ...type.meta, color: colors.danger, flex: 1, fontWeight: '600', lineHeight: 18 },
+
+  // "Account already exists" recovery card — warm/gold, not red.
+  existsCard: {
+    marginTop: space[4],
+    padding: space[4],
+    borderRadius: radius.lg,
+    backgroundColor: colors.goldSoft,
+    borderWidth: 1,
+    borderColor: colors.goldBorder,
+  },
+  existsHeadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space[3] },
+  existsIcon: {
+    width: 38, height: 38, borderRadius: 19,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.paper,
+    borderWidth: 1, borderColor: colors.goldBorder,
+  },
+  existsTitle:  { ...type.bodyStrong, color: colors.ink },
+  existsBody:   { ...type.meta, color: colors.inkMuted, marginTop: 3, lineHeight: 19 },
+  existsAction: { marginTop: space[4] },
+  existsHint:   { ...type.micro, color: colors.inkFaint, textAlign: 'center', marginTop: space[3] },
 
   footer:       { alignItems: 'center', paddingVertical: space[5] },
   footerText:   { ...type.body, color: colors.inkFaint },

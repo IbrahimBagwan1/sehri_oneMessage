@@ -3,6 +3,11 @@ const bcrypt = require('bcryptjs');
 const db = require('../models');
 const otpService = require('../services/otpService');
 const { verifyVerificationTicket } = require('./otpController');
+const {
+  PHONE_TAKEN_CODE,
+  findAccountsForPhone,
+  describePhoneConflict,
+} = require('../utils/phoneAccounts');
 const { success, error } = require('../utils/response');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { User, Location, Admin, SuperAdmin, Rider } = db;
@@ -116,11 +121,21 @@ const registerUser = async (req, res, next) => {
       }
     }
 
-    const existingUser = await User.findOne({ where: { phone } });
-    if (existingUser) {
+    // Final backstop. The OTP screen rejects taken numbers well before
+    // this point, but /register is a public endpoint and must hold the
+    // invariant on its own.
+    //
+    // Widened from a users-only lookup: phone is UNIQUE in all four
+    // account tables and login resolves across all of them, so an
+    // admin/rider phone registering again here would create a users row
+    // whose password is silently ignored at sign-in (login authenticates
+    // against the highest role found). See utils/phoneAccounts.js.
+    const accounts = await findAccountsForPhone(phone);
+    if (accounts.exists) {
       return error(res, {
         statusCode: 409,
-        message: 'Phone number is already registered',
+        message: describePhoneConflict(accounts),
+        code: PHONE_TAKEN_CODE,
       });
     }
 

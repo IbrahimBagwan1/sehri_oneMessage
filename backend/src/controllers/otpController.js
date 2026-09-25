@@ -3,6 +3,34 @@
 const jwt = require('jsonwebtoken');
 const otpService = require('../services/otpService');
 const { success, error } = require('../utils/response');
+const {
+  PHONE_TAKEN_CODE,
+  findAccountsForPhone,
+  describePhoneConflict,
+} = require('../utils/phoneAccounts');
+
+/**
+ * Reject a registration OTP for a phone that already has an account.
+ *
+ * ONLY applies to purpose='registration'. The forgot-password flow
+ * REQUIRES the account to exist, so running this check unscoped would
+ * break password resets entirely.
+ *
+ * Returns true when the request was rejected (response already sent).
+ */
+const rejectIfPhoneTaken = async (res, phone, purpose) => {
+  if (purpose !== 'registration') return false;
+
+  const accounts = await findAccountsForPhone(phone);
+  if (!accounts.exists) return false;
+
+  error(res, {
+    statusCode: 409,
+    message: describePhoneConflict(accounts),
+    code: PHONE_TAKEN_CODE,
+  });
+  return true;
+};
 
 // A phone-verification ticket is a short-lived JWT proving "this device
 // proved control of this phone number just now". It exists because
@@ -57,6 +85,19 @@ const sendOtp = async (req, res, next) => {
   try {
     const { phone, purpose } = req.body;
 
+    // Stop a registration OTP for an already-registered number BEFORE
+    // spending an SMS on it. Three reasons this belongs here rather than
+    // only at verify time:
+    //   • every send costs real money at the provider
+    //   • otpService starts a 60-second resend cooldown on success, so a
+    //     later rejection would leave the user cooling down on a number
+    //     they can never register anyway
+    //   • the user learns in a second instead of after waiting for an
+    //     SMS and typing a code
+    // Scoped to purpose='registration' — forgot-password needs the
+    // account to exist.
+    if (await rejectIfPhoneTaken(res, phone, purpose)) return;
+
     const result = await otpService.sendOtp(phone, purpose);
 
     return success(res, {
@@ -81,13 +122,27 @@ const sendOtp = async (req, res, next) => {
  * This is what lets phone verification live on its own screen ahead of
  * the registration form.
  *
- * Deliberately does NOT reveal whether the phone is already registered —
- * that would turn this into an account-enumeration oracle. Registration
- * itself returns the 409 once the full form is submitted.
+ * Re-checks phone availability as a RACE GUARD. send-otp already
+ * rejected taken numbers, but minutes can pass between requesting and
+ * entering a code, and the number could be claimed in that window by
+ * another device. Cheap query, closes the gap.
+ *
+ * On account enumeration: this does surface whether a number is
+ * registered. That's an accepted trade here, not an oversight — the
+ * forgot-password endpoint already answers the same question (it 404s
+ * with "No account found with this phone number"), so the surface
+ * exists regardless, and both OTP endpoints are IP rate-limited. The
+ * alternative — letting someone fill in an entire registration form
+ * before telling them the number is taken — is a worse product for a
+ * community app with no meaningful enumeration threat model.
  */
 const verifyOtp = async (req, res, next) => {
   try {
     const { phone, purpose, otp } = req.body;
+
+    // Check before consuming the code: a taken number shouldn't burn
+    // the user's OTP on a path that can't proceed.
+    if (await rejectIfPhoneTaken(res, phone, purpose)) return;
 
     const isValid = await otpService.verifyOtp(phone, purpose, otp);
     if (!isValid) {

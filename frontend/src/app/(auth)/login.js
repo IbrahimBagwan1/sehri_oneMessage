@@ -10,7 +10,7 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../../api/auth';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -23,7 +23,13 @@ export default function LoginScreen() {
   const setAuth         = useAuthStore((s) => s.setAuth);
   const continueAsGuest = useAuthStore((s) => s.continueAsGuest);
 
-  const [phone,    setPhone]    = useState('');
+  // Seeded when the user arrives here from the verify-phone screen after
+  // finding out their number already has an account — no point making
+  // them type it a second time.
+  const params = useLocalSearchParams();
+  const seededPhone = typeof params.phone === 'string' ? params.phone : '';
+
+  const [phone,    setPhone]    = useState(seededPhone);
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
   // Inline error shown under the sign-in button. The backend returns
