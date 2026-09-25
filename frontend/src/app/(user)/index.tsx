@@ -8,9 +8,10 @@ import {
   RefreshControl,
   Alert,
   Dimensions,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useIsFocused, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
 import { prayersApi } from '../../api/prayers';
@@ -55,6 +56,20 @@ const PRAYER_TIMELINE = [
   { key: 'maghrib',  label: 'Maghrib',  extended: false },
   { key: 'isha',     label: 'Isha',     extended: false },
 ];
+
+/**
+ * Ribbon nodes that are NOT obligatory prayers. They stay on the
+ * timeline because the community needs them, but they can never be the
+ * "current prayer" and the caption stops them being read as one:
+ *   • Sunrise — the moment Fajr's window closes
+ *   • Imsak   — when the fast begins in Ramadan
+ *   • Tahajjud — voluntary night prayer
+ */
+const NON_PRAYER_NOTE = {
+  sunrise:  'Fajr ends',
+  imsak:    'fast begins',
+  tahajjud: 'voluntary',
+};
 
 // -------------------------------------------------------------------------
 // Pure helpers — deterministic, testable
@@ -136,6 +151,23 @@ const format12h = (t) => {
   return `${h12}:${String(hm.m).padStart(2, '0')} ${suffix}`;
 };
 
+/**
+ * Format a Date as an IST wall clock time ("4:30 pm"). Used for the
+ * window start/end labels, which are real Date instants rather than the
+ * raw "HH:MM" strings format12h takes.
+ */
+const formatClock = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
+  return date
+    .toLocaleTimeString('en-IN', {
+      timeZone: IST_TZ,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+    .toLowerCase();
+};
+
 const gregorianLine = () =>
   new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long' });
 
@@ -179,86 +211,163 @@ const buildTimeline = (data) => {
 };
 
 /**
- * The "next" prayer is the future one with the SMALLEST timestamp.
+ * Build the five obligatory prayer WINDOWS for the current moment.
  *
- * Historical bug we must never reintroduce: previous versions did
- * `timeline.find(r => !r.isPast)`, which returns the first array element
- * that isn't past — not the earliest in time. Because Tahajjud sits at
- * index 0 and (once today's has passed) rolls forward to tomorrow's
- * ~2 AM, it was *always* in the future and *always* won the "next" slot,
- * regardless of whether Dhuhr, Asr, Maghrib, or Isha were coming up
- * sooner today. Sort by absolute `at` here — never by array order.
+ * A namaz is valid for a span of time, not an instant — the window for
+ * each prayer runs until the next one begins. Getting this right means
+ * modelling three things the naive "list of times" view gets wrong:
  *
- * Verified edge cases:
- *   • right before Fajr (04:45) → next = Imsak
- *   • right after Isha (21:30)  → next = Tahajjud (tomorrow ~02:14)
- *   • during Tahajjud   (02:30) → next = Imsak (later today)
- *   • right after midnight (00:15) → next = Tahajjud (later today ~02:14)
+ *   1. SUNRISE ENDS FAJR. Sunrise is not a prayer; it is the moment
+ *      Fajr's window closes. Treating it as a prayer would tell a user
+ *      at 7 AM that "Sunrise" is their current namaz, which is wrong.
  *
- * Fallback: if for some reason every row is past (missing tahajjud_time
- * plus everything else has passed), roll tomorrow's Fajr forward so the
- * countdown never shows a negative gap.
+ *   2. SUNRISE → DHUHR IS A GAP. There is no obligatory prayer in that
+ *      stretch. We surface it honestly as "no prayer right now, Dhuhr
+ *      is next" rather than pretending one is active.
+ *
+ *   3. ISHA CROSSES MIDNIGHT. Its window ends at the NEXT day's Fajr,
+ *      so at 1 AM the current prayer is Isha — anchored to yesterday.
+ *
+ * To cover all 24 hours without gaps we build a chain spanning
+ * yesterday's Isha through tomorrow's Fajr, then pick whichever window
+ * brackets "now".
+ *
+ * Tomorrow's / yesterday's Fajr are approximated as today's Fajr ±24h.
+ * Real Fajr drifts about a minute a day, so the boundary is accurate to
+ * within ~60 s — immaterial for a countdown, and it avoids a second API
+ * call for adjacent dates.
  */
-const findNext = (timeline) => {
-  if (!timeline || timeline.length === 0) return null;
-  const future = timeline
-    .filter((r) => !r.isPast)
-    .sort((a, b) => a.at.getTime() - b.at.getTime());
-  if (future.length > 0) return future[0];
+const buildPrayerWindows = (data) => {
+  if (!data) return [];
+  const t = data.timings || {};
 
-  const first = timeline.find((r) => r.key === 'fajr') ||
-                timeline.find((r) => !r.extended) ||
-                timeline[0];
-  const rollover = new Date(first.at.getTime() + DAY_MS);
-  return { ...first, at: rollover, isPast: false };
+  const nowIST = readIST();
+  const at = (timeStr, dayOffset = 0) => {
+    const hm = parseHM(timeStr);
+    if (!hm) return null;
+    const d = istWallClockToDate(nowIST.y, nowIST.m, nowIST.d, hm.h, hm.m);
+    return dayOffset ? new Date(d.getTime() + dayOffset * DAY_MS) : d;
+  };
+
+  const fajr    = at(t.Fajr);
+  const sunrise = at(t.Sunrise);
+  const dhuhr   = at(t.Dhuhr);
+  const asr     = at(t.Asr);
+  const maghrib = at(t.Maghrib);
+  const isha    = at(t.Isha);
+
+  // Without Fajr and Dhuhr we can't anchor anything meaningful.
+  if (!fajr || !dhuhr) return [];
+
+  const fajrTomorrow  = new Date(fajr.getTime() + DAY_MS);
+  const ishaYesterday = isha ? new Date(isha.getTime() - DAY_MS) : null;
+
+  const windows = [];
+  const push = (key, label, start, end, extra = {}) => {
+    if (start && end && end.getTime() > start.getTime()) {
+      windows.push({ key, label, start, end, ...extra });
+    }
+  };
+
+  // Yesterday's Isha still running into this morning's Fajr.
+  push('isha', 'Isha', ishaYesterday, fajr);
+  // Fajr closes at sunrise, not at Dhuhr.
+  push('fajr', 'Fajr', fajr, sunrise || dhuhr);
+  // The no-obligatory-prayer stretch after sunrise.
+  push('gap', 'Dhuhr', sunrise, dhuhr, { isGap: true });
+  push('dhuhr',   'Dhuhr',   dhuhr,   asr || maghrib);
+  push('asr',     'Asr',     asr,     maghrib || isha);
+  push('maghrib', 'Maghrib', maghrib, isha);
+  // Tonight's Isha runs to tomorrow's Fajr.
+  push('isha', 'Isha', isha, fajrTomorrow);
+
+  return windows;
 };
 
 /**
- * Adaptive formatting: hours + minutes when far off, minutes + seconds
- * inside the last hour, seconds only inside the last minute. Keeps the
- * seconds counter from feeling jittery when a prayer is hours away.
+ * Which window are we inside right now?
+ *
+ * Returns { key, label, start, end, isGap, elapsedMs, totalMs } or null
+ * if the data was too incomplete to build a chain. The chain covers a
+ * continuous 48-hour span, so under normal data a match always exists.
  */
-const formatCountdown = (ms) => {
-  if (!Number.isFinite(ms) || ms <= 0) return 'now';
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
-  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
-  return `${s}s`;
+const findCurrentWindow = (windows) => {
+  if (!windows || windows.length === 0) return null;
+
+  // Window boundaries are already epoch-anchored Dates (istWallClockToDate
+  // converts IST wall clock to a real UTC instant), so a plain Date.now()
+  // comparison is both correct and full-precision — no timezone maths
+  // needed at this layer.
+  const nowMs = Date.now();
+
+  const match = windows.find((w) => nowMs >= w.start.getTime() && nowMs < w.end.getTime());
+  if (!match) return null;
+
+  const totalMs   = match.end.getTime() - match.start.getTime();
+  const elapsedMs = nowMs - match.start.getTime();
+  return { ...match, elapsedMs, totalMs };
+};
+
+/**
+ * Split a duration into h/m/s parts for the segmented countdown display.
+ * Clamped at zero so a boundary crossing never renders negative numbers
+ * in the moment before the window recomputes.
+ */
+const splitDuration = (ms) => {
+  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
+  return {
+    h: Math.floor(total / 3600),
+    m: Math.floor((total % 3600) / 60),
+    s: total % 60,
+    totalSeconds: total,
+  };
 };
 
 // -------------------------------------------------------------------------
-// Live countdown hook — self-adjusting tick rate.
-//   - >5 min out: tick every 30s (minute precision anyway)
-//   - >1 hour out: tick every 60s
-//   - <5 min out: tick every 1s
-// Cuts wasted renders 60x/min → 2x/min for most of the day.
+// Live countdown hook — ticks every second so the counter visibly runs.
+//
+// A once-a-minute tick (what this used to do) makes a "time left" readout
+// look frozen, which is the whole thing the user watches. One render per
+// second is cheap for a single card, and we keep it honest by suspending
+// the interval whenever the screen isn't actually being looked at:
+//   • screen not focused (user on another tab) — useIsFocused
+//   • app backgrounded — AppState
+// On resume we recompute immediately rather than waiting a tick, so the
+// number is never stale for a second after the user returns.
 // -------------------------------------------------------------------------
-const useCountdown = (targetMs) => {
-  const [, force] = useState(0);
+const useLiveCountdown = (targetMs, enabled = true) => {
+  const isFocused = useIsFocused();
+  const [remaining, setRemaining] = useState(() =>
+    targetMs ? Math.max(0, targetMs - Date.now()) : 0
+  );
+
   useEffect(() => {
-    if (!targetMs) return undefined;
-    const tick = () => {
-      const remaining = targetMs - Date.now();
-      let interval;
-      if (remaining <= 0) interval = 60_000;
-      else if (remaining < 5 * 60_000) interval = 1_000;
-      else if (remaining < 60 * 60_000) interval = 60_000;
-      else interval = 60_000;
-      force((n) => n + 1);
-      return interval;
+    if (!targetMs || !enabled) return undefined;
+
+    const compute = () => setRemaining(Math.max(0, targetMs - Date.now()));
+    compute(); // immediate, so resuming never shows a stale value
+
+    if (!isFocused) return undefined;
+
+    let interval = setInterval(compute, 1000);
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        compute();
+        if (!interval) interval = setInterval(compute, 1000);
+      } else if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    });
+
+    return () => {
+      if (interval) clearInterval(interval);
+      sub.remove();
     };
-    let handle;
-    const schedule = () => {
-      const next = tick();
-      handle = setTimeout(schedule, next);
-    };
-    schedule();
-    return () => clearTimeout(handle);
-  }, [targetMs]);
-  return targetMs ? Math.max(0, targetMs - Date.now()) : 0;
+  }, [targetMs, enabled, isFocused]);
+
+  return remaining;
 };
 
 // =========================================================================
@@ -399,8 +508,27 @@ export default function HomeScreen() {
 
   // ---- Derived ---------------------------------------------------------
   const timeline = useMemo(() => buildTimeline(prayerData), [prayerData]);
-  const nextPrayer = useMemo(() => findNext(timeline), [timeline]);
-  const remainingMs = useCountdown(nextPrayer?.at?.getTime());
+  const windows  = useMemo(() => buildPrayerWindows(prayerData), [prayerData]);
+
+  // `windowTick` forces the current-window lookup to re-run when a
+  // boundary is crossed. Without it the card would keep counting down
+  // past zero into a window that already ended, because findCurrentWindow
+  // is a useMemo and nothing else would invalidate it.
+  const [windowTick, setWindowTick] = useState(0);
+  const current = useMemo(
+    () => findCurrentWindow(windows),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [windows, windowTick]
+  );
+
+  const remainingMs = useLiveCountdown(current?.end?.getTime());
+
+  // Roll over to the next window the moment this one expires.
+  useEffect(() => {
+    if (!current?.end) return;
+    if (remainingMs > 0) return;
+    setWindowTick((n) => n + 1);
+  }, [remainingMs, current?.end]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -482,7 +610,7 @@ export default function HomeScreen() {
           ) : (
             <PrayerCard
               timeline={timeline}
-              nextPrayer={nextPrayer}
+              current={current}
               remainingMs={remainingMs}
               isFallback={prayerData?.is_from_api === false}
             />
@@ -521,43 +649,106 @@ export default function HomeScreen() {
 // -------------------------------------------------------------------------
 // PrayerCard — hero countdown + horizontal ribbon timeline
 // -------------------------------------------------------------------------
-function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
+function PrayerCard({ timeline, current, remainingMs, isFallback }) {
   const scrollRef = useRef(null);
   const nodePositions = useRef({});
   const screenWidth = Dimensions.get('window').width;
 
-  // Auto-scroll horizontally so the "next" node sits ~1/3 from the left,
-  // giving the reader both past context and what's coming next.
+  // The ribbon node to bring into view: the prayer currently running, or
+  // during the post-sunrise gap the one coming up next.
+  const focusKey = current?.isGap ? 'dhuhr' : current?.key;
+
   useEffect(() => {
-    if (!nextPrayer?.key) return;
+    if (!focusKey) return;
     const t = setTimeout(() => {
-      const x = nodePositions.current[nextPrayer.key];
+      const x = nodePositions.current[focusKey];
       if (x != null) {
         const targetX = Math.max(0, x - screenWidth * 0.28);
         scrollRef.current?.scrollTo({ x: targetX, animated: true });
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [nextPrayer?.key, screenWidth]);
+  }, [focusKey, screenWidth]);
+
+  const { h, m, s } = splitDuration(remainingMs);
+  // Progress through the current window, 0–1. During the gap this shows
+  // how close Dhuhr is rather than how much of a prayer is left.
+  const progress = current?.totalMs
+    ? Math.min(1, Math.max(0, current.elapsedMs / current.totalMs))
+    : 0;
+
+  // Under five minutes left is the "hurry" state — the window is about
+  // to close and that deserves visual weight rather than a quiet number.
+  const isUrgent = !current?.isGap && remainingMs > 0 && remainingMs < 5 * 60_000;
 
   return (
     <Card padding={false}>
       {/* ---- Countdown hero -------------------------------------------- */}
-      <View style={styles.hero}>
-        <View style={styles.heroEyebrowRow}>
-          <RubStar size={11} />
-          <Text style={styles.heroEyebrow}>Next prayer</Text>
-        </View>
-        <Text style={styles.heroPrayerName}>{nextPrayer?.label || '—'}</Text>
-
-        <View style={styles.heroCountdownRow}>
-          <Text style={styles.heroCountdown}>{formatCountdown(remainingMs)}</Text>
-          <View style={styles.heroDivider} />
-          <View>
-            <Text style={styles.heroAtLabel}>at</Text>
-            <Text style={styles.heroAtTime}>{format12h(nextPrayer?.time)}</Text>
+      <View style={[styles.hero, isUrgent && styles.heroUrgent]}>
+        <View style={styles.heroTopRow}>
+          <View style={styles.heroEyebrowRow}>
+            <RubStar size={11} />
+            <Text style={[styles.heroEyebrow, isUrgent && styles.heroEyebrowUrgent]}>
+              {current?.isGap ? 'Up next' : 'Current prayer'}
+            </Text>
           </View>
+          {!current?.isGap && current ? (
+            <View style={[styles.liveBadge, isUrgent && styles.liveBadgeUrgent]}>
+              <View style={[styles.livePulse, isUrgent && styles.livePulseUrgent]} />
+              <Text style={[styles.liveBadgeText, isUrgent && styles.liveBadgeTextUrgent]}>
+                In progress
+              </Text>
+            </View>
+          ) : null}
         </View>
+
+        <Text style={styles.heroPrayerName}>{current?.label || '—'}</Text>
+
+        {/* Segmented live counter — ticks every second */}
+        <Text style={[styles.heroCountLabel, isUrgent && styles.heroCountLabelUrgent]}>
+          {current?.isGap ? 'Begins in' : 'Time left'}
+        </Text>
+        <View
+          style={styles.counterRow}
+          accessibilityRole="timer"
+          accessibilityLabel={
+            current
+              ? `${current.isGap ? `${current.label} begins in` : `${current.label} ends in`} ${h} hours ${m} minutes ${s} seconds`
+              : 'Prayer times unavailable'
+          }
+        >
+          {h > 0 && (
+            <>
+              <CounterSegment value={h} unit="hr" urgent={isUrgent} />
+              <Text style={[styles.counterColon, isUrgent && styles.counterColonUrgent]}>:</Text>
+            </>
+          )}
+          <CounterSegment value={m} unit="min" urgent={isUrgent} pad={h > 0} />
+          <Text style={[styles.counterColon, isUrgent && styles.counterColonUrgent]}>:</Text>
+          <CounterSegment value={s} unit="sec" urgent={isUrgent} pad />
+        </View>
+
+        {/* Window progress — how far through this prayer's time we are */}
+        {current ? (
+          <View style={styles.progressWrap}>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  isUrgent && styles.progressFillUrgent,
+                  { width: `${Math.round(progress * 100)}%` },
+                ]}
+              />
+            </View>
+            <View style={styles.windowRow}>
+              <Text style={styles.windowEdge}>{formatClock(current.start)}</Text>
+              <Text style={styles.windowMid}>
+                {current.isGap ? 'no prayer due' : 'window'}
+              </Text>
+              <Text style={styles.windowEdge}>{formatClock(current.end)}</Text>
+            </View>
+          </View>
+        ) : null}
       </View>
 
       {/* ---- Ornament divider ------------------------------------------ */}
@@ -575,14 +766,16 @@ function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
         contentContainerStyle={styles.timeline}
       >
         {timeline.map((row, i) => {
-          const isNext = nextPrayer && row.key === nextPrayer.key;
-          const isPast = row.isPast && !isNext;
+          // The prayer whose window is running right now gets the filled
+          // marker. During the post-sunrise gap nothing is "current", so
+          // we ring the upcoming Dhuhr instead.
+          const isCurrent = !current?.isGap && current?.key === row.key;
+          const isUpNext  = current?.isGap && row.key === 'dhuhr';
+          const isPast    = row.isPast && !isCurrent && !isUpNext;
           const isFirst = i === 0;
           const isLast  = i === timeline.length - 1;
 
-          // Segment leading INTO this node is "past" when the current
-          // node is past OR is the next-upcoming one.
-          const leadPastColored  = i > 0 && (timeline[i].isPast || isNext);
+          const leadPastColored  = i > 0 && (timeline[i].isPast || isCurrent || isUpNext);
           const trailPastColored = i < timeline.length - 1 && timeline[i].isPast;
 
           return (
@@ -609,22 +802,31 @@ function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
               <View style={[
                 styles.dot,
                 isPast && styles.dotPast,
-                isNext && styles.dotNext,
+                isUpNext && styles.dotNext,
+                isCurrent && styles.dotCurrent,
               ]}>
-                {isNext && <View style={styles.dotInner} />}
+                {isCurrent && <View style={styles.dotCurrentInner} />}
+                {isUpNext && <View style={styles.dotInner} />}
               </View>
 
               {/* Label + time */}
               <Text style={[
                 styles.nodeLabel,
-                isNext && styles.nodeLabelNext,
+                (isCurrent || isUpNext) && styles.nodeLabelNext,
                 isPast && styles.nodeLabelPast,
               ]} numberOfLines={1}>{row.label}</Text>
               <Text style={[
                 styles.nodeTime,
-                isNext && styles.nodeTimeNext,
+                (isCurrent || isUpNext) && styles.nodeTimeNext,
                 isPast && styles.nodeTimePast,
               ]} numberOfLines={1}>{format12h(row.time)}</Text>
+
+              {/* Sunrise and the two Ramadan markers are not prayers —
+                  a one-word caption stops them reading as one on a
+                  timeline whose other nodes all are. */}
+              {NON_PRAYER_NOTE[row.key] ? (
+                <Text style={styles.nodeNote} numberOfLines={1}>{NON_PRAYER_NOTE[row.key]}</Text>
+              ) : null}
             </View>
           );
         })}
@@ -637,6 +839,22 @@ function PrayerCard({ timeline, nextPrayer, remainingMs, isFallback }) {
         </View>
       )}
     </Card>
+  );
+}
+
+/**
+ * One h/m/s block of the live counter. Tabular numerals keep the digits
+ * from shifting horizontally as they tick, which is what makes a running
+ * counter feel steady instead of twitchy.
+ */
+function CounterSegment({ value, unit, urgent, pad }) {
+  return (
+    <View style={styles.counterSegment}>
+      <Text style={[styles.counterValue, urgent && styles.counterValueUrgent]}>
+        {pad ? String(value).padStart(2, '0') : String(value)}
+      </Text>
+      <Text style={[styles.counterUnit, urgent && styles.counterUnitUrgent]}>{unit}</Text>
+    </View>
   );
 }
 
@@ -934,21 +1152,76 @@ const styles = StyleSheet.create({
     backgroundColor: colors.tealSoft,
     borderBottomWidth: 0,
   },
+  // Urgent = under 5 minutes of the window left. Warm amber wash rather
+  // than red: the window closing is a nudge, not an error.
+  heroUrgent:      { backgroundColor: colors.warnSoft },
+
+  heroTopRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   heroEyebrowRow:  { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   heroEyebrow:     { ...type.micro, color: colors.tealDark, fontWeight: '700' },
-  heroPrayerName:  { fontSize: 26, fontWeight: '800', color: colors.ink, letterSpacing: -0.4, marginBottom: space[3] },
+  heroEyebrowUrgent: { color: colors.warn },
+  heroPrayerName:  { fontSize: 30, fontWeight: '800', color: colors.ink, letterSpacing: -0.5, marginBottom: space[3] },
 
-  heroCountdownRow:{ flexDirection: 'row', alignItems: 'center', gap: space[3] },
-  heroCountdown:   {
-    fontSize: 32,
+  liveBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.paper,
+    borderWidth: 1, borderColor: colors.tealBorder,
+    borderRadius: radius.pill,
+    paddingHorizontal: space[2], paddingVertical: 3,
+  },
+  liveBadgeUrgent:     { borderColor: colors.warn },
+  livePulse:           { width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.teal },
+  livePulseUrgent:     { backgroundColor: colors.warn },
+  liveBadgeText:       { ...type.micro, color: colors.tealDark, fontWeight: '700' },
+  liveBadgeTextUrgent: { color: colors.warn },
+
+  heroCountLabel:       { ...type.micro, color: colors.inkFaint, fontWeight: '700', marginBottom: 2 },
+  heroCountLabelUrgent: { color: colors.warn },
+
+  // Segmented running counter
+  counterRow:     { flexDirection: 'row', alignItems: 'flex-end' },
+  counterSegment: { alignItems: 'center', minWidth: 46 },
+  counterValue: {
+    fontSize: 38,
     fontWeight: '800',
     color: colors.tealDark,
-    letterSpacing: -0.6,
+    letterSpacing: -1,
+    // Tabular numerals stop the digits jittering sideways each tick.
     fontVariant: ['tabular-nums'],
+    lineHeight: 42,
   },
-  heroDivider:     { width: 1, height: 32, backgroundColor: colors.tealBorder },
-  heroAtLabel:     { ...type.micro, color: colors.inkFaint, fontWeight: '600' },
-  heroAtTime:      { ...type.bodyStrong, color: colors.tealDark, marginTop: 2, fontVariant: ['tabular-nums'] },
+  counterValueUrgent: { color: colors.warn },
+  counterUnit:        { ...type.micro, color: colors.inkFaint, fontWeight: '700', marginTop: -2 },
+  counterUnitUrgent:  { color: colors.warn },
+  counterColon: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: colors.tealBorder,
+    marginHorizontal: 2,
+    lineHeight: 42,
+  },
+  counterColonUrgent: { color: colors.warn, opacity: 0.5 },
+
+  // Window progress bar
+  progressWrap:  { marginTop: space[4] },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.paper,
+    borderWidth: 1,
+    borderColor: colors.tealBorder,
+    overflow: 'hidden',
+  },
+  progressFill:       { height: '100%', backgroundColor: colors.teal, borderRadius: 3 },
+  progressFillUrgent: { backgroundColor: colors.warn },
+  windowRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  windowEdge: { ...type.micro, color: colors.inkFaint, fontVariant: ['tabular-nums'] },
+  windowMid:  { ...type.micro, color: colors.inkGhost, fontStyle: 'italic' },
 
   // ---- Ornament divider between hero + ribbon --------------------------
   ornamentDivider: {
@@ -1004,6 +1277,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.tealBorder,
     borderColor: colors.tealBorder,
   },
+  // "Up next" — hollow gold ring. Used during the post-sunrise gap.
   dotNext: {
     width: 20, height: 20, borderRadius: 10,
     backgroundColor: colors.paper,
@@ -1022,6 +1296,26 @@ const styles = StyleSheet.create({
     width: 10, height: 10, borderRadius: 5,
     backgroundColor: colors.teal,
   },
+  // "Currently running" — filled teal with a gold ring. Deliberately the
+  // heaviest marker on the ribbon: it's the answer to the question the
+  // user opened this screen to ask.
+  dotCurrent: {
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: colors.teal,
+    borderWidth: 2.5, borderColor: colors.gold,
+    marginTop: -4,
+    marginBottom: space[3] - 4,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: colors.teal,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.45,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  dotCurrentInner: {
+    width: 7, height: 7, borderRadius: 3.5,
+    backgroundColor: colors.paper,
+  },
 
   // Node text
   nodeLabel:     { ...type.meta, color: colors.inkMuted, fontWeight: '600', textAlign: 'center' },
@@ -1030,6 +1324,7 @@ const styles = StyleSheet.create({
   nodeTime:      { ...type.micro, color: colors.inkFaint, textAlign: 'center', marginTop: 2, fontVariant: ['tabular-nums'] },
   nodeTimeNext:  { color: colors.tealDark, fontWeight: '700' },
   nodeTimePast:  { color: colors.inkGhost },
+  nodeNote:      { ...type.micro, color: colors.inkGhost, textAlign: 'center', marginTop: 1, fontSize: 9, fontStyle: 'italic' },
 
   // Fallback hint
   calcHint: {
