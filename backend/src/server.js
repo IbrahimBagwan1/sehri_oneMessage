@@ -24,6 +24,7 @@ const paymentRoutes = require('./routes/payment');     // payment contact + host
 const broadcastRoutes = require('./routes/broadcasts'); // super-admin push broadcasts
 const path = require('path');
 const { initSocket } = require('./services/socketService');
+const chatGroupSync = require('./services/chatGroupSync');
 const logger = require('./utils/logger');
 const { error } = require('./utils/response');
 
@@ -149,6 +150,16 @@ testConnection()
     // Bind to 0.0.0.0 so phones on the same network (or via ngrok) can reach the server
     httpServer.listen(PORT, '0.0.0.0', () => {
       logger.info(`Server running on port ${PORT}`);
+    });
+
+    // Provision a chat group for any zone that hasn't got one, then reconcile
+    // every zone-backed group's membership. Deliberately AFTER listen and
+    // deliberately not awaited: it is a self-healing background task, and a
+    // hiccup in it must not keep the API from coming up. Every entitlement
+    // change during the day reconciles its own zone; this is the backstop
+    // that catches anything those hooks missed.
+    chatGroupSync.bootstrap().catch((err) => {
+      logger.error(`[chatSync] Bootstrap failed: ${err.name}: ${err.message}`);
     });
   })
   .catch((err) => {

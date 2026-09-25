@@ -14,9 +14,13 @@ export const chatApi = {
   },
 
   // POST /api/chat/groups — super_admin only
-  // Body: { name, description?, member_ids: [{ user_id, user_type }] }
-  createGroup: async ({ name, description, member_ids = [] }) => {
-    const response = await apiClient.post('/chat/groups', { name, description, member_ids });
+  // Body: { name, description?, member_ids: [...], zone_location_ids?: [...] }
+  // Passing zones makes the group zone-backed: everyone in those zones joins
+  // immediately and stays in sync, same as a zone's own default group.
+  createGroup: async ({ name, description, member_ids = [], zone_location_ids = [] }) => {
+    const response = await apiClient.post('/chat/groups', {
+      name, description, member_ids, zone_location_ids,
+    });
     return response.data;
   },
 
@@ -70,10 +74,33 @@ export const chatApi = {
   },
 
   // DELETE /api/chat/groups/:id/members/:userId?user_type=user|admin|super_admin
+  // 409 MEMBER_IS_AUTOMATIC when the member is there because of a zone link.
   removeMember: async (groupId, userId, userType) => {
     const response = await apiClient.delete(`/chat/groups/${groupId}/members/${userId}`, {
       params: { user_type: userType },
     });
+    return response.data;
+  },
+
+  // GET /api/chat/zones?group_id= — zones + member counts for the picker
+  listZones: async (groupId) => {
+    const response = await apiClient.get('/chat/zones', {
+      params: groupId ? { group_id: groupId } : {},
+    });
+    return response.data;
+  },
+
+  // POST /api/chat/groups/:id/zones — cover another zone with this group
+  addZone: async (groupId, zoneLocationId) => {
+    const response = await apiClient.post(`/chat/groups/${groupId}/zones`, {
+      zone_location_id: zoneLocationId,
+    });
+    return response.data;
+  },
+
+  // DELETE /api/chat/groups/:id/zones/:zoneId — stop covering a zone
+  removeZone: async (groupId, zoneId) => {
+    const response = await apiClient.delete(`/chat/groups/${groupId}/zones/${zoneId}`);
     return response.data;
   },
 };

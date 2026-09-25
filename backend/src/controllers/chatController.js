@@ -4,13 +4,18 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const { FORMER_MEMBER_LABEL } = require('../utils/memberDisplay');
+const chatGroupSync = require('../services/chatGroupSync');
+const logger = require('../utils/logger');
 const {
   emitNewMessage,
   emitMessageDeleted,
   emitMemberUpdate,
 } = require('../services/socketService');
 
-const { ChatGroup, ChatGroupMember, ChatMessage, User, Admin, SuperAdmin } = db;
+const {
+  ChatGroup, ChatGroupMember, ChatGroupZone, ChatMessage,
+  User, Admin, SuperAdmin, Location,
+} = db;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -89,6 +94,9 @@ const resolveMemberProfiles = async (members) => {
     member_id: m.id,
     user_id: m.user_id,
     user_type: m.user_type,
+    // 'auto' members are in the room because the group's zones put them
+    // there; the UI marks them as fixed and the remove endpoint refuses.
+    source: m.source,
     last_read_at: m.last_read_at,
     ...(profileMap[m.user_id] || { name: FORMER_MEMBER_LABEL, phone: null, is_former_member: true }),
   }));
@@ -203,14 +211,17 @@ const getMyGroups = async (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/chat/groups
-// Body: { name, description?, member_ids: [{ user_id, user_type }] }
+// Body: { name, description?, member_ids: [{ user_id, user_type }],
+//         zone_location_ids?: [uuid] }
 // Access: super_admin only
 //
-// Creates a new chat group and adds the given members plus the creator.
+// Creates a chat group with the given members plus the creator. Passing
+// zone_location_ids makes it zone-backed from the start: everyone in those
+// zones joins immediately and stays in sync, exactly like a default group.
 // ---------------------------------------------------------------------------
 const createGroup = async (req, res, next) => {
   try {
-    const { name, description, member_ids = [] } = req.body;
+    const { name, description, member_ids = [], zone_location_ids = [] } = req.body;
     const { actorId } = getActor(req.auth);
 
     if (!name || !name.trim()) {
@@ -246,15 +257,38 @@ const createGroup = async (req, res, next) => {
 
     await ChatGroupMember.bulkCreate(memberEntries, { ignoreDuplicates: true });
 
+    // Link any zones, then reconcile once so the response carries a real
+    // member count rather than just the hand-picked list.
+    let zoneNames = [];
+    if (zone_location_ids.length) {
+      const zones = await Location.findAll({
+        where: { id: zone_location_ids, type: 'zone', is_active: true },
+        attributes: ['id', 'name'],
+      });
+      if (zones.length) {
+        await ChatGroupZone.bulkCreate(
+          zones.map((z) => ({ group_id: group.id, zone_location_id: z.id })),
+          { ignoreDuplicates: true }
+        );
+        await chatGroupSync.reconcileGroup(group);
+        zoneNames = zones.map((z) => z.name);
+      }
+    }
+
+    const memberCount = await ChatGroupMember.count({ where: { group_id: group.id } });
+
     return success(res, {
       statusCode: 201,
-      message: 'Group created',
+      message: zoneNames.length
+        ? `Group created, covering ${zoneNames.join(', ')}.`
+        : 'Group created',
       data: {
         id: group.id,
         name: group.name,
         description: group.description,
         created_by: group.created_by,
-        member_count: memberEntries.length,
+        zones: zoneNames,
+        member_count: memberCount,
       },
     });
   } catch (err) {
@@ -289,6 +323,17 @@ const getGroupDetails = async (req, res, next) => {
     const allMembers = await ChatGroupMember.findAll({ where: { group_id: groupId } });
     const enrichedMembers = await resolveMemberProfiles(allMembers);
 
+    // The zones whose members are pulled in automatically. Ordered by name so
+    // the chips render in a stable order between reloads.
+    const zoneLinks = await ChatGroupZone.findAll({
+      where: { group_id: groupId },
+      include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
+    });
+    const zones = zoneLinks
+      .filter((z) => z.zone)
+      .map((z) => ({ id: z.zone.id, name: z.zone.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
     return success(res, {
       statusCode: 200,
       message: 'Group details fetched',
@@ -298,6 +343,8 @@ const getGroupDetails = async (req, res, next) => {
         description: group.description,
         created_by: group.created_by,
         is_active: group.is_active,
+        is_default: group.is_default,
+        zones,
         members: enrichedMembers,
         created_at: group.created_at,
       },
@@ -609,10 +656,14 @@ const addMembers = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Group not found' });
     }
 
+    // Explicitly manual: the reconciler leaves these alone, and they stay
+    // removable. Anyone who also qualifies through the group's zones is
+    // promoted to 'auto' on the next reconcile and becomes fixed.
     const entries = members.map((m) => ({
       group_id: groupId,
       user_id: m.user_id,
       user_type: m.user_type,
+      source: 'manual',
     }));
 
     await ChatGroupMember.bulkCreate(entries, { ignoreDuplicates: true });
@@ -674,6 +725,21 @@ const removeMember = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Member not found in this group' });
     }
 
+    // Auto members are in the room because one of the group's zones puts
+    // them there — an approved member of the zone, one of its admins, or a
+    // super admin. Removing the row would only last until the next
+    // reconcile, so refuse and explain the actual lever.
+    if (membership.source === 'auto') {
+      return error(res, {
+        statusCode: 409,
+        code: 'MEMBER_IS_AUTOMATIC',
+        message:
+          'This person is in the group automatically because of the zones it '
+          + 'covers, so they cannot be removed by hand. Detach the zone, or change '
+          + 'their zone or role, if they should not be here.',
+      });
+    }
+
     await membership.destroy();
 
     // Notify room members
@@ -711,6 +777,18 @@ const deleteGroup = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Group not found' });
     }
 
+    // Deleting a zone's own group would achieve nothing: the provisioner
+    // recreates it on the next restart. Say so instead of pretending.
+    if (group.is_default) {
+      return error(res, {
+        statusCode: 409,
+        message:
+          'This group belongs to a zone and cannot be deleted — every member of '
+          + 'that zone is in it by definition. Remove the zone from the group '
+          + 'first if you really want it gone.',
+      });
+    }
+
     await group.update({ is_active: false });
 
     // Notify all connected members that the group was deleted
@@ -724,6 +802,174 @@ const deleteGroup = async (req, res, next) => {
     return success(res, {
       statusCode: 200,
       message: 'Group deleted',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/chat/zones
+// Access: super_admin only
+//
+// Every active zone, with its member count and whether the given group
+// already covers it. Feeds the "add a zone" picker.
+// Query: ?group_id=<uuid>  (optional — marks which are already linked)
+// ---------------------------------------------------------------------------
+const listZones = async (req, res, next) => {
+  try {
+    const { group_id } = req.query;
+
+    const zones = await Location.findAll({
+      where: { type: 'zone', is_active: true },
+      attributes: ['id', 'name'],
+      order: [['name', 'ASC']],
+    });
+
+    let linked = new Set();
+    if (group_id) {
+      const links = await ChatGroupZone.findAll({
+        where: { group_id },
+        attributes: ['zone_location_id'],
+      });
+      linked = new Set(links.map((l) => l.zone_location_id));
+    }
+
+    // One zone index for the whole list rather than a tree walk per zone.
+    const zoneIndex = await chatGroupSync.buildZoneIndex();
+    const approved = await User.findAll({
+      where: { status: 'approved' },
+      attributes: ['id', 'location_id'],
+    });
+    const counts = new Map();
+    for (const u of approved) {
+      const zoneId = zoneIndex.get(u.location_id);
+      if (zoneId) counts.set(zoneId, (counts.get(zoneId) || 0) + 1);
+    }
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Zones fetched',
+      data: {
+        zones: zones.map((z) => ({
+          id: z.id,
+          name: z.name,
+          member_count: counts.get(z.id) || 0,
+          already_linked: linked.has(z.id),
+        })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/chat/groups/:id/zones
+// Body: { zone_location_id }
+// Access: super_admin only
+//
+// Attaches another zone to a group. Everyone in that zone — its approved
+// members and its admins — joins immediately, and stays in sync from then on.
+// ---------------------------------------------------------------------------
+const addZone = async (req, res, next) => {
+  try {
+    const { id: groupId } = req.params;
+    const { zone_location_id } = req.body || {};
+
+    if (!zone_location_id) {
+      return error(res, { statusCode: 400, message: 'zone_location_id is required' });
+    }
+
+    const group = await ChatGroup.findOne({ where: { id: groupId, is_active: true } });
+    if (!group) {
+      return error(res, { statusCode: 404, message: 'Group not found' });
+    }
+
+    // The FK only proves the row exists; "and it is a zone" has to be
+    // checked here, because MySQL cannot constrain on a column's value.
+    const zone = await Location.findByPk(zone_location_id);
+    if (!zone || zone.type !== 'zone') {
+      return error(res, { statusCode: 400, message: 'That location is not a zone' });
+    }
+    if (!zone.is_active) {
+      return error(res, { statusCode: 400, message: `"${zone.name}" is no longer an active zone` });
+    }
+
+    const [, created] = await ChatGroupZone.findOrCreate({
+      where: { group_id: groupId, zone_location_id },
+      defaults: { group_id: groupId, zone_location_id },
+    });
+    if (!created) {
+      return error(res, {
+        statusCode: 409,
+        message: `"${zone.name}" is already part of this group`,
+      });
+    }
+
+    // Awaited, not backgrounded: the caller is about to re-render the member
+    // list and should see the people who just joined.
+    const result = await chatGroupSync.reconcileGroup(group);
+    logger.info(
+      `[chat] super_admin=${req.auth.id} added zone "${zone.name}" to group ${groupId} `
+      + `(+${result.added} member(s))`
+    );
+
+    return success(res, {
+      statusCode: 200,
+      message: `${zone.name} added — ${result.added} member(s) joined.`,
+      data: { group_id: groupId, zone: { id: zone.id, name: zone.name }, members_added: result.added },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/chat/groups/:id/zones/:zoneId
+// Access: super_admin only
+//
+// Detaches a zone. Its members drop out unless another of the group's zones
+// still covers them. A default group cannot lose its last zone — that would
+// leave an orphan the provisioner would immediately re-create.
+// ---------------------------------------------------------------------------
+const removeZone = async (req, res, next) => {
+  try {
+    const { id: groupId, zoneId } = req.params;
+
+    const group = await ChatGroup.findOne({ where: { id: groupId, is_active: true } });
+    if (!group) {
+      return error(res, { statusCode: 404, message: 'Group not found' });
+    }
+
+    const link = await ChatGroupZone.findOne({
+      where: { group_id: groupId, zone_location_id: zoneId },
+    });
+    if (!link) {
+      return error(res, { statusCode: 404, message: 'That zone is not part of this group' });
+    }
+
+    const remaining = await ChatGroupZone.count({ where: { group_id: groupId } });
+    if (group.is_default && remaining <= 1) {
+      return error(res, {
+        statusCode: 409,
+        message:
+          'This group belongs to that zone — removing it would leave the zone '
+          + 'without a chat. Add another zone first if you want to repurpose it.',
+      });
+    }
+
+    await link.destroy();
+    const result = await chatGroupSync.reconcileGroup(group);
+    logger.info(
+      `[chat] super_admin=${req.auth.id} removed zone ${zoneId} from group ${groupId} `
+      + `(-${result.removed} member(s))`
+    );
+
+    return success(res, {
+      statusCode: 200,
+      message: `Zone removed — ${result.removed} member(s) left the group.`,
+      data: { group_id: groupId, members_removed: result.removed },
     });
   } catch (err) {
     next(err);
@@ -756,6 +1002,9 @@ const listAdmins = async (req, res, next) => {
 };
 
 module.exports = {
+  listZones,
+  addZone,
+  removeZone,
   getMyGroups,
   createGroup,
   getGroupDetails,

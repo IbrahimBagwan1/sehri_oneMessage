@@ -15,6 +15,9 @@ const {
   removeMember,
   deleteGroup,
   listAdmins,
+  listZones,
+  addZone,
+  removeZone,
 } = require('../controllers/chatController');
 
 // ---------------------------------------------------------------------------
@@ -24,6 +27,7 @@ const {
 //   1. GET  /groups             (literal)
 //   2. POST /groups             (literal)
 //   3. GET  /admins             (literal — for group creation picker)
+//   3b.GET  /zones              (literal — for the zone picker)
 //   4. GET  /groups/:id         (param)
 //   5. DELETE /groups/:id       (param)
 //   6. GET  /groups/:id/messages      (param + literal)
@@ -32,6 +36,8 @@ const {
 //   9. POST /groups/:id/members       (param + literal)
 //  10. DELETE /groups/:id/messages/:msgId  (param + param)
 //  11. DELETE /groups/:id/members/:userId  (param + param)
+//  12. POST /groups/:id/zones              (param + literal)
+//  13. DELETE /groups/:id/zones/:zoneId    (param + param)
 // ---------------------------------------------------------------------------
 
 // GET /api/chat/groups — list groups the caller belongs to
@@ -43,7 +49,11 @@ router.post('/groups', verifyToken, requireRole('super_admin'), createGroup);
 // GET /api/chat/admins — list admins for the group creation member picker
 router.get('/admins', verifyToken, requireRole('super_admin'), listAdmins);
 
-// GET /api/chat/groups/:id — group details + member list
+// GET /api/chat/zones — zones + member counts for the zone picker
+// ?group_id=<uuid> marks the ones this group already covers
+router.get('/zones', verifyToken, requireRole('super_admin'), listZones);
+
+// GET /api/chat/groups/:id — group details + member list + covered zones
 router.get('/groups/:id', verifyToken, getGroupDetails);
 
 // DELETE /api/chat/groups/:id — soft-delete a group (super admin only)
@@ -70,6 +80,14 @@ router.delete('/groups/:id/messages/:msgId', verifyToken, deleteMessage);
 
 // DELETE /api/chat/groups/:id/members/:userId — remove a member
 // ?user_type=user|admin|super_admin  (required query param)
+// Refuses for members the group's zones put there automatically.
 router.delete('/groups/:id/members/:userId', verifyToken, requireRole('super_admin'), removeMember);
+
+// POST /api/chat/groups/:id/zones — cover another zone with this group
+// Body: { zone_location_id }
+router.post('/groups/:id/zones', verifyToken, requireRole('super_admin'), addZone);
+
+// DELETE /api/chat/groups/:id/zones/:zoneId — stop covering a zone
+router.delete('/groups/:id/zones/:zoneId', verifyToken, requireRole('super_admin'), removeZone);
 
 module.exports = router;

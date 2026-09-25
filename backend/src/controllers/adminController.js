@@ -8,6 +8,7 @@ const {
   resolveZoneFromLoaded,
 } = require('../utils/zoneScope');
 const logger = require('../utils/logger');
+const chatGroupSync = require('../services/chatGroupSync');
 const { User, Admin, SuperAdmin, Location } = db;
 
 // ---------------------------------------------------------------------------
@@ -146,6 +147,9 @@ const createAdmin = async (req, res, next) => {
       user_id: linkedUserId,
     });
 
+    // A zone admin is a compulsory member of their zone's chat.
+    chatGroupSync.syncInBackground([admin.zone_location_id], 'admin created');
+
     return success(res, {
       statusCode: 201,
       message: 'Admin created successfully',
@@ -245,6 +249,10 @@ const createSuperAdmin = async (req, res, next) => {
       user_id: linkedUserId,
     });
 
+    // Super admins belong in every zone-backed group, so this one reconciles
+    // all of them rather than a single zone.
+    chatGroupSync.syncInBackground([], 'super admin created');
+
     return success(res, {
       statusCode: 201,
       message: 'Super admin created successfully',
@@ -314,7 +322,13 @@ const deleteAdmin = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Admin not found' });
     }
 
+    const zoneId = admin.zone_location_id;
     await admin.destroy();
+
+    // Their admin identity leaves the zone chat. If they also hold a member
+    // account they stay in as a member — a different chat identity, and the
+    // reconciler keeps it.
+    chatGroupSync.syncInBackground([zoneId], 'admin removed');
 
     return success(res, {
       statusCode: 200,
@@ -586,6 +600,7 @@ const promoteUser = async (req, res, next) => {
 
       await t.commit();
       logger.info(`[admin] Promoted user ${user.id} to admin (zone=${zoneLocation.name}) by super_admin ${req.auth.id}`);
+      chatGroupSync.syncInBackground([admin.zone_location_id], 'user promoted to admin');
       return success(res, {
         statusCode: 201,
         message: `${user.name} is now an admin for ${zoneLocation.name}.`,
@@ -614,6 +629,7 @@ const promoteUser = async (req, res, next) => {
 
     await t.commit();
     logger.info(`[admin] Promoted user ${user.id} to super_admin by super_admin ${req.auth.id}`);
+    chatGroupSync.syncInBackground([], 'user promoted to super admin');
     return success(res, {
       statusCode: 201,
       message: `${user.name} is now a super admin.`,
@@ -724,6 +740,14 @@ const linkUserAccount = async (req, res, next) => {
     if (saRow)    available_roles.push('super_admin');
 
     logger.info(`[admin] ${callerRole} ${callerId} ${linkKind} linked user account ${userRow.id}`);
+
+    // The new member identity belongs in its zone's chat alongside the staff
+    // identity they already had there.
+    chatGroupSync
+      .zoneForLocation(userRow.location_id)
+      .then((zoneId) => chatGroupSync.syncInBackground([zoneId], 'user account linked'))
+      .catch(() => { /* syncInBackground already logs; boot reconcile is the backstop */ });
+
     return success(res, {
       statusCode: linkKind === 'created' ? 201 : 200,
       message: linkKind === 'created'

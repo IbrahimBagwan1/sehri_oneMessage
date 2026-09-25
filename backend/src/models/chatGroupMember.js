@@ -29,6 +29,19 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM('user', 'admin', 'super_admin'),
         allowNull: false,
       },
+      // How this membership came about.
+      //   'auto'   — derived from the group's zone links: approved members
+      //              of those zones, their zone admins, and every super
+      //              admin. Owned by services/chatGroupSync.js, reconciled
+      //              continuously, and refused by the remove endpoint —
+      //              these are the people who must be in the room.
+      //   'manual' — added deliberately by a super admin. The reconciler
+      //              never touches these, and they can be removed.
+      source: {
+        type: DataTypes.ENUM('auto', 'manual'),
+        allowNull: false,
+        defaultValue: 'manual',
+      },
       // Tracks how many messages this member has read up to.
       // The controller compares this against total message count to
       // derive the unread badge count.
@@ -45,6 +58,7 @@ module.exports = (sequelize, DataTypes) => {
         { unique: true, fields: ['group_id', 'user_id'] },
         { fields: ['group_id'] },
         { fields: ['user_id'] },
+        { fields: ['group_id', 'source'] },
       ],
     }
   );

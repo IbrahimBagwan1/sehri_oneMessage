@@ -35,6 +35,15 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
+      // True for the group provisioned automatically for a zone — one per
+      // zone, created by services/chatGroupSync.js. It is what keeps the
+      // provisioner from making duplicates, and what stops the delete
+      // endpoint removing a group the app would recreate on next boot.
+      is_default: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
     },
     {
       tableName: 'chat_groups',
@@ -55,6 +64,11 @@ module.exports = (sequelize, DataTypes) => {
     ChatGroup.hasMany(models.ChatMessage, {
       foreignKey: 'group_id',
       as: 'messages',
+    });
+    // The zones whose members are pulled into this group automatically.
+    ChatGroup.hasMany(models.ChatGroupZone, {
+      foreignKey: 'group_id',
+      as: 'zones',
     });
   };
 

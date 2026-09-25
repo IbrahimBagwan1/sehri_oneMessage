@@ -4,6 +4,7 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const { buildLocationInclude, resolveZoneFromLoaded } = require('../utils/zoneScope');
 const { eraseUserAccount } = require('../services/accountDeletionService');
+const chatGroupSync = require('../services/chatGroupSync');
 
 const { User, Location, ProfileEditRequest } = db;
 
@@ -103,6 +104,12 @@ const updateUserStatus = async (req, res, next) => {
 
     user.status = status;
     await user.save();
+
+    // Approval is what puts someone into their zone's chat; rejection takes
+    // them back out. The zone is already resolved above for the admin scope
+    // check, so this costs nothing extra.
+    const userZone = resolveZoneFromLoaded(user.location);
+    chatGroupSync.syncInBackground([userZone?.id], `user ${status}`);
 
     return success(res, {
       statusCode: 200,
@@ -312,6 +319,11 @@ const reviewProfileEditRequest = async (req, res, next) => {
       });
     }
 
+    // If an approved edit moves the member between zones, BOTH zones' chats
+    // need reconciling afterwards — one to drop them, one to pick them up.
+    // Collected inside the transaction, acted on after it commits.
+    const touchedLocationIds = [];
+
     if (decision === 'approved') {
       // The request itself is cascade-deleted with the user, so a miss
       // here means a genuinely unexpected state rather than an erasure.
@@ -320,6 +332,8 @@ const reviewProfileEditRequest = async (req, res, next) => {
         await t.rollback();
         return error(res, { statusCode: 404, message: 'User no longer exists' });
       }
+
+      touchedLocationIds.push(user.location_id);
 
       const changes = request.requested_changes || {};
       // Reapply the allow-list defense here in case someone hand-edits the
@@ -330,6 +344,7 @@ const reviewProfileEditRequest = async (req, res, next) => {
         }
       }
       await user.save({ transaction: t });
+      touchedLocationIds.push(user.location_id);
     }
 
     request.status = decision;
@@ -339,6 +354,13 @@ const reviewProfileEditRequest = async (req, res, next) => {
     await request.save({ transaction: t });
 
     await t.commit();
+
+    if (touchedLocationIds.length) {
+      const zoneIds = await Promise.all(
+        [...new Set(touchedLocationIds)].map((id) => chatGroupSync.zoneForLocation(id))
+      );
+      chatGroupSync.syncInBackground(zoneIds, 'profile edit approved');
+    }
 
     return success(res, {
       statusCode: 200,
