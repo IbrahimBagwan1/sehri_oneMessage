@@ -279,7 +279,10 @@ function AllPrayersSheet({ visible, onClose, timeline, current, data }) {
             {timeline.map((row) => {
               const isCurrent = row.key === currentKey;
               const isUpNext  = row.key === upNextKey;
-              const isMarker  = row.kind !== 'fard';
+              // Only Sunrise is a boundary marker now. Tahajjud runs as a
+              // real window (it is where Isha ends), so it gets namaz
+              // weight rather than the softened marker treatment.
+              const isMarker  = row.kind === 'marker';
               const dim = row.isPast && !isCurrent && !isUpNext;
 
               return (

@@ -7,8 +7,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   LayoutAnimation,
-  Platform,
-  UIManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,10 +19,15 @@ import { colors, fonts, ARABIC_TEXT_STYLE } from '../components/islamicTheme';
 //
 // A `highlight` query param (from the featured-today link) auto-expands
 // the target card and scrolls to it after layout completes.
+//
+// There used to be a `UIManager.setLayoutAnimationEnabledExperimental(true)`
+// opt-in here for Android. That was the old-architecture flag; under the
+// New Architecture (Fabric/Bridgeless, on by default since Expo SDK 57 /
+// RN 0.86) layout animations need no opt-in and the call is a documented
+// no-op that warns on every import of this route. Removed — the
+// LayoutAnimation.configureNext in toggle() below is what actually
+// drives the expand/collapse.
 // -----------------------------------------------------------------------------
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 export default function DuaDetailScreen() {
   const router = useRouter();

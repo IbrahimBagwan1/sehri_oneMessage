@@ -213,20 +213,20 @@ export default function LoginScreen() {
             </View>
 
             <Button
-              label="I'm delivering today"
-              variant="secondary"
-              icon="bicycle-outline"
-              onPress={() => router.push('/(rider)/login')}
-              fullWidth
-            />
-
-            <Button
               label="Continue as guest"
               variant="ghost"
               icon="footsteps-outline"
               onPress={handleGuest}
               fullWidth
-              style={styles.guestBtn}
+            />
+
+            <Button
+              label="I'm delivering today"
+              variant="secondary"
+              icon="bicycle-outline"
+              onPress={() => router.push('/(rider)/login')}
+              fullWidth
+              style={styles.riderBtn}
             />
           </View>
         </ScrollView>
@@ -313,7 +313,10 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.ruleSoft },
   dividerText: { ...type.meta, color: colors.inkFaint },
 
-  guestBtn:     { marginTop: space[2] },
+  // Gap between the two alternatives. Carried by the second button in
+  // the stack; the first needs none, since dividerRow's marginVertical
+  // already separates it from the "or".
+  riderBtn:     { marginTop: space[2] },
 
   // paddingVertical + the 22px line box gives a 46px target. tealDark
   // rather than teal: 5.2:1 on this background instead of 3.6:1, and it

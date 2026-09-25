@@ -6,7 +6,7 @@
  * screen state along. Nothing here touches React.
  *
  * NAMING — this is a Bangalore community app whose vocabulary is Urdu-
- * inflected throughout (Sehri, Dua, Imsak, Tahajjud), so namaz names
+ * inflected throughout (Sehri, Dua, Tahajjud), so namaz names
  * follow South Asian usage: "Zuhr" (ظہر), not the Gulf-transliterated
  * "Dhuhr". NOTE that `t.Dhuhr` below is the AlAdhan API FIELD name
  * arriving from the backend — that's wire format and must not be renamed.
@@ -38,19 +38,26 @@ export const PRAYER_META = {
 };
 
 /**
+ * Tahajjud is not one of the five, but it owns a window of its own: it is
+ * where Isha ends. Kept beside PRAYER_META rather than inside it so
+ * "the five obligatory namaz" keeps meaning exactly that.
+ */
+export const TAHAJJUD_META = { label: 'Tahajjud', arabic: 'تهجد' };
+
+/** Everything that can be the current window, keyed the way push() asks. */
+const WINDOW_META = { ...PRAYER_META, tahajjud: TAHAJJUD_META };
+
+/**
  * Full day strip, in time order.
  *
  * `kind` carries meaning the UI acts on:
  *   fard   — one of the five obligatory namaz; can be the "current" one
- *   nafl   — voluntary (Tahajjud)
- *   marker — not a namaz at all (Imsak, Sunrise); boundary moments that
- *            must never render as the current namaz
+ *   nafl   — Tahajjud: not obligatory, but it does run as a window
+ *   marker — not a namaz at all (Sunrise); a boundary moment that must
+ *            never render as the current namaz
  */
 export const PRAYER_TIMELINE = [
-  { key: 'tahajjud', label: 'Tahajjud', arabic: 'تهجد',   kind: 'nafl',   note: 'voluntary'  },
-  // No caption: "Sehri ends" only makes sense during Ramadan, and reads
-  // as noise the rest of the year. The time itself is the useful part.
-  { key: 'imsak',    label: 'Imsak',    arabic: 'إمساك',  kind: 'marker' },
+  { key: 'tahajjud', ...TAHAJJUD_META,                    kind: 'nafl'    },
   { key: 'fajr',     ...PRAYER_META.fajr,                 kind: 'fard'    },
   { key: 'sunrise',  label: 'Sunrise',  arabic: 'الشروق', kind: 'marker', note: 'Fajr ends'  },
   { key: 'zuhr',     ...PRAYER_META.zuhr,                 kind: 'fard'    },
@@ -137,7 +144,6 @@ export const buildTimeline = (data) => {
   const t = data.timings || {};
   const source = {
     tahajjud: data.tahajjud_time,
-    imsak:    data.imsak_time || t.Imsak,
     fajr:     t.Fajr,
     sunrise:  t.Sunrise,
     zuhr:     t.Dhuhr,   // AlAdhan wire field is Dhuhr; we display Zuhr
@@ -177,8 +183,10 @@ export const buildTimeline = (data) => {
  *      "Sunrise" is their current namaz.
  *   2. SUNRISE → ZUHR IS A GAP with no obligatory namaz due. Surfaced
  *      honestly rather than pretending one is running.
- *   3. ISHA CROSSES MIDNIGHT — its window ends at the NEXT day's Fajr, so
- *      at 1 AM the current namaz is Isha, anchored to yesterday.
+ *   3. ISHA CROSSES MIDNIGHT and hands over to TAHAJJUD, not to Fajr. At
+ *      1 AM the current namaz is Isha, anchored to yesterday evening; once
+ *      Tahajjud comes in during the last third of the night, that runs
+ *      until Fajr.
  *
  * Adjacent Fajr times are approximated as today's ±24h. Real Fajr drifts
  * ~1 min/day, so the midnight boundary is accurate to within ~60s — which
@@ -206,6 +214,22 @@ export const buildPrayerWindows = (data) => {
   const fajrTomorrow  = new Date(fajr.getTime() + DAY_MS);
   const ishaYesterday = isha ? new Date(isha.getTime() - DAY_MS) : null;
 
+  // Tahajjud is what closes Isha. It falls in the last third of the night,
+  // so today's value is a small-hours time landing BEFORE today's Fajr —
+  // that instance is the one that ends LAST night's Isha. The ordering is
+  // asserted rather than assumed: an unusually short night could put the
+  // computed time before midnight, in which case the instance we want is
+  // the previous day's.
+  let tahajjudPre = at(data.tahajjud_time);
+  if (tahajjudPre && tahajjudPre.getTime() >= fajr.getTime()) {
+    tahajjudPre = new Date(tahajjudPre.getTime() - DAY_MS);
+  }
+  // It also has to fall after the Isha it closes, or the chain is nonsense.
+  if (tahajjudPre && ishaYesterday && tahajjudPre.getTime() <= ishaYesterday.getTime()) {
+    tahajjudPre = null;
+  }
+  const tahajjudNext = tahajjudPre ? new Date(tahajjudPre.getTime() + DAY_MS) : null;
+
   const windows = [];
   // `metaKey` is which namaz the window is ABOUT — for the post-sunrise
   // gap that's Zuhr (the one being waited for), even though the window
@@ -214,20 +238,24 @@ export const buildPrayerWindows = (data) => {
     if (start && end && end.getTime() > start.getTime()) {
       windows.push({
         key,
-        label:  PRAYER_META[metaKey].label,
-        arabic: PRAYER_META[metaKey].arabic,
+        label:  WINDOW_META[metaKey].label,
+        arabic: WINDOW_META[metaKey].arabic,
         start, end, ...extra,
       });
     }
   };
 
-  push('isha', 'isha', ishaYesterday, fajr);          // running into this morning
-  push('fajr', 'fajr', fajr, sunrise || zuhr);        // closes at sunrise
-  push('gap',  'zuhr', sunrise, zuhr, { isGap: true });
-  push('zuhr',    'zuhr',    zuhr,    asr || maghrib);
-  push('asr',     'asr',     asr,     maghrib || isha);
-  push('maghrib', 'maghrib', maghrib, isha);
-  push('isha', 'isha', isha, fajrTomorrow);           // crosses midnight
+  // Each `|| fallback` keeps the chain unbroken when the backend hasn't
+  // supplied a Tahajjud time: Isha simply runs through to Fajr as before.
+  push('isha',     'isha',     ishaYesterday, tahajjudPre || fajr);
+  push('tahajjud', 'tahajjud', tahajjudPre,   fajr);   // last third of the night
+  push('fajr',     'fajr',     fajr,          sunrise || zuhr);  // closes at sunrise
+  push('gap',      'zuhr',     sunrise,       zuhr, { isGap: true });
+  push('zuhr',     'zuhr',     zuhr,          asr || maghrib);
+  push('asr',      'asr',      asr,           maghrib || isha);
+  push('maghrib',  'maghrib',  maghrib,       isha);
+  push('isha',     'isha',     isha,          tahajjudNext || fajrTomorrow);  // crosses midnight
+  push('tahajjud', 'tahajjud', tahajjudNext,  fajrTomorrow);
 
   return windows;
 };
