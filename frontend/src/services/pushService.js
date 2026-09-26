@@ -43,10 +43,30 @@ const isExpoGo =
 // (if any) happens on first CALL, not at module import time. Cached
 // after the first successful load.
 // -----------------------------------------------------------------------------
+/**
+ * Can this environment touch expo-notifications AT ALL?
+ *
+ * Every entry point below must check this BEFORE calling
+ * loadNotifications(). Importing expo-notifications runs
+ * DevicePushTokenAutoRegistration at module scope, which calls
+ * addPushTokenListener, which THROWS in Expo Go on Android since SDK 53.
+ * The try/catch inside loadNotifications does not reliably contain it —
+ * the throw happens during Metro's module side-effect phase and surfaces
+ * as an uncaught error that takes down the screen.
+ *
+ * This lives in one function rather than being repeated because the bug it
+ * prevents was caused by exactly that: registerForPushNotifications had the
+ * check, getInitialNotification and onNotificationTap did not, and the
+ * moment something called those two the app crashed on launch in Expo Go.
+ */
+const pushAvailable = () => Device.isDevice && !isExpoGo;
+
 let _notifications = null;
 let _notificationsLoadFailed = false;
 
 const loadNotifications = () => {
+  // Second line of defence: even called directly, never import in Expo Go.
+  if (!pushAvailable()) return null;
   if (_notifications) return _notifications;
   if (_notificationsLoadFailed) return null;
   try {
@@ -95,13 +115,16 @@ const ensureForegroundHandler = (Notifications) => {
  */
 export const registerForPushNotifications = async () => {
   try {
-    // Push doesn't work on simulators/emulators.
-    if (!Device.isDevice) return null;
-
-    // Expo Go on Android/iOS no longer ships the remote-push runtime.
-    // Silently skip — a dev build is required to test real push.
-    if (isExpoGo) {
-      if (__DEV__) console.log('[push] Skipping push registration: running inside Expo Go.');
+    // Simulators have no push, and Expo Go on Android/iOS no longer ships
+    // the remote-push runtime. Either way a development build is required.
+    if (!pushAvailable()) {
+      if (__DEV__) {
+        console.log(
+          '[push] Skipping registration: '
+          + (Device.isDevice ? 'running inside Expo Go' : 'not a physical device')
+          + '. Push needs a development or production build.'
+        );
+      }
       return null;
     }
 
@@ -179,9 +202,11 @@ export const unregisterPushNotifications = async () => {
  * Resolves null when the app was opened any other way.
  */
 export const getInitialNotification = async () => {
-  const Notifications = loadNotifications();
-  if (!Notifications?.getLastNotificationResponseAsync) return null;
+  // Guard BEFORE loadNotifications — see pushAvailable above.
+  if (!pushAvailable()) return null;
   try {
+    const Notifications = loadNotifications();
+    if (!Notifications?.getLastNotificationResponseAsync) return null;
     const response = await Notifications.getLastNotificationResponseAsync();
     return response?.notification?.request?.content?.data || null;
   } catch (err) {
@@ -199,9 +224,12 @@ export const getInitialNotification = async () => {
  * is registered too late to catch it.
  */
 export const onNotificationTap = (handler) => {
-  const Notifications = loadNotifications();
-  if (!Notifications?.addNotificationResponseReceivedListener) return () => {};
+  // Guard BEFORE loadNotifications — see pushAvailable above. This function
+  // always had the hole; it only became a crash once something called it.
+  if (!pushAvailable()) return () => {};
   try {
+    const Notifications = loadNotifications();
+    if (!Notifications?.addNotificationResponseReceivedListener) return () => {};
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification?.request?.content?.data;
       handler(data);

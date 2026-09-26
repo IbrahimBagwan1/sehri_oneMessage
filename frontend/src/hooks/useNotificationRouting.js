@@ -49,13 +49,18 @@ export default function useNotificationRouting() {
     let cancelled = false;
 
     // Cold start: the tap that launched the app.
-    getInitialNotification().then((data) => {
-      if (cancelled) return;
-      const route = resolveRoute(data);
-      // Pushed, not replaced, so the back gesture still reaches the tab the
-      // app would otherwise have opened on.
-      if (route) routerRef.current.push(route);
-    });
+    // .catch is not optional here: pushService resolves null wherever push
+    // is unavailable, but a rejection from this promise at app root would
+    // otherwise surface as an uncaught error and blank the screen.
+    getInitialNotification()
+      .then((data) => {
+        if (cancelled) return;
+        const route = resolveRoute(data);
+        // Pushed, not replaced, so the back gesture still reaches the tab
+        // the app would otherwise have opened on.
+        if (route) routerRef.current.push(route);
+      })
+      .catch(() => { /* no launch notification, or push unavailable */ });
 
     // Warm taps for as long as the app lives.
     const unsubscribe = onNotificationTap((data) => {
