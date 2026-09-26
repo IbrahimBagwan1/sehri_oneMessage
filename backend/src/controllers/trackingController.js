@@ -8,6 +8,7 @@ const { signAccessToken, signRefreshToken } = require('../utils/jwt');
 const { resolveZone } = require('../utils/resolveZone');
 const googleMapsService = require('../services/googleMapsService');
 const etaComputationService = require('../services/etaComputationService');
+const notificationService = require('../services/notificationService');
 const socketService = require('../services/socketService');
 const logger = require('../utils/logger');
 
@@ -682,6 +683,34 @@ const pushLocation = async (req, res, next) => {
     if (status) rider.status = status;
 
     await rider.save();
+
+    // -----------------------------------------------------------------
+    // "Your delivery has started" — fired ONCE, on the idle -> delivering
+    // edge.
+    //
+    // This is NOT the proximity alert. That one lives in
+    // services/etaComputationService.js, fires per person as their own
+    // stop's ETA drops under the threshold, and is guarded by
+    // poll_responses.proximity_notified_at so it only lands once each.
+    // Two separate triggers, two separate code paths, on purpose:
+    //   • here   — one message, to the whole zone, when the run begins
+    //   • there  — one message, to one person, when their food is close
+    //
+    // Keyed on the status EDGE rather than the current status, because
+    // this handler runs on every location ping while the rider moves;
+    // without the edge check the zone would be notified every few seconds.
+    // -----------------------------------------------------------------
+    if (prevStatus !== 'delivering' && rider.status === 'delivering') {
+      notificationService.notifyInBackground(
+        () => notificationService.sendToZone(rider.zone_location_id, {
+          title: 'Sehri is on the way',
+          body: `${rider.name} has started the delivery round. Track it live in the app.`,
+          data: { type: 'delivery_started', rider_id: rider.id, route: '/(user)/track' },
+        }),
+        'delivery started'
+      );
+      logger.info(`[tracking] rider=${rider.id} started delivery — notifying zone ${rider.zone_location_id || 'all'}`);
+    }
 
     // Broadcast the raw position to every subscribed user IMMEDIATELY —
     // this is what moves the marker on the user's tracking map. It's

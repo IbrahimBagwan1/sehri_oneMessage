@@ -3,8 +3,7 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
-const { sendPushBatch, isExpoPushToken } = require('../services/expoPushService');
-const logger = require('../utils/logger');
+const notificationService = require('../services/notificationService');
 
 const { Broadcast, User, Location } = db;
 
@@ -47,13 +46,19 @@ const collectDescendantIds = async (rootId) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/broadcasts
-// Access: super_admin
+// Access: admin (own zone only) or super_admin (anywhere)
 // Body: { title?, message, target_location_id? }
 //
-// Sends a push to every approved user in the target audience and stores
-// an audit row. Delivery is best-effort — the response returns once the
-// audit row is saved even if some pushes are still in flight, but we do
-// wait for the Expo batch to complete so the delivered_count is honest.
+// SCOPING follows the rule the rest of the admin surface already uses — a
+// zone admin sees and acts on their own zone, a super admin sees everything
+// (users list, feedback, poll stats all work this way). So a zone admin's
+// broadcast is forced to their zone regardless of what they post, and any
+// attempt to target elsewhere is refused rather than silently narrowed:
+// being told "that is not your zone" is better than believing you reached
+// people you did not.
+//
+// Sends to every approved user in the audience and stores an audit row.
+// The Expo batch is awaited so delivered_count is honest.
 // ---------------------------------------------------------------------------
 const sendBroadcast = async (req, res, next) => {
   try {
@@ -70,15 +75,34 @@ const sendBroadcast = async (req, res, next) => {
       return error(res, { statusCode: 400, message: 'Title is too long (max 120 characters)' });
     }
 
+    // A zone admin may only reach their own zone. Their token carries the
+    // zone, so it is taken from there rather than trusted from the body.
+    let targetId = target_location_id || null;
+    if (req.auth.role === 'admin') {
+      if (!req.auth.zone_location_id) {
+        return error(res, {
+          statusCode: 403,
+          message: 'Your admin account has no zone assigned, so it cannot broadcast.',
+        });
+      }
+      if (targetId && targetId !== req.auth.zone_location_id) {
+        return error(res, {
+          statusCode: 403,
+          message: 'You can only broadcast to your own zone.',
+        });
+      }
+      targetId = req.auth.zone_location_id;
+    }
+
     // Resolve audience — either every approved user, or those attached
     // to a location under the target.
     let locationIds = null;
-    if (target_location_id) {
-      const rootLocation = await Location.findByPk(target_location_id);
+    if (targetId) {
+      const rootLocation = await Location.findByPk(targetId);
       if (!rootLocation) {
         return error(res, { statusCode: 404, message: 'Target zone not found' });
       }
-      locationIds = Array.from(await collectDescendantIds(target_location_id));
+      locationIds = Array.from(await collectDescendantIds(targetId));
     }
 
     const audience = await User.findAll({
@@ -92,30 +116,23 @@ const sendBroadcast = async (req, res, next) => {
 
     const recipient_count = audience.length;
 
-    // Build push batch — drop anything that isn't a live Expo token.
-    const messages = audience
-      .map((u) => u.fcm_token)
-      .filter(isExpoPushToken)
-      .map((token) => ({
-        to: token,
+    // Through notificationService so dead tokens are cleaned up here the
+    // same way they are for every other trigger.
+    const result = await notificationService.sendToUsers(
+      audience,
+      {
         title: title?.trim() || 'OneMessage',
         body: message.trim(),
-        data: { kind: 'broadcast' },
-      }));
-
-    let sent = 0;
-    if (messages.length > 0) {
-      const result = await sendPushBatch(messages);
-      sent = result.sent || 0;
-      if (result.dropped) {
-        logger.info(`[broadcast] dropped ${result.dropped} invalid tokens`);
-      }
-    }
+        data: { type: 'broadcast', route: '/(user)' },
+      },
+      `broadcast by ${req.auth.role} ${senderId}`
+    );
+    const sent = result.sent || 0;
 
     const row = await Broadcast.create({
       title: title?.trim() || null,
       message: message.trim(),
-      target_location_id: target_location_id || null,
+      target_location_id: targetId,
       sent_by: senderId,
       recipient_count,
       delivered_count: sent,
@@ -151,7 +168,13 @@ const listBroadcasts = async (req, res, next) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
 
+    // Same scoping as sending: a zone admin's history is their own zone's.
+    const where = req.auth.role === 'admin'
+      ? { target_location_id: req.auth.zone_location_id }
+      : {};
+
     const rows = await Broadcast.findAll({
+      where,
       order: [['created_at', 'DESC']],
       limit,
       include: [

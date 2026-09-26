@@ -44,6 +44,15 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: false,
       },
+      // The zone this group was provisioned for. UNIQUE, so the database
+      // itself guarantees one default group per zone — the count of default
+      // groups can never drift from the count of zones.
+      default_zone_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        unique: true,
+        references: { model: 'locations', key: 'id' },
+      },
     },
     {
       tableName: 'chat_groups',

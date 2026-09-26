@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { useColorScheme, View } from 'react-native';
 import { useFonts, Amiri_400Regular, Amiri_700Bold } from '@expo-google-fonts/amiri';
+import useNotificationRouting from '../hooks/useNotificationRouting';
 
 /**
  * Amiri is a classical Arabic Naskh typeface designed to be a modern
@@ -13,6 +14,11 @@ import { useFonts, Amiri_400Regular, Amiri_700Bold } from '@expo-google-fonts/am
  */
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+
+  // Tapping a notification has to land somewhere. Mounted at the root so it
+  // survives navigation, and so a tap that cold-starts the app is caught
+  // before any screen has rendered.
+  useNotificationRouting();
   const [fontsLoaded] = useFonts({
     Amiri_400Regular,
     Amiri_700Bold,
@@ -42,6 +48,7 @@ export default function RootLayout() {
         <Stack.Screen name="donation-history" options={{ headerShown: false }} />
         <Stack.Screen name="chat-room" options={{ headerShown: false }} />
         <Stack.Screen name="chat-create-group" options={{ headerShown: false }} />
+        <Stack.Screen name="chat-group-manage" options={{ headerShown: false }} />
         <Stack.Screen name="vote-history" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />

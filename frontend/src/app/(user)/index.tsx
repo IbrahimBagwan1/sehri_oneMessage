@@ -14,8 +14,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/useAuthStore';
 import RoleSwitcher from '../../components/RoleSwitcher';
 import { prayersApi } from '../../api/prayers';
+import { quranApi } from '../../api/quran';
 import { pollsApi } from '../../api/polls';
 import PrayerWidget from '../../components/prayer/PrayerWidget';
+import AyatOfTheDayCard from '../../components/AyatOfTheDayCard';
 import {
   Avatar,
   Button,
@@ -67,6 +69,9 @@ export default function HomeScreen() {
   const user            = useAuthStore((s) => s.user);
   const isGuest         = useAuthStore((s) => s.isGuest);
 
+  const [ayatData,      setAyatData]    = useState<any>(null);
+  const [loadingAyat,   setLoadingAyat] = useState(true);
+  const [ayatError,     setAyatError]   = useState<string | null>(null);
   const [prayerData,    setPrayerData]  = useState<any>(null);
   const [pollData,      setPollData]    = useState<any>(null);
   const [loadingPrayer, setLoadingP]    = useState(true);
@@ -98,6 +103,20 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // The verse is the same for everyone all day and the backend caches it,
+  // so this is a cheap call; no interval, it is refetched on focus and pull.
+  const loadAyat = useCallback(async () => {
+    setAyatError(null);
+    try {
+      const res = await quranApi.getAyatOfTheDay();
+      if (res.success) setAyatData(res.data);
+    } catch {
+      setAyatError("Couldn't load today's ayat.");
+    } finally {
+      setLoadingAyat(false);
+    }
+  }, []);
+
   const loadPoll = useCallback(async () => {
     // Guests don't call the poll endpoint — it requires an authenticated
     // user id to attach voter identity. We render a sign-in invite in
@@ -116,17 +135,18 @@ export default function HomeScreen() {
 
   useFocusEffect(useCallback(() => {
     loadPrayer();
+    loadAyat();
     loadPoll();
     if (isGuest) return undefined;   // no polling for guests
     const t = setInterval(loadPoll, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, [loadPrayer, loadPoll, isGuest]));
+  }, [loadPrayer, loadAyat, loadPoll, isGuest]));
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadPrayer(), isGuest ? Promise.resolve() : loadPoll()]);
+    await Promise.all([loadPrayer(), loadAyat(), isGuest ? Promise.resolve() : loadPoll()]);
     setRefreshing(false);
-  }, [loadPrayer, loadPoll, isGuest]);
+  }, [loadPrayer, loadAyat, loadPoll, isGuest]);
 
   // ---- Actions ---------------------------------------------------------
   const handleVote = async (vote) => {
@@ -241,6 +261,19 @@ export default function HomeScreen() {
             loading={loadingPrayer}
             error={prayerError}
             onRetry={loadPrayer}
+          />
+        </View>
+
+        {/* -------------------- Ayat of the day -------------------- */}
+        {/* Sits between the namaz countdown and the poll deliberately: both
+            of those ask something of the reader, and this one asks nothing.
+            Shown to guests too — reading a verse needs no account. */}
+        <View style={styles.section}>
+          <AyatOfTheDayCard
+            data={ayatData}
+            loading={loadingAyat}
+            error={ayatError}
+            onRetry={loadAyat}
           />
         </View>
 

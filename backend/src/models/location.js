@@ -29,6 +29,15 @@ module.exports = (sequelize, DataTypes) => {
           key: 'id',
         },
       },
+      // Stable identity for a zone, assigned once at creation and never
+      // rewritten — poll_responses.zone snapshots it, so changing it would
+      // orphan history. NULL on every non-zone row; UNIQUE among zones.
+      // See services/zoneRegistry.js.
+      zone_key: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        unique: true,
+      },
       is_active: {
         type: DataTypes.BOOLEAN,
         defaultValue: true,

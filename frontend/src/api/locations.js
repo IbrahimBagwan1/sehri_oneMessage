@@ -40,9 +40,28 @@ export const locationsAdminApi = {
     return response.data;
   },
 
+  // POST /api/locations
+  // Body: { name, type: city|region|area|zone|address, parent_id?, latitude?, longitude? }
+  //
+  // Creates at ANY level of the tree. Creating a zone also assigns its
+  // zone_key (what every vote is filed under) and provisions its group chat,
+  // both server-side — the response reports whether the chat was created.
+  createLocation: async ({ name, type, parent_id, latitude, longitude } = {}) => {
+    const body = { name, type };
+    if (parent_id) body.parent_id = parent_id;
+    if (latitude != null && longitude != null) {
+      body.latitude  = latitude;
+      body.longitude = longitude;
+    }
+    const response = await apiClient.post('/locations', body);
+    return response.data;
+  },
+
   // PATCH /api/locations/:id  Body: { name?, parent_id? }
-  // Renames or moves a PG. Coord updates keep going through setCoordinates
-  // above — this endpoint deliberately doesn't accept lat/lng.
+  // Renames or moves ANY location, not just a PG. Coord updates keep going
+  // through setCoordinates above — this endpoint deliberately takes no
+  // lat/lng. Renaming a zone never changes its zone_key, so vote history
+  // survives; it does rename the zone's group chat to match.
   updateAddress: async (id, { name, parent_id } = {}) => {
     const body = {};
     if (name !== undefined)      body.name = name;
@@ -52,7 +71,8 @@ export const locationsAdminApi = {
   },
 
   // DELETE /api/locations/:id
-  // Soft-deletes a PG. Pass force=true to bypass the linked-users guard.
+  // Soft-deletes any location. Refuses while active children or linked users
+  // remain; force=true overrides both. Removing a zone also closes its chat.
   deleteAddress: async (id, { force = false } = {}) => {
     const response = await apiClient.delete(`/locations/${id}`, {
       params: force ? { force: 'true' } : undefined,

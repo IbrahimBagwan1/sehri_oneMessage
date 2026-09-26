@@ -358,6 +358,10 @@ export default function AdminDashboard() {
             <QuickAction icon="people-outline"      label="Approve users" onPress={() => router.push('/(admin)/users')} />
             <QuickAction icon="chatbubble-outline"  label="Feedback"      onPress={() => router.push('/(admin)/feedback')} />
             <QuickAction icon="chatbubbles-outline" label="Chat"          onPress={() => router.push('/(admin)/chat')} />
+            {/* Same composer the super admin uses. It reads the role from
+                the auth store and locks the audience to this admin's own
+                zone, which the server independently enforces. */}
+            <QuickAction icon="megaphone-outline"   label="Broadcast"     onPress={() => router.push('/super-admin/broadcast')} />
           </View>
         </View>
       </ScrollView>

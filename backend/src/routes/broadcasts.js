@@ -10,9 +10,12 @@ const { sendBroadcast, listBroadcasts } = require('../controllers/broadcastContr
 // which admins shouldn't be able to skim.
 
 // POST /api/broadcasts — send a push to everyone in the target audience
-router.post('/', verifyToken, requireRole('super_admin'), sendBroadcast);
+// A zone admin may broadcast, but only to their own zone — enforced in the
+// controller from their token, not from the request body.
+router.post('/', verifyToken, requireRole('admin', 'super_admin'), sendBroadcast);
 
 // GET /api/broadcasts — audit history, newest first
-router.get('/', verifyToken, requireRole('super_admin'), listBroadcasts);
+// Scoped the same way: an admin sees their zone's history, a super admin all.
+router.get('/', verifyToken, requireRole('admin', 'super_admin'), listBroadcasts);
 
 module.exports = router;

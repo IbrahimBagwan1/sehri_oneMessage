@@ -36,6 +36,7 @@ const MENU = [
   { title: 'Special cases',    icon: 'alert-circle-outline',     route: '/super-admin/special-cases', hint: 'Review, approve, or reject requests' },
   { title: 'Zone admins',      icon: 'shield-checkmark-outline', route: '/super-admin/admins',        hint: 'Add or remove zone admins' },
   { title: 'Riders',           icon: 'bicycle-outline',          route: '/super-admin/riders',        hint: 'Create, assign, or remove riders' },
+  { title: 'Locations',        icon: 'git-branch-outline',       route: '/super-admin/location-tree', hint: 'Add cities, areas, zones and PGs' },
   { title: 'PG coordinates',   icon: 'location-outline',         route: '/super-admin/locations',     hint: 'Set map pins for delivery ETAs' },
   { title: 'Group chat',       icon: 'chatbubbles-outline',      route: '/super-admin/chat',          hint: 'Manage broadcast groups' },
   { title: 'Send broadcast',   icon: 'megaphone-outline',        route: '/super-admin/broadcast',     hint: 'Push a notification to a zone' },

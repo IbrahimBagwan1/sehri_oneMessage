@@ -176,14 +176,28 @@ const ensureZoneGroups = async () => {
   });
   if (zones.length === 0) return [];
 
-  const defaults = await ChatGroup.findAll({
-    where: { is_default: true },
-    attributes: ['id'],
-    include: [{ model: ChatGroupZone, as: 'zones', attributes: ['zone_location_id'] }],
-  });
-  const covered = new Set(
-    defaults.flatMap((g) => (g.zones || []).map((z) => z.zone_location_id))
+  // A group belonging to a zone that has since been retired is closed here
+  // rather than left hanging around in everyone's chat list.
+  const activeZoneIds = zones.map((z) => z.id);
+  await ChatGroup.update(
+    { is_active: false },
+    {
+      where: {
+        is_active: true,
+        default_zone_id: { [Op.notIn]: activeZoneIds.length ? activeZoneIds : [null] },
+      },
+    }
   );
+
+  // Matched on default_zone_id, which carries a UNIQUE index: the database
+  // itself guarantees at most one default group per zone, so the count of
+  // default groups can never drift from the count of zones no matter how
+  // many times this runs or how it races with itself.
+  const defaults = await ChatGroup.findAll({
+    where: { default_zone_id: { [Op.ne]: null } },
+    attributes: ['id', 'default_zone_id'],
+  });
+  const covered = new Set(defaults.map((g) => g.default_zone_id));
 
   // The group has to record a creator, and this runs with no request behind
   // it. The longest-standing active super admin stands in as the owner.
@@ -200,14 +214,29 @@ const ensureZoneGroups = async () => {
   const created = [];
   for (const zone of zones) {
     if (covered.has(zone.id)) continue;
-    const group = await ChatGroup.create({
-      name: zone.name,
-      description: `Everyone in ${zone.name} — members, zone admins and super admins.`,
-      created_by: owner.id,
-      is_active: true,
-      is_default: true,
+    let group;
+    try {
+      group = await ChatGroup.create({
+        name: zone.name,
+        description: `Everyone in ${zone.name} — members, zone admins and super admins.`,
+        created_by: owner.id,
+        is_active: true,
+        is_default: true,
+        default_zone_id: zone.id,
+      });
+    } catch (err) {
+      // The unique index did its job: another caller provisioned this zone
+      // between our read and our write. Nothing to do.
+      if (err.name === 'SequelizeUniqueConstraintError') {
+        logger.info(`[chatSync] Zone "${zone.name}" was provisioned concurrently — skipping`);
+        continue;
+      }
+      throw err;
+    }
+    await ChatGroupZone.findOrCreate({
+      where: { group_id: group.id, zone_location_id: zone.id },
+      defaults: { group_id: group.id, zone_location_id: zone.id },
     });
-    await ChatGroupZone.create({ group_id: group.id, zone_location_id: zone.id });
     created.push(group);
     logger.info(`[chatSync] Created default chat group for zone "${zone.name}" (${group.id})`);
   }

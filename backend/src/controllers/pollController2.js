@@ -26,7 +26,7 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
-const { VALID_ZONES } = require('../constants/zones');
+const zoneRegistry = require('../services/zoneRegistry');
 const { describeMember } = require('../utils/memberDisplay');
 const { resolveZone } = require('../utils/resolveZone');
 const {
@@ -56,7 +56,7 @@ const { Poll, PollResponse, User } = db;
 const buildZoneStats = async (pollId, onlyZone = null) => {
   const { sequelize } = db;
 
-  const allowedZones = onlyZone ? [onlyZone] : VALID_ZONES;
+  const allowedZones = onlyZone ? [onlyZone] : await zoneRegistry.zoneKeys();
   const where = { poll_id: pollId };
   if (onlyZone) where.zone = onlyZone;
 
@@ -108,9 +108,17 @@ const resolveAdminZoneName = async (req) => {
   if (!zoneLocation) {
     return { zoneName: null, error: { status: 422, message: 'Could not resolve your admin zone' } };
   }
-  const name = zoneLocation.name.toLowerCase().replace(/\s+/g, '_');
-  if (!VALID_ZONES.includes(name)) {
-    return { zoneName: null, error: { status: 422, message: `Your admin zone '${name}' is not a recognised delivery zone` } };
+  // The zone's own key, not a slug of its display name — see
+  // services/zoneRegistry.js for why deriving it from the name was a bug.
+  const name = zoneLocation.zone_key;
+  if (!name) {
+    return {
+      zoneName: null,
+      error: {
+        status: 422,
+        message: `Your zone "${zoneLocation.name}" has not been set up for voting yet.`,
+      },
+    };
   }
   return { zoneName: name, error: null };
 };

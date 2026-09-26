@@ -168,9 +168,35 @@ export const unregisterPushNotifications = async () => {
 };
 
 /**
- * Attach a handler for tapping a notification (foreground or from
- * killed state). Returns an unsubscribe function — a no-op unsubscribe
- * when notifications aren't available.
+ * The notification that launched the app, if a tap is what opened it.
+ *
+ * Needed because addNotificationResponseReceivedListener only fires while
+ * the app is alive. When the OS has killed the app — which for a Sehri app
+ * notifying before dawn is the normal case, not the edge case — the tap
+ * starts the process and there is no listener yet to hear it. This reads
+ * that launch response once instead.
+ *
+ * Resolves null when the app was opened any other way.
+ */
+export const getInitialNotification = async () => {
+  const Notifications = loadNotifications();
+  if (!Notifications?.getLastNotificationResponseAsync) return null;
+  try {
+    const response = await Notifications.getLastNotificationResponseAsync();
+    return response?.notification?.request?.content?.data || null;
+  } catch (err) {
+    if (__DEV__) console.log('[push] initial notification unavailable:', err?.message);
+    return null;
+  }
+};
+
+/**
+ * Attach a handler for tapping a notification while the app is running
+ * (foreground or backgrounded). Returns an unsubscribe function — a no-op
+ * unsubscribe when notifications aren't available.
+ *
+ * For the killed-app case use getInitialNotification above; this listener
+ * is registered too late to catch it.
  */
 export const onNotificationTap = (handler) => {
   const Notifications = loadNotifications();

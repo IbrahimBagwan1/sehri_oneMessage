@@ -5,7 +5,8 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const { resolveZone } = require('../utils/resolveZone');
 const logger = require('../utils/logger');
-const { VALID_ZONES } = require('../constants/zones');
+const zoneRegistry = require('../services/zoneRegistry');
+const notificationService = require('../services/notificationService');
 const { describeMember } = require('../utils/memberDisplay');
 const {
   getPollPhase,
@@ -159,14 +160,17 @@ const submitVote = async (req, res, next) => {
       });
     }
 
-    // The zone ENUM in poll_responses matches the Location name column for
-    // zone-type rows: 'masjid', 'boys_hostel', 'stanza', 'girls'.
-    // resolveZone returns the Location row; we use its name lowercased as key.
-    const zoneName = zoneLocation.name.toLowerCase().replace(/\s+/g, '_');
-    if (!VALID_ZONES.includes(zoneName)) {
+    // The zone's own stable key, read off the row rather than re-derived
+    // from its display name. Slugifying the name here is what used to make
+    // "Girls Accommodation" (-> girls_accommodation) fail validation against
+    // a list that held `girls`, so nobody in that zone could vote.
+    const zoneName = zoneLocation.zone_key;
+    if (!zoneName) {
       return error(res, {
         statusCode: 422,
-        message: `Zone '${zoneName}' is not a recognised delivery zone`,
+        message:
+          `Zone "${zoneLocation.name}" has not been set up for voting yet. `
+          + 'Ask a super admin to check the zone settings.',
       });
     }
 
@@ -272,7 +276,7 @@ const getActiveStats = async (req, res, next) => {
     // without it, a zone admin saw every zone's vote totals, breaking
     // the "you only see your own zone" invariant applied everywhere
     // else in the admin surface (users list, feedback list, etc.).
-    let allowedZones = VALID_ZONES;
+    let allowedZones = await zoneRegistry.zoneKeys();
     let adminZoneName = null;
     if (req.auth.role === 'admin') {
       const adminZoneLocation = await resolveZone(req.auth.zone_location_id, db);
@@ -282,11 +286,11 @@ const getActiveStats = async (req, res, next) => {
           message: 'Could not resolve your admin zone',
         });
       }
-      adminZoneName = adminZoneLocation.name.toLowerCase().replace(/\s+/g, '_');
-      if (!VALID_ZONES.includes(adminZoneName)) {
+      adminZoneName = adminZoneLocation.zone_key;
+      if (!adminZoneName) {
         return error(res, {
           statusCode: 422,
-          message: `Your admin zone '${adminZoneName}' is not a recognised delivery zone`,
+          message: `Your zone "${adminZoneLocation.name}" has not been set up for voting yet.`,
         });
       }
       allowedZones = [adminZoneName];
@@ -393,10 +397,11 @@ const getZoneVoters = async (req, res, next) => {
     }
 
     // Validate zone value if provided
-    if (targetZone && !VALID_ZONES.includes(targetZone)) {
+    if (targetZone && !(await zoneRegistry.isValidZoneKey(targetZone))) {
+      const known = await zoneRegistry.zoneKeys();
       return error(res, {
         statusCode: 400,
-        message: `Invalid zone '${targetZone}'. Must be one of: ${VALID_ZONES.join(', ')}`,
+        message: `Invalid zone '${targetZone}'. Must be one of: ${known.join(', ')}`,
       });
     }
 
@@ -549,6 +554,28 @@ const createTodaysPoll = async (req, res, next) => {
     logger.info(
       `[polls] super_admin=${req.auth.id} manually created poll ${poll.id} for ${istDateStr} (is_active=${poll.is_active})`
     );
+
+    // Tell the community the poll is open.
+    //
+    // This is the ONLY code path that creates a poll — this project has no
+    // scheduler (see the note in services/prayerService.js), so the manual
+    // endpoint is it. If a cron is added later it must call this same
+    // handler or lift this block with it, rather than growing a second
+    // notify path that can drift out of step.
+    //
+    // Only fired when the poll actually opens for voting. Creating
+    // tomorrow's poll early in the afternoon should not buzz everyone's
+    // phone about a window that is not open yet.
+    if (poll.is_active) {
+      notificationService.notifyInBackground(
+        () => notificationService.sendToAll({
+          title: 'Sehri poll is open',
+          body: 'Let the kitchen know whether you need Sehri tomorrow.',
+          data: { type: 'poll_open', poll_id: poll.id, route: '/(user)' },
+        }),
+        'poll opened'
+      );
+    }
 
     return success(res, {
       statusCode: 201,

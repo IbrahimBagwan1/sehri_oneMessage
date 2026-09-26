@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useAuthStore } from '../../store/useAuthStore';
 import { Ionicons } from '@expo/vector-icons';
 import { broadcastsApi } from '../../api/broadcasts';
 import { locationsApi } from '../../api/auth';
@@ -40,10 +41,24 @@ import { colors, radius, space, type } from '../../theme';
 export default function SuperAdminBroadcastScreen() {
   const router = useRouter();
 
+  // A zone admin may broadcast, but only to their own zone — the server
+  // enforces that from their token, and the picker below is locked to match
+  // so the UI never offers something the API will refuse.
+  const activeRole  = useAuthStore((s) => s.active_role);
+  const authUser    = useAuthStore((s) => s.user);
+  const isZoneAdmin = activeRole === 'admin';
+  const myZoneId    = authUser?.zone_location_id || null;
+
   // Compose state
   const [title,   setTitle]   = useState('');
   const [message, setMessage] = useState('');
-  const [zoneId,  setZoneId]  = useState(null);   // null = all zones
+  // What a super admin picked. Ignored for a zone admin — see below.
+  const [pickedZoneId, setPickedZoneId] = useState(null);   // null = all zones
+
+  // The zone actually being targeted. Derived rather than kept in state and
+  // synced: a zone admin's target is a fact about who they are, not a choice
+  // they made, and storing it would mean an effect racing the profile load.
+  const zoneId = isZoneAdmin ? myZoneId : pickedZoneId;
   const [sending, setSending] = useState(false);
 
   // Zone picker
@@ -84,6 +99,7 @@ export default function SuperAdminBroadcastScreen() {
   }, []);
 
   useEffect(() => { loadZones(); }, [loadZones]);
+
   useFocusEffect(useCallback(() => { loadHistory(); }, [loadHistory]));
 
   // --- Send ---------------------------------------------------------------
@@ -92,6 +108,13 @@ export default function SuperAdminBroadcastScreen() {
     const z = zones.find((x) => x.id === zoneId);
     return z ? `Users in ${z.name}` : 'Selected zone';
   }, [zoneId, zones]);
+
+  // Which zones this person may actually choose between. A zone admin gets
+  // exactly one, and no "All zones" option.
+  const selectableZones = useMemo(
+    () => (isZoneAdmin ? zones.filter((z) => z.id === myZoneId) : zones),
+    [isZoneAdmin, zones, myZoneId]
+  );
 
   const handleSend = () => {
     const body = message.trim();
@@ -127,7 +150,7 @@ export default function SuperAdminBroadcastScreen() {
                 );
                 setTitle('');
                 setMessage('');
-                setZoneId(null);
+                setPickedZoneId(null);
                 loadHistory();
               }
             } catch (err) {
@@ -194,13 +217,22 @@ export default function SuperAdminBroadcastScreen() {
             <Text style={styles.fieldLabel}>Audience</Text>
             {zonesLoading ? (
               <Text style={styles.zonesLoading}>Loading zones…</Text>
+            ) : isZoneAdmin ? (
+              // Fixed, not chosen. Shown as a plain statement rather than a
+              // disabled control, because a greyed-out picker invites people
+              // to keep tapping something that will never respond.
+              <Text style={styles.audienceFixed}>
+                {selectableZones[0]?.name
+                  ? `Your zone — ${selectableZones[0].name}`
+                  : 'Your zone'}
+              </Text>
             ) : (
               <View style={styles.chipsRow}>
                 <Chip
                   label="All zones"
                   tone={zoneId === null ? 'teal' : 'neutral'}
                   icon="people-outline"
-                  onPress={() => setZoneId(null)}
+                  onPress={() => setPickedZoneId(null)}
                   selected={zoneId === null}
                 />
                 {zones.map((z) => (
@@ -209,7 +241,7 @@ export default function SuperAdminBroadcastScreen() {
                     label={z.name}
                     tone={zoneId === z.id ? 'teal' : 'neutral'}
                     icon="location-outline"
-                    onPress={() => setZoneId(z.id)}
+                    onPress={() => setPickedZoneId(z.id)}
                     selected={zoneId === z.id}
                   />
                 ))}
@@ -327,6 +359,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   audienceSummary: {
+  audienceFixed: { ...type.metaStrong, color: colors.tealDark },
     ...type.meta,
     color: colors.tealDark,
     marginTop: space[2],

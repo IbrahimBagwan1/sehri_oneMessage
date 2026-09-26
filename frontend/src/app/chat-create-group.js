@@ -77,19 +77,26 @@ function ChatCreateGroupInner({ router }) {
   // enough info to render the "selected" chips without a second lookup.
   const [selectedAdmins, setSelectedAdmins] = useState({});
   const [selectedUsers,  setSelectedUsers]  = useState({});
+  // Zones the new group should cover. Picking one makes the group behave
+  // like a zone's own chat: everyone in it joins now and new members join
+  // as they are approved, without anyone maintaining a list.
+  const [zones,         setZones]         = useState([]);
+  const [selectedZones, setSelectedZones] = useState({});
 
   // --- Load pickers -------------------------------------------------------
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [adminRes, userRes] = await Promise.all([
+      const [adminRes, userRes, zoneRes] = await Promise.all([
         chatApi.listAdminsForPicker(),
         adminApi.getUsers('approved'),
+        chatApi.listZones(),
       ]);
       setAdmins(adminRes?.data?.admins || []);
       // adminApi.getUsers returns { success, data: User[] } directly
       setUsers(Array.isArray(userRes?.data) ? userRes.data : []);
+      setZones(zoneRes?.data?.zones || []);
     } catch (err) {
       setError(err?.response?.data?.message || "Couldn't load the member list.");
     } finally {
@@ -114,6 +121,15 @@ function ChatCreateGroupInner({ router }) {
     });
   };
 
+  const toggleZone = (z) => {
+    setSelectedZones((prev) => {
+      const next = { ...prev };
+      if (next[z.id]) delete next[z.id]; else next[z.id] = z;
+      return next;
+    });
+  };
+
+  const selectedZoneList  = Object.values(selectedZones);
   const selectedAdminList = Object.values(selectedAdmins);
   const selectedUserList  = Object.values(selectedUsers);
   const totalSelected     = selectedAdminList.length + selectedUserList.length;
@@ -140,6 +156,7 @@ function ChatCreateGroupInner({ router }) {
         name: trimmed,
         description: description.trim() || undefined,
         member_ids,
+        zone_location_ids: selectedZoneList.map((z) => z.id),
       });
       if (res.success) {
         // Route replace → the new group screen. Back from the room lands
@@ -284,7 +301,57 @@ function ChatCreateGroupInner({ router }) {
                 </ScrollView>
               )}
 
-              <SectionHeader title="Add members" />
+              {/* Zones first: choosing one is usually the whole job, and
+                  doing it before the name-by-name picker stops a super
+                  admin hand-picking people a zone would have added anyway. */}
+              <SectionHeader
+                title="Cover a zone"
+                subtitle="Its members and admins join automatically, now and in future"
+              />
+              {zones.length === 0 ? (
+                <Text style={styles.zoneEmpty}>No zones set up yet.</Text>
+              ) : (
+                <View style={styles.zoneWrap}>
+                  {zones.map((z) => {
+                    const on = !!selectedZones[z.id];
+                    return (
+                      <Pressable
+                        key={z.id}
+                        onPress={() => toggleZone(z)}
+                        style={({ pressed }) => [
+                          styles.zoneChip,
+                          on && styles.zoneChipOn,
+                          pressed && !on && { backgroundColor: colors.paperSoft },
+                        ]}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: on }}
+                        accessibilityLabel={`${z.name}, ${z.member_count} members${on ? ', selected' : ''}`}
+                      >
+                        <Ionicons
+                          name={on ? 'checkmark-circle' : 'location-outline'}
+                          size={15}
+                          color={on ? colors.paper : colors.tealDark}
+                        />
+                        <Text style={[styles.zoneChipText, on && styles.zoneChipTextOn]}>
+                          {z.name}
+                        </Text>
+                        <Text style={[styles.zoneChipCount, on && styles.zoneChipTextOn]}>
+                          {z.member_count}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+
+              <SectionHeader
+                title="Add members"
+                subtitle={
+                  selectedZoneList.length
+                    ? 'Anyone outside the zones above'
+                    : undefined
+                }
+              />
 
               {/* Segmented control — admins / users */}
               <View style={styles.segment}>
@@ -413,6 +480,24 @@ const styles = StyleSheet.create({
     gap: space[2],
     paddingVertical: space[1],
   },
+
+  zoneWrap:  { flexDirection: 'row', flexWrap: 'wrap', gap: space[2] },
+  zoneEmpty: { ...type.meta, color: colors.inkFaint, fontStyle: 'italic' },
+  zoneChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: space[3],
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.paper,
+    borderWidth: 1,
+    borderColor: colors.tealBorder,
+  },
+  zoneChipOn:      { backgroundColor: colors.teal, borderColor: colors.teal },
+  zoneChipText:    { ...type.metaStrong, color: colors.tealDark },
+  zoneChipCount:   { ...type.micro, color: colors.inkFaint, fontWeight: '700' },
+  zoneChipTextOn:  { color: colors.paper },
 
   segment: {
     flexDirection: 'row',

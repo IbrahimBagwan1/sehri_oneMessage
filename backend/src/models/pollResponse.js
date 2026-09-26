@@ -37,7 +37,10 @@ module.exports = (sequelize, DataTypes) => {
       // Snapshot of the user's zone at vote time. Stored here so that even
       // if the user's zone changes later, the kitchen count stays accurate.
       zone: {
-        type: DataTypes.ENUM('masjid', 'boys_hostel', 'stanza', 'girls'),
+        // The zone's stable key (locations.zone_key), snapshotted at vote
+        // time. A plain string, not an enum: the community can add zones,
+        // and a retired zone's past votes must still read correctly.
+        type: DataTypes.STRING(50),
         allowNull: false,
       },
       // --- Special case fields (10AM–5PM window) ---

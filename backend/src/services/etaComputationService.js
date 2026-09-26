@@ -34,6 +34,7 @@ const db = require('../models');
 const logger = require('../utils/logger');
 const googleMapsService = require('./googleMapsService');
 const expoPushService = require('./expoPushService');
+const notificationService = require('./notificationService');
 const socketService = require('./socketService');
 const { resolveZone } = require('../utils/resolveZone');
 
@@ -350,7 +351,11 @@ const updateETAsForRider = async (rider, lat, lng) => {
 
     if (pushes.length > 0) {
       // Fire-and-forget — do not block the rest of the response.
-      expoPushService.sendPushBatch(pushes)
+      // forgetTokens is passed so a token that turns out to be dead is
+       // cleared here too, not only on the paths that go through
+       // notificationService. Without it the proximity run would keep
+       // pushing to uninstalled apps forever.
+      expoPushService.sendPushBatch(pushes, notificationService.forgetTokens)
         .then((r) => logger.info(`[eta] proximity pushes: sent=${r.sent} dropped=${r.dropped}`))
         .catch((err) => logger.warn(`[eta] push batch failed: ${err.message}`));
     }

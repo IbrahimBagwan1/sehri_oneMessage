@@ -5,7 +5,30 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const logger = require('../utils/logger');
 
+const zoneRegistry = require('../services/zoneRegistry');
+const chatGroupSync = require('../services/chatGroupSync');
+
 const { Location, User } = db;
+
+// ---------------------------------------------------------------------------
+// The location tree, in order. Each level may only hang off the one above it,
+// and only a city sits at the root. Expressed once here so create and reparent
+// cannot drift apart.
+// ---------------------------------------------------------------------------
+const HIERARCHY = ['city', 'region', 'area', 'zone', 'address'];
+
+const PARENT_OF = {
+  city:    null,       // root
+  region:  'city',
+  area:    'region',
+  zone:    'area',
+  address: 'zone',
+};
+
+/** Human label for a type, for error copy. */
+const TYPE_LABEL = {
+  city: 'city', region: 'region', area: 'area', zone: 'zone', address: 'PG',
+};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -284,6 +307,156 @@ const createAddress = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
+// POST /api/locations
+// Access: super_admin
+// Body: { name, type, parent_id?, latitude?, longitude? }
+//
+// Creates a location at ANY level of the tree. Until now only PGs could be
+// added (POST /locations/address) and everything above them was seeded, which
+// meant the community could never grow a new zone without a migration.
+//
+// Creating a zone does two extra things, both of which have to happen or the
+// zone is decorative:
+//   • it is assigned a stable zone_key, which is what poll_responses
+//     snapshots and what every vote is validated against; and
+//   • its chat group is provisioned immediately, so the group count always
+//     matches the zone count rather than waiting for the next restart.
+// ---------------------------------------------------------------------------
+const createLocation = async (req, res, next) => {
+  try {
+    const { name: rawName, type, parent_id } = req.body || {};
+
+    const name = cleanName(rawName);
+    if (!name) {
+      return error(res, { statusCode: 400, message: 'name is required (2-150 characters).' });
+    }
+    if (!HIERARCHY.includes(type)) {
+      return error(res, {
+        statusCode: 400,
+        message: `type must be one of: ${HIERARCHY.join(', ')}.`,
+      });
+    }
+
+    const requiredParentType = PARENT_OF[type];
+    let parent = null;
+
+    if (requiredParentType === null) {
+      // A city is the root of the tree, so it must not be given a parent.
+      if (parent_id) {
+        return error(res, { statusCode: 400, message: 'A city cannot have a parent.' });
+      }
+    } else {
+      if (!parent_id) {
+        return error(res, {
+          statusCode: 400,
+          message: `parent_id is required, and must be a ${requiredParentType}.`,
+        });
+      }
+      parent = await Location.findByPk(parent_id);
+      if (!parent) {
+        return error(res, { statusCode: 404, message: 'parent_id not found.' });
+      }
+      if (parent.type !== requiredParentType) {
+        return error(res, {
+          statusCode: 400,
+          message:
+            `A ${TYPE_LABEL[type]} must sit under a ${requiredParentType}, `
+            + `but "${parent.name}" is a ${parent.type}.`,
+        });
+      }
+      if (!parent.is_active) {
+        return error(res, {
+          statusCode: 400,
+          message: `"${parent.name}" has been removed — pick an active ${requiredParentType}.`,
+        });
+      }
+    }
+
+    // Siblings must be distinguishable. Scoped to the parent, so two zones in
+    // different areas may share a name.
+    const duplicate = await Location.findOne({
+      where: {
+        type,
+        parent_id: parent ? parent.id : null,
+        name: { [Op.like]: name },
+        is_active: true,
+      },
+    });
+    if (duplicate) {
+      return error(res, {
+        statusCode: 409,
+        message: parent
+          ? `A ${TYPE_LABEL[type]} named "${name}" already exists under ${parent.name}.`
+          : `A ${TYPE_LABEL[type]} named "${name}" already exists.`,
+      });
+    }
+
+    // Coordinates are meaningful for a delivery destination. Higher levels
+    // may carry one too — resolveDeliveryDestination walks up the chain
+    // looking for the nearest ancestor with a pin.
+    const coords = parseOptionalCoords(req.body || {});
+    if (coords.error) {
+      return error(res, { statusCode: 400, message: coords.error });
+    }
+
+    const row = await Location.create({
+      name,
+      type,
+      parent_id: parent ? parent.id : null,
+      is_active: true,
+      // Assigned once, here, and never rewritten: renaming a zone later must
+      // not orphan the votes stored under its key.
+      zone_key: type === 'zone' ? await zoneRegistry.nextAvailableKey(name) : null,
+      latitude:    coords.provided ? coords.lat : null,
+      longitude:   coords.provided ? coords.lng : null,
+      geocoded_at: coords.provided ? new Date() : null,
+    });
+
+    logger.info(
+      `[locations] super_admin=${req.auth.id} created ${type} "${row.name}" (${row.id})`
+      + (parent ? ` under "${parent.name}"` : '')
+      + (row.zone_key ? ` [zone_key=${row.zone_key}]` : '')
+    );
+
+    let chatGroupCreated = false;
+    if (type === 'zone') {
+      zoneRegistry.invalidate();
+      // Awaited rather than backgrounded: the super admin is about to look at
+      // the chat list, and a zone without its chat would look like a bug.
+      // A failure here must not fail the zone creation, though — the boot
+      // reconcile and the next zone change both re-provision it.
+      try {
+        const created = await chatGroupSync.ensureZoneGroups();
+        chatGroupCreated = created.some((g) => g.default_zone_id === row.id || g.name === row.name);
+      } catch (err) {
+        logger.error(`[locations] Zone created but chat provisioning failed: ${err.message}`);
+      }
+    }
+
+    return success(res, {
+      statusCode: 201,
+      message: type === 'zone'
+        ? `Zone "${row.name}" created${chatGroupCreated ? ', with its group chat' : ''}.`
+        : `${TYPE_LABEL[type].replace(/^./, (c) => c.toUpperCase())} created.`,
+      data: {
+        id:          row.id,
+        name:        row.name,
+        type:        row.type,
+        zone_key:    row.zone_key,
+        parent_id:   row.parent_id,
+        parent:      parent ? { id: parent.id, name: parent.name } : null,
+        latitude:    row.latitude,
+        longitude:   row.longitude,
+        geocoded_at: row.geocoded_at,
+        chat_group_created: chatGroupCreated,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // PATCH /api/locations/:id
 // Access: super_admin
 // Body: { name?: string, parent_id?: uuid }
@@ -302,12 +475,6 @@ const updateAddress = async (req, res, next) => {
 
     const row = await Location.findByPk(id);
     if (!row) return error(res, { statusCode: 404, message: 'Location not found.' });
-    if (row.type !== 'address') {
-      return error(res, {
-        statusCode: 403,
-        message: `Only addresses can be edited here. "${row.name}" is a ${row.type}.`,
-      });
-    }
 
     // Resolve the eventual parent + name for the duplicate check.
     let nextName = row.name;
@@ -326,13 +493,33 @@ const updateAddress = async (req, res, next) => {
     }
 
     if (newParentId !== undefined && newParentId !== null && newParentId !== row.parent_id) {
+      const requiredParentType = PARENT_OF[row.type];
+      if (requiredParentType === null) {
+        return error(res, { statusCode: 400, message: 'A city has no parent to change.' });
+      }
       const parent = await Location.findByPk(newParentId);
-      if (!parent) return error(res, { statusCode: 404, message: 'New zone (parent_id) not found.' });
-      if (parent.type !== 'zone') {
+      if (!parent) return error(res, { statusCode: 404, message: 'New parent not found.' });
+      if (parent.type !== requiredParentType) {
         return error(res, {
           statusCode: 400,
-          message: 'parent_id must reference a location of type zone.',
+          message:
+            `A ${TYPE_LABEL[row.type]} must sit under a ${requiredParentType}, `
+            + `but "${parent.name}" is a ${parent.type}.`,
         });
+      }
+      // Moving a node under its own descendant would detach that whole branch
+      // from the tree and leave resolveZone walking in a circle.
+      let cursor = parent;
+      let hops = 0;
+      while (cursor && hops < 10) {
+        if (cursor.id === row.id) {
+          return error(res, {
+            statusCode: 400,
+            message: `You cannot move "${row.name}" inside itself.`,
+          });
+        }
+        cursor = cursor.parent_id ? await Location.findByPk(cursor.parent_id) : null;
+        hops += 1;
       }
       nextParentId = parent.id;
       nextParent = parent;
@@ -343,7 +530,7 @@ const updateAddress = async (req, res, next) => {
       const duplicate = await Location.findOne({
         where: {
           parent_id: nextParentId,
-          type: 'address',
+          type: row.type,
           name: { [Op.like]: nextName },
           is_active: true,
           id: { [Op.ne]: row.id },
@@ -352,29 +539,50 @@ const updateAddress = async (req, res, next) => {
       if (duplicate) {
         return error(res, {
           statusCode: 409,
-          message: `Another PG named "${nextName}" already exists in that zone.`,
+          message: `Another ${TYPE_LABEL[row.type]} named "${nextName}" already exists there.`,
         });
       }
     }
 
+    const renamed = nextName !== row.name;
     row.name = nextName;
     row.parent_id = nextParentId;
+    // zone_key is deliberately NOT touched on rename. It is the identity every
+    // past vote was filed under; rewriting it would orphan that history.
     await row.save();
+
+    if (row.type === 'zone') {
+      zoneRegistry.invalidate();
+      // A renamed zone should show its new name in the chat list too, but
+      // only if the group is still carrying the auto-generated name.
+      if (renamed) {
+        try {
+          const { ChatGroup } = db;
+          await ChatGroup.update(
+            { name: row.name },
+            { where: { default_zone_id: row.id } }
+          );
+        } catch (err) {
+          logger.error(`[locations] Zone renamed but chat group rename failed: ${err.message}`);
+        }
+      }
+    }
 
     // Load parent for the response (nextParent may be null if only name changed).
     const parentRow = nextParent || await Location.findByPk(row.parent_id, {
       attributes: ['id', 'name'],
     });
 
-    logger.info(`[locations] super_admin=${req.auth.id} updated PG ${row.id} → name="${row.name}", parent=${row.parent_id}`);
+    logger.info(`[locations] super_admin=${req.auth.id} updated ${row.type} ${row.id} → name="${row.name}", parent=${row.parent_id}`);
 
     return success(res, {
       statusCode: 200,
-      message: 'PG updated.',
+      message: `${TYPE_LABEL[row.type].replace(/^./, (c) => c.toUpperCase())} updated.`,
       data: {
         id:          row.id,
         name:        row.name,
         type:        row.type,
+        zone_key:    row.zone_key,
         parent_id:   row.parent_id,
         parent:      parentRow ? { id: parentRow.id, name: parentRow.name } : null,
         latitude:    row.latitude,
@@ -413,23 +621,33 @@ const deleteAddress = async (req, res, next) => {
 
     const row = await Location.findByPk(id);
     if (!row) return error(res, { statusCode: 404, message: 'Location not found.' });
-    if (row.type !== 'address') {
-      return error(res, {
-        statusCode: 403,
-        message: `Only addresses (PGs) can be deleted. "${row.name}" is a ${row.type}.`,
-      });
-    }
     if (!row.is_active) {
       return success(res, {
         statusCode: 200,
-        message: 'PG was already removed.',
+        message: `${TYPE_LABEL[row.type].replace(/^./, (c) => c.toUpperCase())} was already removed.`,
         data: { id: row.id, name: row.name },
       });
     }
 
-    // Guard: block if users are still linked here. Deleted accounts
-    // leave no users row behind, so this count is exactly the set of
-    // real residents who would be stranded on a hidden PG.
+    // Guard 1: a branch with live children underneath it. Hiding the parent
+    // would strand every descendant, because resolveZone walks UP the chain
+    // and would stop finding anything.
+    const childCount = await Location.count({
+      where: { parent_id: row.id, is_active: true },
+    });
+    if (childCount > 0 && !force) {
+      return error(res, {
+        statusCode: 409,
+        message:
+          `"${row.name}" still has ${childCount} active `
+          + `${childCount === 1 ? 'location' : 'locations'} under it. `
+          + 'Remove or move those first.',
+      });
+    }
+
+    // Guard 2: residents pointing straight at this row. Deleted accounts
+    // leave no users row behind, so this count is exactly the set of real
+    // residents who would be stranded on a hidden location.
     const linkedUserCount = await User.count({ where: { location_id: row.id } });
     if (linkedUserCount > 0 && !force) {
       return error(res, {
@@ -437,7 +655,7 @@ const deleteAddress = async (req, res, next) => {
         message:
           `${linkedUserCount} user${linkedUserCount === 1 ? '' : 's'} still ` +
           `assigned to "${row.name}". Reassign them first (or pass ?force=true to delete anyway; ` +
-          `they will still be linked to a hidden PG until you update their profile).`,
+          `they will still be linked to a hidden location until you update their profile).`,
       });
     }
 
@@ -445,17 +663,41 @@ const deleteAddress = async (req, res, next) => {
     await row.save();
 
     logger.info(
-      `[locations] super_admin=${req.auth.id} soft-deleted PG "${row.name}" (${row.id})` +
-      (linkedUserCount > 0 ? ` — force=true, ${linkedUserCount} user(s) still linked` : '')
+      `[locations] super_admin=${req.auth.id} soft-deleted ${row.type} "${row.name}" (${row.id})` +
+      (linkedUserCount > 0 ? ` — force=true, ${linkedUserCount} user(s) still linked` : '') +
+      (childCount > 0 ? ` — force=true, ${childCount} child location(s) left behind` : '')
     );
+
+    // Retiring a zone retires its chat: otherwise the group count stops
+    // matching the zone count, which is the invariant the chat provisioner
+    // exists to hold. Messages are preserved — the group is soft-deleted,
+    // same as any other.
+    let chatGroupClosed = false;
+    if (row.type === 'zone') {
+      zoneRegistry.invalidate();
+      try {
+        const { ChatGroup } = db;
+        const [closed] = await ChatGroup.update(
+          { is_active: false },
+          { where: { default_zone_id: row.id, is_active: true } }
+        );
+        chatGroupClosed = closed > 0;
+      } catch (err) {
+        logger.error(`[locations] Zone removed but closing its chat failed: ${err.message}`);
+      }
+    }
 
     return success(res, {
       statusCode: 200,
-      message: 'PG removed.',
+      message: `${TYPE_LABEL[row.type].replace(/^./, (c) => c.toUpperCase())} removed`
+        + (chatGroupClosed ? ', along with its group chat.' : '.'),
       data: {
         id: row.id,
         name: row.name,
+        type: row.type,
         linked_user_count_at_delete: linkedUserCount,
+        child_count_at_delete: childCount,
+        chat_group_closed: chatGroupClosed,
       },
     });
   } catch (err) {
@@ -468,7 +710,13 @@ module.exports = {
   getLocationsNeedingCoordinates,
   listAllAddresses,
   setCoordinates,
+  createLocation,
+  // createAddress predates createLocation and is still what the PG screen
+  // posts to. It stays as its own handler (it defaults type to 'address'
+  // and speaks in PG terms); createLocation is the general one.
   createAddress,
+  // These two now handle every level of the tree, not just addresses. The
+  // names are kept so the routes file and the app's API client stay stable.
   updateAddress,
   deleteAddress,
 };

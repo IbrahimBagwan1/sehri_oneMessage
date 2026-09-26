@@ -125,6 +125,17 @@ export default function SuperAdminChatScreen() {
             </View>
           ) : null}
         </Pressable>
+        {/* Settings, not delete, is the primary action on a zone group: the
+            zones it covers are what its membership is made of, and a zone's
+            own group cannot be deleted at all. */}
+        <Pressable
+          onPress={() => router.push({ pathname: '/chat-group-manage', params: { id: item.id } })}
+          hitSlop={8}
+          style={styles.manageBtn}
+          accessibilityLabel={`Manage ${item.name}`}
+        >
+          <Ionicons name="settings-outline" size={18} color={colors.tealDark} />
+        </Pressable>
         <Pressable
           onPress={() => handleDelete(item.id, item.name)}
           hitSlop={8}
@@ -219,6 +230,13 @@ const styles = StyleSheet.create({
   badgeText: { ...type.micro, color: colors.paper, fontWeight: '800' },
 
   deleteBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: space[3],
+    borderLeftWidth: 1,
+    borderLeftColor: colors.ruleFaint,
+  },
+  manageBtn: {
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: space[3],

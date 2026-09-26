@@ -3,7 +3,12 @@
 const express = require('express');
 const router = express.Router();
 const { verifyToken, requireRole } = require('../middleware/auth');
-const { listChapters, getSurah, triggerSync } = require('../controllers/quranController');
+const {
+  listChapters,
+  getAyatOfTheDay,
+  getSurah,
+  triggerSync,
+} = require('../controllers/quranController');
 
 // ---------------------------------------------------------------------------
 // Route order — literal segments (/chapters, /sync) before the /:surah
@@ -16,6 +21,12 @@ const { listChapters, getSurah, triggerSync } = require('../controllers/quranCon
 
 // GET /api/quran/chapters — PUBLIC — list all 114 surahs
 router.get('/chapters', listChapters);
+
+// GET /api/quran/ayat-of-the-day — PUBLIC — today's verse from islamic.app,
+// cached in our DB so at most one upstream call happens per UTC day.
+// MUST stay above the /:surah param route, which would otherwise try to
+// parse "ayat-of-the-day" as a surah number.
+router.get('/ayat-of-the-day', getAyatOfTheDay);
 
 // POST /api/quran/sync — super_admin only
 router.post('/sync', verifyToken, requireRole('super_admin'), triggerSync);

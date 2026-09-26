@@ -8,14 +8,21 @@
  *
  * Endpoints:
  *   GET  /api/quran/chapters          listChapters
+ *   GET  /api/quran/ayat-of-the-day   getAyatOfTheDay
  *   GET  /api/quran/:surah            getSurah
  *   POST /api/quran/sync              triggerSync   (super_admin)
+ *
+ * One exception to "no upstream calls at request time": the Ayat of the Day
+ * makes at most one call to islamic.app per UTC day, on the first request of
+ * that day. Every other request that day is served from our own cache table.
+ * See services/ayatService.js.
  */
 
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const logger = require('../utils/logger');
 const { syncQuran } = require('../services/islamicApiSync');
+const ayatService = require('../services/ayatService');
 
 const { QuranChapter, QuranVerse } = db;
 
@@ -130,4 +137,48 @@ const triggerSync = async (req, res, next) => {
   }
 };
 
-module.exports = { listChapters, getSurah, triggerSync };
+// ---------------------------------------------------------------------------
+// GET /api/quran/ayat-of-the-day
+// Access: PUBLIC — same stance as the rest of /api/quran. A guest browsing
+// without an account sees the verse too.
+//
+// Returns the verse islamic.app has chosen for today (UTC). THE SELECTION IS
+// THEIRS, not ours: deterministic per date, the same verse for every caller
+// worldwide. It is unrelated to the quran_chapters / quran_verses corpus this
+// controller otherwise serves, which is the full scripture synced from
+// islamicApiSync. (No `topic_ayat` themed pool exists in this codebase.)
+//
+// At most one upstream call happens per UTC day across the whole community;
+// everything else is read from our cache. If the upstream call fails when a
+// new day is due, the most recent cached verse is served with stale: true so
+// the card can show a quiet indicator rather than an error.
+// ---------------------------------------------------------------------------
+const getAyatOfTheDay = async (req, res, next) => {
+  try {
+    const result = await ayatService.getAyatOfTheDay();
+
+    return success(res, {
+      statusCode: 200,
+      message: result.stale
+        ? "Showing the most recent verse — today's could not be fetched."
+        : 'Ayat of the day fetched',
+      data: {
+        date: result.date,
+        stale: result.stale,
+        fetched_at: result.fetched_at,
+        ...result.verse,
+      },
+    });
+  } catch (err) {
+    // Only reachable when the upstream is down AND we have never cached a
+    // single verse — otherwise the service falls back instead of throwing.
+    logger.error(`[quran] Ayat of the day unavailable: ${err.message}`);
+    return error(res, {
+      statusCode: 503,
+      message: "Couldn't load today's verse. Please try again shortly.",
+    });
+  }
+};
+
+module.exports = {
+  getAyatOfTheDay, listChapters, getSurah, triggerSync };
