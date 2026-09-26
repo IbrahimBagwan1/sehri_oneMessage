@@ -3,9 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,7 +10,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../../api/auth';
 import ResendOtpButton from '../../components/ResendOtpButton';
-import { Button, Header, Input, RubStar } from '../../components/ui';
+import { Button, Header, Input, RubStar, KeyboardAwareScroll } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
@@ -158,11 +155,7 @@ export default function VerifyPhoneScreen() {
         onBack={() => (step === STEP.CODE ? changeNumber() : router.back())}
       />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           {/* Step indicator — makes it obvious this is 1 of 2 */}
           <View style={styles.stepper}>
             <View style={styles.stepDotActive}>
@@ -287,8 +280,7 @@ export default function VerifyPhoneScreen() {
               Already have an account? <Text style={styles.footerAction}>Sign in</Text>
             </Text>
           </Pressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

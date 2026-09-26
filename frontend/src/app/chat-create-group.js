@@ -5,8 +5,6 @@ import {
   StyleSheet,
   FlatList,
   Pressable,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
   ScrollView,
 } from 'react-native';
@@ -26,6 +24,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAvoidingView
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
 
@@ -218,8 +217,7 @@ function ChatCreateGroupInner({ router }) {
       />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        behavior="padding"
         style={{ flex: 1 }}
       >
         <FlatList

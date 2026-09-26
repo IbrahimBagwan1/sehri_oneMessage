@@ -10,6 +10,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { KeyboardAvoidingView } from './ui';
 import { colors, radius, space, type } from '../theme';
 
 // -----------------------------------------------------------------------------
@@ -70,9 +71,13 @@ export default function ReportMessageSheet({
       transparent
       animationType="fade"
       onRequestClose={close}
+      // Android renders a Modal in its own window. These two tell that
+      // window it is edge-to-edge, which is what lets the keyboard inset
+      // reach the view below.
       statusBarTranslucent
+      navigationBarTranslucent
     >
-      <View style={styles.backdrop}>
+      <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>
         <View style={styles.sheet}>
           <ScrollView bounces={false} keyboardShouldPersistTaps="handled">
             {/* Icon + heading */}
@@ -169,7 +174,7 @@ export default function ReportMessageSheet({
             </View>
           </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

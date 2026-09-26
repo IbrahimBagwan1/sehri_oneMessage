@@ -8,9 +8,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
   Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -18,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { trackingApi } from '../../api/tracking';
 import { useRiderStore } from '../../store/useRiderStore';
 import PasswordInput from '../../components/PasswordInput';
+import KeyboardAwareScroll from '../../components/ui/KeyboardAwareScroll';
 
 export default function RiderLoginScreen() {
   const router       = useRouter();
@@ -58,12 +56,7 @@ export default function RiderLoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-
+    <KeyboardAwareScroll contentContainerStyle={styles.scrollContent}>
         {/* Brand block — the app logo, matching the wordmark treatment on
             the main sign-in screen so riders land somewhere that clearly
             belongs to OneMessage rather than a generic bicycle glyph. */}
@@ -136,8 +129,7 @@ export default function RiderLoginScreen() {
           Contact them if you have trouble logging in.
         </Text>
 
-      </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardAwareScroll>
   );
 }
 

@@ -7,8 +7,6 @@ import {
   Pressable,
   Alert,
   Modal,
-  KeyboardAvoidingView,
-  Platform,
   RefreshControl,
   ActivityIndicator,
 } from 'react-native';
@@ -24,6 +22,7 @@ import {
   Header,
   Input,
   LoadingState,
+  KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -345,7 +344,7 @@ function LocationFormSheet({ visible, type, parents, onClose, onSaved }) {
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => (saving ? null : onClose())}>
       <View style={styles.overlay}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.sheet}
         >
           <View style={styles.handle} />

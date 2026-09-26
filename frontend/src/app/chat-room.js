@@ -7,8 +7,6 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,6 +21,7 @@ import {
   GuestGate,
   Header,
   LoadingState,
+  KeyboardAvoidingView
 } from '../components/ui';
 import { connect as connectSocket, getSocket } from '../services/socket';
 import ReportMessageSheet from '../components/ReportMessageSheet';
@@ -429,8 +428,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
       <Header title={groupName} onBack={onBack} />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        behavior="padding"
         style={{ flex: 1 }}
       >
         {loading ? (

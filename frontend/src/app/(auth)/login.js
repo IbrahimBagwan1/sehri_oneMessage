@@ -3,9 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,7 +10,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../../api/auth';
 import { useAuthStore } from '../../store/useAuthStore';
-import { Button, Input, RubStar } from '../../components/ui';
+import { Button, Input, RubStar, KeyboardAwareScroll } from '../../components/ui';
 import PasswordInput from '../../components/PasswordInput';
 import { colors, radius, space, type } from '../../theme';
 // Amiri family names live in the Quran/Dua theme facade (itself a thin
@@ -87,11 +84,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           {/* Brand block */}
           <View style={styles.brand}>
             <View style={styles.brandDotRow}>
@@ -229,8 +222,7 @@ export default function LoginScreen() {
               style={styles.riderBtn}
             />
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

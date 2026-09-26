@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { useColorScheme, View } from 'react-native';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { useFonts, Amiri_400Regular, Amiri_700Bold } from '@expo-google-fonts/amiri';
 import useNotificationRouting from '../hooks/useNotificationRouting';
 
@@ -32,7 +33,25 @@ export default function RootLayout() {
   }
 
   return (
-    <>
+    // KeyboardProvider feeds every keyboard-aware view in the app a live
+    // reading of the IME frame. It has to sit above the navigator so the
+    // measurement survives navigation, and it is required by
+    // components/ui/KeyboardAwareScroll.js — without it those views
+    // silently stop avoiding the keyboard.
+    <KeyboardProvider
+      // Expo SDK 54+ turns edge-to-edge on permanently, so both system
+      // bars are translucent and the window never resizes for the IME.
+      // These three flags tell the library that, so it measures the real
+      // keyboard inset instead of assuming an opaque-bar layout:
+      //   statusBarTranslucent / navigationBarTranslucent — also what makes
+      //     keyboard avoidance work inside a react-native <Modal>, which
+      //     Android renders in its own window
+      //   preserveEdgeToEdge — stops the library turning edge-to-edge off
+      //     underneath Expo, which would break every safe-area inset
+      statusBarTranslucent
+      navigationBarTranslucent
+      preserveEdgeToEdge
+    >
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
@@ -50,8 +69,9 @@ export default function RootLayout() {
         <Stack.Screen name="chat-create-group" options={{ headerShown: false }} />
         <Stack.Screen name="chat-group-manage" options={{ headerShown: false }} />
         <Stack.Screen name="vote-history" options={{ headerShown: false }} />
+        <Stack.Screen name="blocked-users" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
-    </>
+    </KeyboardProvider>
   );
 }

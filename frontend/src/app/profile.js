@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   Alert,
-  ScrollView,
   Modal,
   FlatList,
   Pressable,
@@ -25,6 +24,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAwareScroll
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
 
@@ -265,7 +265,7 @@ function ProfileScreenAuthed() {
         }
       />
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         {/* Identity block */}
         <View style={styles.identityBlock}>
           <Avatar name={profile?.name} size={80} />
@@ -382,7 +382,7 @@ function ProfileScreenAuthed() {
             </Card>
           </View>
         )}
-      </ScrollView>
+      </KeyboardAwareScroll>
 
       <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>

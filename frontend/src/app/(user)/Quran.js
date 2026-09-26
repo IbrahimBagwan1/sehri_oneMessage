@@ -136,6 +136,10 @@ export default function QuranChapterList() {
         </View>
       ) : (
         <FlatList
+          // Without this the first tap on a surah while the search
+          // keyboard is open only dismisses the keyboard.
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           data={filtered}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderChapter}

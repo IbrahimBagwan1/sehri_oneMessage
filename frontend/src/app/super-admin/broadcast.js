@@ -3,11 +3,8 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   Pressable,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -24,6 +21,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAwareScroll
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -168,16 +166,9 @@ export default function SuperAdminBroadcastScreen() {
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Send broadcast" onBack={() => router.back()} />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
+      <KeyboardAwareScroll
           contentContainerStyle={styles.scroll}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
+          showsVerticalScrollIndicator={false}>
           {/* Compose card */}
           <View style={styles.composeCard}>
             <View style={styles.composeHead}>
@@ -282,8 +273,7 @@ export default function SuperAdminBroadcastScreen() {
               ))}
             </View>
           )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

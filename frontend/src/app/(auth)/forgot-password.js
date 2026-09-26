@@ -4,16 +4,13 @@ import {
   Text,
   StyleSheet,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { authApi } from '../../api/auth';
 import PasswordInput from '../../components/PasswordInput';
 import ResendOtpButton from '../../components/ResendOtpButton';
-import { Button, Header, Input } from '../../components/ui';
+import { Button, Header, Input, KeyboardAwareScroll } from '../../components/ui';
 import { colors, space, type } from '../../theme';
 
 export default function ForgotPasswordScreen() {
@@ -72,8 +69,7 @@ export default function ForgotPasswordScreen() {
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Reset password" onBack={() => router.back()} />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           <Text style={styles.intro}>
             Enter the phone number on your account. We'll send you a one-time code to verify it.
           </Text>
@@ -137,8 +133,7 @@ export default function ForgotPasswordScreen() {
             fullWidth
             style={styles.submit}
           />
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

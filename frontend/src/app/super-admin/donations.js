@@ -10,8 +10,6 @@ import {
   Alert,
   RefreshControl,
   Dimensions,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -27,6 +25,7 @@ import {
   Header,
   Input,
   LoadingState,
+  KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -334,7 +333,7 @@ export default function AdminDonationsScreen() {
         onRequestClose={() => setRejectFor(null)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.sheetOverlay}
         >
           <Pressable style={styles.sheetBackdrop} onPress={() => setRejectFor(null)} />

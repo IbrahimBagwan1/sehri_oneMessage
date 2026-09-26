@@ -8,8 +8,6 @@ import {
   RefreshControl,
   Pressable,
   Modal,
-  KeyboardAvoidingView,
-  Platform,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -29,6 +27,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -456,7 +455,7 @@ export default function SuperAdminAdminsScreen() {
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior="padding"
             style={styles.modalSheet}
           >
             <View style={styles.modalHandle} />

@@ -3,9 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   Alert,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   Image,
@@ -27,6 +25,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAwareScroll
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -206,9 +205,7 @@ function DonateScreenAuthed() {
         }
       />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           {/* Step 1 — Payment details, platform-branched */}
           <View style={styles.section}>
             <SectionHeader title="1. Pay with any UPI app" ornament="star" />
@@ -356,8 +353,7 @@ function DonateScreenAuthed() {
               a super admin verifies your screenshot.
             </Text>
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

@@ -24,6 +24,7 @@ import {
   ErrorState,
   Header,
   LoadingState,
+  KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -317,8 +318,18 @@ function ActionSheet({ report, onClose, onResolved }) {
   };
 
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <View style={styles.backdrop}>
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      // Android renders a Modal in its own window. These two tell
+      // that window it is edge-to-edge, which is what lets the
+      // keyboard inset reach the view below.
+      statusBarTranslucent
+      navigationBarTranslucent
+    >
+      <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>Review report</Text>
@@ -425,7 +436,7 @@ function ActionSheet({ report, onClose, onResolved }) {
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

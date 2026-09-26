@@ -9,7 +9,6 @@ import {
   Alert,
   Platform,
   RefreshControl,
-  KeyboardAvoidingView,
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +18,7 @@ import { locationsAdminApi } from '../../api/locations';
 import { locationsApi } from '../../api/auth';
 import {
   Button, Card, Chip, EmptyState, ErrorState, Header, Input, LoadingState,
+  KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -563,7 +563,7 @@ function PGFormSheet({ visible, mode, initial, zones, zonesLoading, onClose, onS
     >
       <View style={styles.modalOverlay}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.modalSheet}
         >
           <View style={styles.modalHandle} />

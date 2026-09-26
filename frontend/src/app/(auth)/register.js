@@ -4,10 +4,7 @@ import {
   Text,
   StyleSheet,
   Alert,
-  KeyboardAvoidingView,
   Linking,
-  Platform,
-  ScrollView,
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../../api/auth';
 import LocationPicker from '../../components/LocationPicker';
 import PasswordInput from '../../components/PasswordInput';
-import { Button, Header, Input, RubStar } from '../../components/ui';
+import { Button, Header, Input, RubStar, KeyboardAwareScroll } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
@@ -166,8 +163,7 @@ export default function RegisterScreen() {
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Your details" onBack={() => router.back()} />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           {/* Step indicator — mirrors verify-phone so the flow reads as one journey */}
           <View style={styles.stepper}>
             <View style={styles.stepDotDone}>
@@ -303,8 +299,7 @@ export default function RegisterScreen() {
               Already have an account? <Text style={styles.footerAction}>Sign in</Text>
             </Text>
           </Pressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }

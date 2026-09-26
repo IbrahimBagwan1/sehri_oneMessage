@@ -3,10 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,6 +18,7 @@ import {
   Input,
   LoadingState,
   SectionHeader,
+  KeyboardAwareScroll
 } from '../components/ui';
 import { colors, space, type } from '../theme';
 
@@ -81,12 +79,17 @@ export default function UserFeedbackScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Feedback" onBack={() => router.back()} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchHistory(true)} colors={[colors.teal]} tintColor={colors.teal} />}
-        >
+      <KeyboardAwareScroll
+        contentContainerStyle={styles.scroll}
+        refreshControl={(
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => fetchHistory(true)}
+            colors={[colors.teal]}
+            tintColor={colors.teal}
+          />
+        )}
+      >
           <SectionHeader title="Send us feedback" subtitle="Your zone admin will read it." />
           <Card>
             <Text style={styles.label}>Category</Text>
@@ -153,8 +156,7 @@ export default function UserFeedbackScreen() {
               </View>
             )}
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScroll>
     </SafeAreaView>
   );
 }
