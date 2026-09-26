@@ -100,23 +100,63 @@ const initSocket = (httpServer) => {
       logger.info(`[socket] ${effectiveUserId} joined zone:${zoneId}`);
     };
 
+    /**
+     * The zone this socket is ENTITLED to watch, derived from the token —
+     * never from the client's request.
+     *
+     * A rider's live GPS goes to the zone room, so joining a room is
+     * effectively "let me watch that rider move". This used to honour a
+     * client-supplied zone_id verbatim, which meant any signed-in member
+     * could subscribe to any zone and follow a rider they had no
+     * relationship with. A super admin legitimately oversees everything;
+     * everyone else gets exactly their own zone.
+     *
+     * Returns null when no zone can be established, in which case the
+     * socket joins nothing and simply receives no position updates.
+     */
+    const entitledZoneId = async (requestedZoneId) => {
+      // Super admins oversee the whole community, so a request is honoured.
+      if (role === 'super_admin') return requestedZoneId || null;
+
+      // Admins and riders carry their zone in the token.
+      if (zone_location_id) {
+        if (requestedZoneId && requestedZoneId !== zone_location_id) {
+          logger.warn(
+            `[socket] ${effectiveUserId} (${role}) asked for zone:${requestedZoneId} `
+            + `but belongs to zone:${zone_location_id} — using their own`
+          );
+        }
+        return zone_location_id;
+      }
+
+      // Plain member — resolve from their own location. Their token
+      // deliberately does not carry a zone, so this is the only source.
+      const db = require('../models');
+      const user = await db.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
+      if (!user?.location_id) return null;
+      const zone = await resolveZone(user.location_id, db);
+      if (!zone) return null;
+      if (requestedZoneId && requestedZoneId !== zone.id) {
+        logger.warn(
+          `[socket] ${effectiveUserId} asked for zone:${requestedZoneId} `
+          + `but lives in zone:${zone.id} — using their own`
+        );
+      }
+      return zone.id;
+    };
+
     socket.on('subscribe_tracking', async ({ zone_id } = {}) => {
       try {
-        // Always join the fallback global tracking room.
-        socket.join('tracking:global');
-
-        if (zone_id)           return joinZoneRoom(zone_id);
-        if (zone_location_id)  return joinZoneRoom(zone_location_id);
-
-        // Plain user — resolve their zone lazily from the users table.
-        if (role === 'user' || (user_id && role !== 'admin' && role !== 'rider')) {
-          const db = require('../models');
-          const user = await db.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
-          if (user && user.location_id) {
-            const zone = await resolveZone(user.location_id, db);
-            if (zone) joinZoneRoom(zone.id);
-          }
+        const zoneId = await entitledZoneId(zone_id);
+        if (zoneId) {
+          joinZoneRoom(zoneId);
+          return;
         }
+        // No resolvable zone — fall back to the global room so a member
+        // whose location has not been set still sees the single rider in a
+        // one-zone community. emitRiderPosition only uses this room when a
+        // rider has no zone of their own, so it leaks nothing zone-scoped.
+        socket.join('tracking:global');
       } catch (err) {
         logger.warn(`[socket] subscribe_tracking failed: ${err.message}`);
       }
@@ -125,17 +165,14 @@ const initSocket = (httpServer) => {
     socket.on('unsubscribe_tracking', async ({ zone_id } = {}) => {
       try {
         socket.leave('tracking:global');
-        if (zone_id) { socket.leave(`zone:${zone_id}`); return; }
-        if (zone_location_id) { socket.leave(`zone:${zone_location_id}`); return; }
-        if (role === 'user' || (user_id && role !== 'admin' && role !== 'rider')) {
-          const db = require('../models');
-          const user = await db.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
-          if (user && user.location_id) {
-            const zone = await resolveZone(user.location_id, db);
-            if (zone) socket.leave(`zone:${zone.id}`);
-          }
-        }
-      } catch (_) { /* noop */ }
+        // Leave via the same entitlement path used to join, so a socket
+        // cannot be tricked into leaving a room it is not in (harmless) or
+        // left subscribed to one it asked to leave (not harmless).
+        const zoneId = await entitledZoneId(zone_id);
+        if (zoneId) socket.leave(`zone:${zoneId}`);
+      } catch (err) {
+        logger.warn(`[socket] unsubscribe_tracking failed: ${err.message}`);
+      }
     });
 
     socket.on('disconnect', (reason) => {
@@ -218,6 +255,16 @@ const emitStopDelivered = (userId, payload) => {
   io.to(`user:${userId}`).emit('stop_delivered', payload);
 };
 
+/**
+ * The rider undid a delivery — it is back on their route.
+ * Counterpart to stop_delivered, so a client that already flipped to
+ * "delivered" flips back rather than staying wrong until a refresh.
+ */
+const emitStopReopened = (userId, payload) => {
+  if (!io || !userId) return;
+  io.to(`user:${userId}`).emit('stop_reopened', payload);
+};
+
 module.exports = {
   initSocket,
   getIO,
@@ -229,4 +276,5 @@ module.exports = {
   emitRiderPosition,
   emitEtaUpdate,
   emitStopDelivered,
+  emitStopReopened,
 };

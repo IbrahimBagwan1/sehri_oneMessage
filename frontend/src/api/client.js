@@ -22,11 +22,25 @@ const apiClient = axios.create({
 });
 
 // ---------------------------------------------------------------------------
-// Request interceptor — attach the stored JWT to every outgoing request.
+// Request interceptor — attach a JWT to every outgoing request.
+//
+// A request may carry `config.authToken` to authenticate as somebody other
+// than the signed-in user. That exists for the rider session: a rider who is
+// also a member holds TWO tokens, and the rider app pushes GPS every 30
+// seconds while the member session stays live in the same process.
+//
+// The previous approach was to overwrite the shared 'access_token' key in
+// SecureStore, run the call, then put the old one back. That is a race with
+// a window open on every single GPS push: two overlapping rider calls, or
+// any member-side request landing inside the window, authenticated as the
+// wrong identity — and if the app was killed mid-window, the rider's token
+// stayed installed as the member's token permanently.
+//
+// Passing the token per request has no shared state, so there is no window.
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   async (config) => {
-    const token = await SecureStore.getItemAsync('access_token');
+    const token = config.authToken || (await SecureStore.getItemAsync('access_token'));
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -88,7 +102,12 @@ apiClient.interceptors.response.use(
       !original ||
       original.__isRetry ||
       original.url?.includes('/auth/refresh-token') ||
-      original.url?.includes('/auth/login')
+      original.url?.includes('/auth/login') ||
+      // A request that carried its own token is NOT the signed-in member's.
+      // Refreshing here would mint a new MEMBER token and replay the rider's
+      // request with it — authenticating as the wrong person. The rider
+      // session owns its own refresh; see store/riderSession.js.
+      original.authToken
     ) {
       return Promise.reject(error);
     }

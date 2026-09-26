@@ -8,6 +8,7 @@ import {
   Pressable,
   RefreshControl,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -38,6 +39,7 @@ import { colors, radius, space, type } from '../../theme';
 export default function DeliveriesScreen() {
   const fetchMyStops       = useRiderStore((s) => s.fetchMyStops);
   const markStopDelivered  = useRiderStore((s) => s.markStopDelivered);
+  const undoStopDelivered  = useRiderStore((s) => s.undoStopDelivered);
   const stops              = useRiderStore((s) => s.myStops);
   const summary            = useRiderStore((s) => s.stopsSummary);
   const loading            = useRiderStore((s) => s.loadingStops);
@@ -69,6 +71,29 @@ export default function DeliveriesScreen() {
               await markStopDelivered(stop.id);
             } catch (err) {
               Alert.alert("Couldn't mark delivered", err?.response?.data?.message || 'Try again in a moment.');
+            } finally {
+              setBusyStopId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleUndoDelivered = (stop) => {
+    Alert.alert(
+      `Put "${stop.location_name}" back?`,
+      'It returns to your route and the residents are told it is still on the way.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Put back',
+          onPress: async () => {
+            setBusyStopId(stop.id);
+            try {
+              await undoStopDelivered(stop.id);
+            } catch (err) {
+              Alert.alert("Couldn't undo", err?.response?.data?.message || 'Try again in a moment.');
             } finally {
               setBusyStopId(null);
             }
@@ -129,9 +154,27 @@ export default function DeliveriesScreen() {
           </View>
 
           {isDone ? (
-            <View style={styles.deliveredWrap}>
-              <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-            </View>
+            // Tappable, because a mistap at 4am used to be permanent — the
+            // stop left the route and the residents had already been told
+            // their food arrived. Understated so it never competes with the
+            // primary action on the rows that still need doing.
+            <Pressable
+              onPress={() => handleUndoDelivered(item)}
+              disabled={busy}
+              hitSlop={8}
+              style={({ pressed }) => [styles.deliveredWrap, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Undo delivery of ${item.location_name}`}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={colors.success} />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                  <Text style={styles.undoHint}>Undo</Text>
+                </>
+              )}
+            </Pressable>
           ) : (
             <Pressable
               onPress={() => handleMarkDelivered(item)}
@@ -322,6 +365,7 @@ const styles = StyleSheet.create({
   markBtnPressed: { backgroundColor: colors.tealDark },
   markBtnText:    { ...type.metaStrong, color: colors.paper },
 
+  undoHint: { ...type.micro, color: colors.inkFaint, marginTop: 2 },
   deliveredWrap: {
     width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
   },

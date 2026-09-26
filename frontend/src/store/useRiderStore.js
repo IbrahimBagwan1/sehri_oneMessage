@@ -1,16 +1,19 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import * as Location from 'expo-location';
 import { trackingApi } from '../api/tracking';
+import {
+  requestRiderLocationPermission,
+  startRiderLocationUpdates,
+  stopRiderLocationUpdates,
+  isRiderLocationRunning,
+  pushCurrentPositionOnce,
+} from '../services/riderLocationTask';
 
 // Keys used in SecureStore — separate from user's 'access_token' so
 // a rider who is also a user can stay logged in on both sessions.
 const RIDER_TOKEN_KEY   = 'rider_access_token';
 const RIDER_REFRESH_KEY = 'rider_refresh_token';
 const RIDER_DATA_KEY    = 'rider_data';
-
-// How often the rider's GPS is pushed to the backend (milliseconds).
-const PUSH_INTERVAL_MS = 5000;
 
 export const useRiderStore = create((set, get) => ({
   // -------------------------------------------------------------------------
@@ -20,7 +23,6 @@ export const useRiderStore = create((set, get) => ({
   accessToken:      null,
   isAuthenticated:  false,
   isHydrated:       false,
-  isDelivering:     false,
   deliveryList:     null,    // { poll_date, total, by_zone } or null (legacy — /delivery-list)
   loadingList:      false,
   listError:        null,
@@ -35,8 +37,17 @@ export const useRiderStore = create((set, get) => ({
   loadingStops:     false,
   stopsError:       null,
 
-  // Internal — interval handle for the GPS push loop
-  _pushInterval:    null,
+  // True while the OS-driven location task is running. Kept in state only
+  // so the UI can reflect it; the task itself is owned by the OS and
+  // survives this store being torn down.
+  isDelivering:     false,
+
+  // Whether the rider granted "always" location. Declared here so a
+  // selector reading it before the first round gets false, not undefined.
+  // A rider who declined still tracks while the app is open — we warn
+  // rather than block, since refusing to let them start their round would
+  // be worse than degraded tracking.
+  backgroundLocationGranted: false,
 
   // -------------------------------------------------------------------------
   // hydrate — called once at app startup inside (rider)/_layout
@@ -77,28 +88,21 @@ export const useRiderStore = create((set, get) => ({
   },
 
   // -------------------------------------------------------------------------
-  // withRiderToken — swaps the apiClient's active token to the rider token,
-  // runs the given async fn, then restores the previous token.
+  // riderToken — the token every rider-scoped API call is passed.
   //
-  // This is needed because apiClient's interceptor always reads 'access_token'
-  // from SecureStore. A rider who is also a regular user has two tokens — we
-  // must not overwrite the user's token permanently.
+  // This replaced `withRiderToken`, which swapped the shared 'access_token'
+  // in SecureStore, ran the call, then put the old one back. That left a
+  // window open on every request where a member-side call would have
+  // authenticated as the rider — and if the app died mid-window, the
+  // rider's token stayed installed as the member's, permanently.
+  //
+  // Reads from state, falling back to SecureStore for the background task
+  // path where the store may not be hydrated.
   // -------------------------------------------------------------------------
-  withRiderToken: async (fn) => {
-    const riderToken = get().accessToken;
-    const prevToken  = await SecureStore.getItemAsync('access_token');
-
-    try {
-      await SecureStore.setItemAsync('access_token', riderToken);
-      return await fn();
-    } finally {
-      // Always restore — even if fn throws
-      if (prevToken) {
-        await SecureStore.setItemAsync('access_token', prevToken);
-      } else {
-        await SecureStore.deleteItemAsync('access_token');
-      }
-    }
+  riderToken: async () => {
+    const inState = get().accessToken;
+    if (inState) return inState;
+    return SecureStore.getItemAsync(RIDER_TOKEN_KEY);
   },
 
   // -------------------------------------------------------------------------
@@ -108,7 +112,7 @@ export const useRiderStore = create((set, get) => ({
   fetchDeliveryList: async () => {
     set({ loadingList: true, listError: null });
     try {
-      const result = await get().withRiderToken(() => trackingApi.getDeliveryList());
+      const result = await trackingApi.getDeliveryList(await get().riderToken());
       if (result.success) {
         set({ deliveryList: result.data });
       }
@@ -128,7 +132,7 @@ export const useRiderStore = create((set, get) => ({
   fetchMyStops: async () => {
     set({ loadingStops: true, stopsError: null });
     try {
-      const result = await get().withRiderToken(() => trackingApi.getMyStops());
+      const result = await trackingApi.getMyStops(await get().riderToken());
       if (result.success) {
         set({
           myStops:       Array.isArray(result.data?.stops) ? result.data.stops : [],
@@ -159,7 +163,7 @@ export const useRiderStore = create((set, get) => ({
       ),
     });
     try {
-      await get().withRiderToken(() => trackingApi.markStopDelivered(stopId));
+      await trackingApi.markStopDelivered(stopId, await get().riderToken());
       // Refetch to pick up the new sort_order + polyline.
       await get().fetchMyStops();
     } catch (err) {
@@ -170,108 +174,145 @@ export const useRiderStore = create((set, get) => ({
   },
 
   // -------------------------------------------------------------------------
-  // startDelivery — requests location permission, then starts a repeating
-  // interval that pushes the rider's GPS to the backend every 5 seconds.
-  // On start, also asks the backend to recompute the optimized route
-  // using the rider's live GPS as origin.
+  // undoStopDelivered — put a stop back on the route after a mistap.
+  // Optimistic like markStopDelivered, and rolls back the same way.
   // -------------------------------------------------------------------------
-  startDelivery: async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      throw new Error('Location permission denied. Please enable it in Settings.');
-    }
-
-    const rider = get().rider;
-    if (!rider) throw new Error('Not logged in as rider');
-
-    // Mark as delivering immediately so the UI updates without waiting for
-    // the first push interval.
-    set({ isDelivering: true });
-
-    // Push location right away, then on the interval.
-    const pushOnce = async () => {
-      try {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-
-        const { latitude, longitude } = location.coords;
-
-        // Reverse geocode on device — no server-side geocoding needed.
-        const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
-        const address = place
-          ? [place.name, place.street, place.district, place.city]
-              .filter(Boolean)
-              .join(', ')
-          : null;
-
-        await get().withRiderToken(() =>
-          trackingApi.pushLocation(rider.id, {
-            latitude,
-            longitude,
-            current_address: address,
-            status: 'delivering',
-          })
-        );
-      } catch (err) {
-        // Silent — don't crash the interval on a single failed push.
-        console.warn('Location push failed:', err.message);
-      }
-    };
-
-    await pushOnce();
-
-    // Now that we've pushed our live GPS, ask the backend to recompute
-    // the optimized visit order using that GPS as origin — otherwise
-    // the initial order was based on stale coords from assignment time.
-    // Then refetch stops so the UI picks up the new sort + polyline.
+  undoStopDelivered: async (stopId) => {
+    const prevStops = get().myStops;
+    set({
+      myStops: prevStops.map((s) =>
+        s.id === stopId ? { ...s, status: 'pending', delivered_at: null } : s
+      ),
+    });
     try {
-      await get().withRiderToken(() => trackingApi.recomputeMyRoute());
+      await trackingApi.undoStopDelivered(stopId, await get().riderToken());
       await get().fetchMyStops();
-    } catch (recomputeErr) {
-      // Non-fatal — the rider can still deliver in whatever order
-      // was already computed at assignment time. Directions failure
-      // shouldn't block them from starting the run.
-      console.warn('Route recompute at start failed:', recomputeErr?.message);
+    } catch (err) {
+      set({ myStops: prevStops });
+      throw err;
     }
-
-    const interval = setInterval(pushOnce, PUSH_INTERVAL_MS);
-    set({ _pushInterval: interval });
   },
 
   // -------------------------------------------------------------------------
-  // stopDelivery — clears the GPS interval and marks status as 'done'.
-  // Backend requires lat/lng on every push-location call, so we grab the
-  // current position one last time before sending the done status.
+  // startDelivery — hand the GPS feed to the OS, then re-optimise the route
+  // from the rider's real position.
+  //
+  // The feed is a native background task (services/riderLocationTask.js),
+  // not a JS timer: a timer stops the moment the screen locks, which for a
+  // 4am delivery round is nearly the whole run.
   // -------------------------------------------------------------------------
-  stopDelivery: async () => {
-    const { _pushInterval, rider } = get();
+  startDelivery: async () => {
+    const rider = get().rider;
+    if (!rider) throw new Error('Not signed in as a rider');
 
-    // Stop the interval first so no more pushes fire.
-    if (_pushInterval) {
-      clearInterval(_pushInterval);
-      set({ _pushInterval: null });
+    const { granted, background } = await requestRiderLocationPermission();
+    if (!granted) {
+      throw new Error(
+        'Location permission is needed to share your position with the community. '
+        + 'Enable it in Settings and try again.'
+      );
     }
 
+    const token = await get().riderToken();
+
+    // One immediate fix so the map has something before the first
+    // scheduled update lands 30 seconds later.
+    try {
+      await pushCurrentPositionOnce(rider, token, 'delivering');
+    } catch (err) {
+      console.warn('[rider] initial position push failed:', err?.message);
+    }
+
+    await startRiderLocationUpdates();
+    set({ isDelivering: true, backgroundLocationGranted: background });
+
+    // Re-optimise using the position we just pushed. Until now the order
+    // was based on wherever the rider was at assignment time, which may be
+    // hours old and miles away.
+    try {
+      await trackingApi.recomputeMyRoute(token);
+      await get().fetchMyStops();
+    } catch (err) {
+      // Non-fatal — the existing order is still a usable route, and
+      // Directions being down must not stop someone starting their round.
+      console.warn('[rider] route recompute at start failed:', err?.message);
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // stopDelivery — stop the feed and tell the backend the run is over.
+  // -------------------------------------------------------------------------
+  stopDelivery: async () => {
+    const rider = get().rider;
+    await stopRiderLocationUpdates();
     set({ isDelivering: false });
 
-    // Tell the backend delivery is done — include last known coords since
-    // the backend requires latitude + longitude on every push-location call.
-    if (rider) {
-      try {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        await get().withRiderToken(() =>
-          trackingApi.pushLocation(rider.id, {
-            latitude:  location.coords.latitude,
-            longitude: location.coords.longitude,
-            status:    'done',
-          })
-        );
-      } catch (err) {
-        console.warn('Stop delivery push failed:', err.message);
+    if (!rider) return;
+    try {
+      await pushCurrentPositionOnce(rider, await get().riderToken(), 'done');
+    } catch (err) {
+      // The feed is already stopped, so the worst case is the backend
+      // showing this rider as delivering until their next sign-in, which
+      // syncDeliveryState below reconciles.
+      console.warn('[rider] final status push failed:', err?.message);
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // syncDeliveryState — reconcile on app start.
+  //
+  // The OS owns the location task, so it can outlive the JS context: the
+  // app can be killed mid-round and relaunched with `isDelivering` reset to
+  // false while the task is still running and the backend still shows the
+  // rider as delivering. Without this the rider sees "Start delivery" on a
+  // round that never stopped.
+  // -------------------------------------------------------------------------
+  syncDeliveryState: async () => {
+    try {
+      const running = await isRiderLocationRunning();
+      const rider = get().rider;
+
+      // Task running but nobody signed in — a leftover from a cleared
+      // session. Stop it rather than pushing as a phantom rider.
+      if (running && !rider) {
+        await stopRiderLocationUpdates();
+        set({ isDelivering: false });
+        return;
       }
+      if (!rider) { set({ isDelivering: false }); return; }
+
+      // Ask the server, rather than trusting the profile persisted at
+      // login — that is a snapshot and says whatever was true when they
+      // signed in, which for a rider who signed in yesterday is wrong.
+      let serverSaysDelivering = false;
+      try {
+        const res = await trackingApi.getMyRiderProfile(await get().riderToken());
+        if (res?.success) {
+          serverSaysDelivering = res.data.status === 'delivering';
+          // Refresh the cached profile while we have the live one.
+          const fresh = { ...rider, ...res.data };
+          set({ rider: fresh });
+          await SecureStore.setItemAsync(RIDER_DATA_KEY, JSON.stringify(fresh));
+        }
+      } catch {
+        // Offline or the token expired. Fall back to the local signal —
+        // the OS task is the more reliable of the two anyway.
+      }
+
+      set({ isDelivering: running || serverSaysDelivering });
+
+      // The server thinks the round is live but the OS dropped our task
+      // (force-stop, battery optimiser, a reboot). Restart the feed so the
+      // community is not watching a rider who stopped reporting.
+      if (serverSaysDelivering && !running) {
+        try {
+          await startRiderLocationUpdates();
+        } catch (err) {
+          console.warn('[rider] could not resume the location feed:', err?.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[rider] delivery state sync failed:', err?.message);
     }
   },
 
@@ -280,8 +321,10 @@ export const useRiderStore = create((set, get) => ({
   // Does NOT touch the user's 'access_token' — they stay logged in.
   // -------------------------------------------------------------------------
   logout: async () => {
-    const { _pushInterval } = get();
-    if (_pushInterval) clearInterval(_pushInterval);
+    // Ending the run first: the OS task outlives this store, and without
+    // the 'done' push the backend would keep showing this rider as
+    // mid-delivery to every member in the zone, forever.
+    try { await get().stopDelivery(); } catch { /* best effort */ }
 
     await SecureStore.deleteItemAsync(RIDER_TOKEN_KEY);
     await SecureStore.deleteItemAsync(RIDER_REFRESH_KEY);
@@ -296,7 +339,6 @@ export const useRiderStore = create((set, get) => ({
       myStops:         [],
       routePolyline:   null,
       stopsSummary:    null,
-      _pushInterval:   null,
     });
   },
 }));

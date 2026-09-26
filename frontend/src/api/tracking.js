@@ -8,18 +8,24 @@ export const trackingApi = {
     return response.data; // { success, data: { accessToken, refreshToken, active_role, profile } }
   },
 
+  // ---- Rider-authenticated calls -----------------------------------------
+  // Each takes the rider's token explicitly rather than reading the shared
+  // 'access_token'. A rider who is also a member holds two tokens in the
+  // same process; passing it per request means there is never a moment
+  // where one identity's token sits where the other's belongs.
+  // See the request interceptor in api/client.js.
+
   // PATCH /api/tracking/:id/push-location
-  // Rider token required
   // payload: { latitude, longitude, current_address, eta_minutes, status }
-  pushLocation: async (riderId, payload) => {
-    const response = await apiClient.patch(`/tracking/${riderId}/push-location`, payload);
+  pushLocation: async (riderId, payload, authToken) => {
+    const response = await apiClient.patch(`/tracking/${riderId}/push-location`, payload, { authToken });
     return response.data;
   },
 
   // GET /api/tracking/delivery-list
   // Rider token required — only works if rider is assigned for today
-  getDeliveryList: async () => {
-    const response = await apiClient.get('/tracking/delivery-list');
+  getDeliveryList: async (authToken) => {
+    const response = await apiClient.get('/tracking/delivery-list', { authToken });
     return response.data; // { success, data: { poll_date, total, by_zone } }
   },
 
@@ -109,22 +115,38 @@ export const trackingApi = {
     return response.data;
   },
 
+  // GET /api/tracking/me — the calling rider's own live row.
+  // The profile stored at login is a snapshot; this is the current truth.
+  getMyRiderProfile: async (authToken) => {
+    const response = await apiClient.get('/tracking/me', { authToken });
+    return response.data;
+  },
+
   // GET /api/tracking/my-stops — rider only.
   // The rider's own stops in optimized visit order.
-  getMyStops: async () => {
-    const response = await apiClient.get('/tracking/my-stops');
+  getMyStops: async (authToken) => {
+    const response = await apiClient.get('/tracking/my-stops', { authToken });
     return response.data; // { success, data: { poll, stops: [...] } }
   },
 
   // POST /api/tracking/my-route/recompute — rider only.
-  recomputeMyRoute: async () => {
-    const response = await apiClient.post('/tracking/my-route/recompute');
+  recomputeMyRoute: async (authToken) => {
+    const response = await apiClient.post('/tracking/my-route/recompute', {}, { authToken });
     return response.data;
   },
 
   // PATCH /api/tracking/stops/:id/mark-delivered — rider only.
-  markStopDelivered: async (stopId) => {
-    const response = await apiClient.patch(`/tracking/stops/${stopId}/mark-delivered`);
+  markStopDelivered: async (stopId, authToken) => {
+    const response = await apiClient.patch(`/tracking/stops/${stopId}/mark-delivered`, {}, { authToken });
+    return response.data;
+  },
+
+  // PATCH /api/tracking/stops/:id/undo-delivered — rider only.
+  // Exists because mark-delivered is a single tap on a phone at 4am;
+  // without this a mistap is permanent and that PG's residents have
+  // already been told their food arrived.
+  undoStopDelivered: async (stopId, authToken) => {
+    const response = await apiClient.patch(`/tracking/stops/${stopId}/undo-delivered`, {}, { authToken });
     return response.data;
   },
 };

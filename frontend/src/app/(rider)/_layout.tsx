@@ -5,6 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { ActivityIndicator, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRiderStore } from '../../store/useRiderStore';
+// Imported for its side effect: the background location task must be
+// DEFINED before the OS can deliver to it, including on a cold relaunch
+// where the OS starts the app specifically to hand over a location.
+import '../../services/riderLocationTask';
 import { colors } from '../../theme';
 
 export default function RiderLayout() {
@@ -13,8 +17,18 @@ export default function RiderLayout() {
   const hydrate         = useRiderStore((s) => s.hydrate);
   const isHydrated      = useRiderStore((s) => s.isHydrated);
   const isAuthenticated = useRiderStore((s) => s.isAuthenticated);
+  const syncDeliveryState = useRiderStore((s) => s.syncDeliveryState);
 
   useEffect(() => { hydrate(); }, []);
+
+  // Reconcile once the session is known. The OS owns the location task, so
+  // it outlives the JS context: the app can be killed mid-round and
+  // relaunched with isDelivering reset to false while the feed is still
+  // running. Without this the rider is shown "Start delivery" for a round
+  // that never stopped, and tapping it would double-start.
+  useEffect(() => {
+    if (isHydrated && isAuthenticated) syncDeliveryState();
+  }, [isHydrated, isAuthenticated, syncDeliveryState]);
 
   useEffect(() => {
     if (!isHydrated) return;

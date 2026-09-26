@@ -19,6 +19,8 @@ const {
   getDeliveryRun,
   getMyStops,
   markStopDelivered,
+  undoStopDelivered,
+  getMyRiderProfile,
   recomputeMyRoute,
 } = require('../controllers/trackingController');
 
@@ -57,6 +59,10 @@ router.get('/eta', verifyToken, requireUserAccess, getEta);
 // Must be declared BEFORE /:id routes.
 router.get('/delivery-list', verifyToken, requireRole('rider'), getDeliveryList);
 
+// GET /api/tracking/me — the calling rider's own live row.
+// Literal segment, so it sits above any /:id route.
+router.get('/me', verifyToken, requireRole('rider'), getMyRiderProfile);
+
 // GET /api/tracking/my-stops
 // The rider's own delivery stops for today's run, in optimized
 // visit order (Google Directions waypoint optimization). Each stop
@@ -72,6 +78,10 @@ router.post('/my-route/recompute', verifyToken, requireRole('rider'), recomputeM
 // Rider marks one of their own stops as delivered. Emits a
 // stop_delivered socket event to every user at that PG.
 router.patch('/stops/:id/mark-delivered', verifyToken, requireRole('rider'), markStopDelivered);
+
+// PATCH /api/tracking/stops/:id/undo-delivered — rider only, own stops.
+// Recovery from a mistap; see the controller for why there is no time limit.
+router.patch('/stops/:id/undo-delivered', verifyToken, requireRole('rider'), undoStopDelivered);
 
 // POST /api/tracking/delivery-run/assign
 // Super admin assigns N riders to today's run — backend generates

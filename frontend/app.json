@@ -11,6 +11,14 @@
       "supportsTablet": true,
       "config": {
         "googleMapsApiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "OneMessage shows riders their delivery route and lets the community follow tonight’s Sehri delivery on a live map.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Riders share their location during a delivery round so the community can see when food is on its way. This only happens while a round is in progress, and stops when the rider finishes.",
+        "UIBackgroundModes": [
+          "location",
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -26,7 +34,15 @@
           "apiKey": "AIzaSyAWQfQB0HfybB3h-yflpD1Dws6EuhY-8go"
         }
       },
-      "package": "com.anonymous.onemessage"
+      "package": "com.anonymous.onemessage",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "output": "static",
@@ -60,6 +76,16 @@
           "color": "#E6B64F"
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "OneMessage shares a rider’s location during a delivery round so the community can track when food is on its way.",
+          "locationWhenInUsePermission": "OneMessage uses your location to show your delivery route.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      "expo-task-manager",
       "expo-secure-store",
       "expo-font",
       "expo-image",

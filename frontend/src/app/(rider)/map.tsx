@@ -89,45 +89,84 @@ export default function RiderMapScreen() {
   // came in while we were away.
   useFocusEffect(useCallback(() => { fetchMyStops(); }, [fetchMyStops]));
 
-  useEffect(() => {
-    let subscription: any = null;
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+  // Keep the camera-follow behaviour reading the CURRENT delivering flag
+  // without making the watch itself depend on it. Previously `isDelivering`
+  // was an effect dependency, so every Start/Stop tore the whole thing down
+  // and rebuilt it: a fresh permission prompt, a fresh high-accuracy fix, a
+  // fresh reverse-geocode, and a brand new subscription.
+  const deliveringRef = useRef(isDelivering);
+  useEffect(() => { deliveringRef.current = isDelivering; });
+
+  // The rider's own blue dot.
+  //
+  // This is SEPARATE from the background task that reports position to the
+  // server (services/riderLocationTask.js, every 30s). This one exists only
+  // to move the marker on a map the rider is actually looking at, so it is
+  // bound to focus: when they switch to the Deliveries tab or leave the app,
+  // it stops entirely and the background task carries on reporting alone.
+  useFocusEffect(
+    useCallback(() => {
+      let subscription: any = null;
+      let cancelled = false;
+
+      (async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled) return;
+        if (status !== 'granted') {
+          setLoadingLocation(false);
+          setPermissionDenied(true);
+          return;
+        }
+        setPermissionDenied(false);
+
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          if (cancelled) return;
+          setCurrentLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+
+          try {
+            const [place] = await Location.reverseGeocodeAsync({
+              latitude: loc.coords.latitude, longitude: loc.coords.longitude,
+            });
+            if (!cancelled && place) {
+              setCurrentAddress([place.name, place.street, place.district, place.city].filter(Boolean).join(', '));
+            }
+          } catch { /* best-effort label */ }
+        } catch { /* no fix yet — the watch below will deliver one */ }
+
+        if (cancelled) return;
         setLoadingLocation(false);
-        setPermissionDenied(true);
-        return;
-      }
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setCurrentLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
 
-      try {
-        const [place] = await Location.reverseGeocodeAsync({
-          latitude: loc.coords.latitude, longitude: loc.coords.longitude,
-        });
-        if (place) {
-          setCurrentAddress([place.name, place.street, place.district, place.city].filter(Boolean).join(', '));
-        }
-      } catch { /* best-effort */ }
-
-      setLoadingLocation(false);
-
-      subscription = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, timeInterval: 4000, distanceInterval: 5 },
-        (newLoc) => {
-          const coords = { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude };
-          setCurrentLocation(coords);
-          // Throttle camera-follow to at most once every ~1.5s.
-          const now = Date.now();
-          if (mapRef.current && now - followRef.current > 1500 && isDelivering) {
-            followRef.current = now;
-            mapRef.current.animateCamera({ center: coords }, { duration: 700 });
+        const sub = await Location.watchPositionAsync(
+          // 5s / 10m rather than 4s / 5m. The marker still reads as live to
+          // someone watching it, and this is on top of the 30s reporting
+          // task — there is no reason for both to run hot.
+          { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 10 },
+          (newLoc) => {
+            const coords = { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude };
+            setCurrentLocation(coords);
+            // Throttle camera-follow to at most once every ~1.5s.
+            const now = Date.now();
+            if (mapRef.current && now - followRef.current > 1500 && deliveringRef.current) {
+              followRef.current = now;
+              mapRef.current.animateCamera({ center: coords }, { duration: 700 });
+            }
           }
-        }
-      );
-    })();
-    return () => subscription?.remove();
-  }, [isDelivering]);
+        );
+
+        // The screen may have blurred while we were awaiting. Without this
+        // the subscription is created after cleanup has already run and is
+        // never removed — a leaked GPS watch, one per Start/Stop tap.
+        if (cancelled) { sub.remove(); return; }
+        subscription = sub;
+      })();
+
+      return () => {
+        cancelled = true;
+        subscription?.remove();
+      };
+    }, [])
+  );
 
   // First-time fit: once we know both rider location AND have stops,
   // zoom out to include everything so the rider sees their full route

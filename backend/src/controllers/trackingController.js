@@ -1294,6 +1294,128 @@ const deleteRider = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
+// GET /api/tracking/me
+// Access: rider
+//
+// The calling rider's own current row.
+//
+// Needed because the profile the app persists at login is a snapshot and is
+// never refreshed. On relaunch the app has to answer "am I mid-round?", and
+// the locally stored status is whatever it was when they signed in — which
+// for a rider who signed in yesterday is simply wrong. The OS location task
+// is one signal; this is the other, and the two together are what let the
+// app recover a round that outlived the process.
+// ---------------------------------------------------------------------------
+const getMyRiderProfile = async (req, res, next) => {
+  try {
+    const rider = await Rider.findByPk(req.auth.id, {
+      attributes: [
+        'id', 'name', 'phone', 'status', 'is_active',
+        'zone_location_id', 'latitude', 'longitude', 'eta_minutes', 'user_id',
+      ],
+    });
+    if (!rider) return error(res, { statusCode: 404, message: 'Rider not found' });
+    if (!rider.is_active) {
+      return error(res, {
+        statusCode: 403,
+        message: 'Your rider account has been deactivated. Contact a super admin.',
+      });
+    }
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Rider profile fetched',
+      data: {
+        id: rider.id,
+        name: rider.name,
+        phone: rider.phone,
+        status: rider.status,
+        is_active: rider.is_active,
+        zone_location_id: rider.zone_location_id,
+        eta_minutes: rider.eta_minutes,
+        user_id: rider.user_id,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/tracking/stops/:id/undo-delivered
+// Access: rider (must own the stop)
+//
+// Puts a stop back to pending after a mistap.
+//
+// WHY THIS EXISTS: marking delivered is a single tap, made on a phone, in
+// the dark, often with gloves on, by someone who is mid-ride. Without an
+// undo a mistap is permanent — the stop drops out of the route and the PG's
+// residents have already been told their food arrived. That is a worse
+// failure than the one the confirmation dialog is guarding against.
+//
+// Deliberately NOT time-limited. The realistic moment of noticing is when
+// the rider arrives at the PG and finds it already ticked off, which can be
+// twenty minutes later. An expiry would mostly fire exactly when the undo
+// is needed most.
+// ---------------------------------------------------------------------------
+const undoStopDelivered = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const stop = await DeliveryStop.findByPk(id);
+    if (!stop) return error(res, { statusCode: 404, message: 'Stop not found.' });
+
+    if (stop.rider_id !== req.auth.id) {
+      return error(res, {
+        statusCode: 403,
+        message: 'You can only change your own stops.',
+      });
+    }
+    if (stop.status !== 'delivered') {
+      return success(res, {
+        statusCode: 200,
+        message: 'That stop is already pending.',
+        data: { id: stop.id, status: stop.status },
+      });
+    }
+
+    stop.status = 'pending';
+    stop.delivered_at = null;
+    stop.delivered_by_rider_id = null;
+    await stop.save();
+
+    // Tell the PG's residents it is back on the way. Leaving them with a
+    // "delivered" screen when it is not would be the worse of the two.
+    try {
+      const affectedUsers = await User.findAll({
+        where: { location_id: stop.location_id, status: 'approved' },
+        attributes: ['id'],
+      });
+      for (const u of affectedUsers) {
+        socketService.emitStopReopened(u.id, {
+          poll_id:     stop.poll_id,
+          stop_id:     stop.id,
+          location_id: stop.location_id,
+        });
+      }
+    } catch (err) {
+      logger.warn(`[tracking] failed to emit stop_reopened: ${err.message}`);
+    }
+
+    // The stop is back in the queue, so the remaining route changes.
+    recomputeRiderRouteOrder(stop.rider_id, stop.poll_id).catch(() => {});
+
+    logger.info(`[tracking] rider=${req.auth.id} undid delivery of stop ${stop.id}`);
+    return success(res, {
+      statusCode: 200,
+      message: 'Put back on your route.',
+      data: { id: stop.id, status: stop.status },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Internal: recompute the optimized sort_order for a rider's pending stops
 // via Google Directions waypoint optimization.
 //
@@ -1484,7 +1606,12 @@ const assignDeliveryRun = async (req, res, next) => {
     if (pgs.length === 0) {
       // Still valid — a super admin might assign riders before anyone
       // votes yes; the run is just empty and can be re-run later.
-      await DeliveryStop.destroy({ where: { poll_id: poll.id }, transaction: t });
+      // Only pending stops. A delivered stop is a record of something that
+      // physically happened — see the note on the main wipe below.
+      await DeliveryStop.destroy({
+        where: { poll_id: poll.id, status: 'pending' },
+        transaction: t,
+      });
       poll.assigned_rider_id = riderIds[0];
       await poll.save({ transaction: t });
       await t.commit();
@@ -1523,8 +1650,29 @@ const assignDeliveryRun = async (req, res, next) => {
     const eligibleForZone = (zoneId) =>
       riders.filter((r) => r.zone_location_id === zoneId || r.zone_location_id == null);
 
-    // Wipe existing stops for a clean regenerate.
-    await DeliveryStop.destroy({ where: { poll_id: poll.id }, transaction: t });
+    // Regenerate the PENDING stops only.
+    //
+    // This used to wipe every stop for the poll. Re-assigning mid-run is a
+    // real scenario — a rider's phone dies at 4am and the super admin hands
+    // their PGs to someone else — and the old behaviour erased every stop
+    // already marked delivered along with it: the remaining riders started
+    // from zero, residents who had been served were queued again, and the
+    // record of what actually happened was gone.
+    //
+    // A delivered stop is a record of a physical event. It is never
+    // regenerated, and the PGs behind those stops are excluded below so
+    // nobody gets assigned a delivery that has already been made.
+    const deliveredStops = await DeliveryStop.findAll({
+      where: { poll_id: poll.id, status: 'delivered' },
+      attributes: ['location_id'],
+      transaction: t,
+    });
+    const alreadyDelivered = new Set(deliveredStops.map((d) => d.location_id));
+
+    await DeliveryStop.destroy({
+      where: { poll_id: poll.id, status: 'pending' },
+      transaction: t,
+    });
 
     const stopsToCreate = [];
     const orphanedPgs = [];
@@ -1536,10 +1684,13 @@ const assignDeliveryRun = async (req, res, next) => {
         for (const pg of zonePgs) orphanedPgs.push(pg.location_id);
         continue;
       }
-      // Round-robin: PG i → eligible[i % eligible.length]
-      for (let i = 0; i < zonePgs.length; i++) {
+      // Round-robin: PG i → eligible[i % eligible.length]. PGs that were
+      // already delivered are dropped first, so the index used for
+      // round-robin reflects the work that actually remains.
+      const remaining = zonePgs.filter((pg) => !alreadyDelivered.has(pg.location_id));
+      for (let i = 0; i < remaining.length; i++) {
         const rider = eligible[i % eligible.length];
-        const pg = zonePgs[i];
+        const pg = remaining[i];
         stopsToCreate.push({
           poll_id:      poll.id,
           rider_id:     rider.id,
@@ -1899,6 +2050,8 @@ const recomputeMyRoute = async (req, res, next) => {
 };
 
 module.exports = {
+  getMyRiderProfile,
+  undoStopDelivered,
   riderLogin,
   createRider,
   getAllRiders,
