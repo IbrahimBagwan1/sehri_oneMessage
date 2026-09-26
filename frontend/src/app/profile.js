@@ -370,6 +370,8 @@ function ProfileScreenAuthed() {
               <View style={styles.rowRule} />
               <ActionRow icon="chatbubble-outline"  label="Send feedback"  color={colors.teal}    onPress={() => router.push('/feedback')} />
               <View style={styles.rowRule} />
+              <ActionRow icon="shield-outline"      label="Blocked people" color={colors.inkMuted} onPress={() => router.push('/blocked-users')} />
+              <View style={styles.rowRule} />
               <ActionRow icon="log-out-outline"     label="Sign out"       color={colors.danger}  onPress={handleLogout} />
               {canDeleteAccount && (
                 <>

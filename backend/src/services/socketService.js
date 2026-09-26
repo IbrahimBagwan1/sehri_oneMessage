@@ -85,14 +85,15 @@ const initSocket = (httpServer) => {
     //      carry zone_location_id), look up the user's linked User row
     //      and walk their location parent chain to find the zone.
     //
-    // Every zone-tracking client also joins a `tracking:global` room so
-    // riders serving all zones (rider.zone_location_id == null) can
-    // broadcast without knowing individual zones.
+    // Live GPS goes to a per-captain run room, `team:{captainId}`, not to
+    // a zone room. A captain may cover several zones at once, which one
+    // zone id cannot express — the position would reach one of their zones
+    // and the rest would watch a frozen map.
     //
     // Emitters that publish tracking events:
-    //   • emitRiderPosition(zoneId, payload) → `zone:{zoneId}` room
-    //     (or → `tracking:global` when zoneId is null)
-    //   • emitEtaUpdate(userId, payload)     → `user:{userId}` room
+    //   • emitTeamPosition(captainId, payload) → `team:{captainId}` room
+    //     (or → `tracking:global` when the captain covers no zones)
+    //   • emitEtaUpdate(userId, payload)       → `user:{userId}` room
     // -----------------------------------------------------------------------
     const joinZoneRoom = (zoneId) => {
       if (!zoneId) return;
@@ -145,18 +146,84 @@ const initSocket = (httpServer) => {
       return zone.id;
     };
 
+    /**
+     * The captain's run this socket may follow, derived from the token and
+     * the roster — never from anything the client sends.
+     *
+     * Live GPS is emitted per captain now, because a captain may cover
+     * several zones and a zone room could not express that. The room a
+     * socket joins is therefore `team:{captainId}`, and the captain is
+     * resolved from the watcher's own PG: their stop for tonight names
+     * their captain, and the standing roster answers when no stop exists
+     * yet. A resident cannot ask to follow a different captain's bike any
+     * more than they could previously ask for a different zone.
+     *
+     * Riders follow their own team. Super admins oversee the community, so
+     * they join every captain's room.
+     */
+    const entitledTeamRooms = async () => {
+      const dbm = require('../models');
+
+      if (role === 'super_admin') {
+        const captains = await dbm.CaptainZoneAssignment.findAll({
+          attributes: ['captain_rider_id'],
+          group: ['captain_rider_id'],
+          raw: true,
+        });
+        return captains.map((c) => `team:${c.captain_rider_id}`);
+      }
+
+      if (role === 'rider') {
+        const teamService = require('./deliveryTeamService');
+        const team = await teamService.resolveTeam(accountId);
+        return team.captain ? [`team:${team.captain.id}`] : [];
+      }
+
+      // Members and zone admins follow whoever is delivering to their PG.
+      const user = await dbm.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
+      if (!user?.location_id) return [];
+
+      const poll = await dbm.Poll.findOne({
+        where: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) },
+        attributes: ['id'],
+      });
+      if (poll) {
+        const stop = await dbm.DeliveryStop.findOne({
+          where: { poll_id: poll.id, location_id: user.location_id },
+          attributes: ['rider_id'],
+        });
+        if (stop?.rider_id) return [`team:${stop.rider_id}`];
+      }
+
+      // No stop yet tonight — fall back to the standing roster so the map
+      // is live from the moment the captain starts, not from the moment
+      // someone re-runs assign.
+      const teamService = require('./deliveryTeamService');
+      const captain = await teamService.captainForLocation(user.location_id);
+      return captain ? [`team:${captain.id}`] : [];
+    };
+
     socket.on('subscribe_tracking', async ({ zone_id } = {}) => {
       try {
-        const zoneId = await entitledZoneId(zone_id);
-        if (zoneId) {
-          joinZoneRoom(zoneId);
-          return;
+        const rooms = await entitledTeamRooms();
+        for (const room of rooms) {
+          socket.join(room);
+          logger.info(`[socket] ${effectiveUserId} joined ${room}`);
         }
-        // No resolvable zone — fall back to the global room so a member
-        // whose location has not been set still sees the single rider in a
-        // one-zone community. emitRiderPosition only uses this room when a
-        // rider has no zone of their own, so it leaks nothing zone-scoped.
-        socket.join('tracking:global');
+
+        // The zone room is kept alongside it. Nothing emits rider GPS
+        // there any more, but it remains the channel for anything
+        // genuinely zone-shaped, and joining it is still entitlement-
+        // checked rather than taken from the client.
+        const zoneId = await entitledZoneId(zone_id);
+        if (zoneId) joinZoneRoom(zoneId);
+
+        if (rooms.length === 0 && !zoneId) {
+          // Nothing resolvable — a member whose location has not been set.
+          // The global room carries only positions from a captain with no
+          // zones at all, so it leaks nothing scoped.
+          socket.join('tracking:global');
+        }
       } catch (err) {
         logger.warn(`[socket] subscribe_tracking failed: ${err.message}`);
       }
@@ -165,9 +232,14 @@ const initSocket = (httpServer) => {
     socket.on('unsubscribe_tracking', async ({ zone_id } = {}) => {
       try {
         socket.leave('tracking:global');
-        // Leave via the same entitlement path used to join, so a socket
-        // cannot be tricked into leaving a room it is not in (harmless) or
-        // left subscribed to one it asked to leave (not harmless).
+        // Leave every team room this socket is in. Derived the same way it
+        // joined would re-run the roster lookup and could miss a room if
+        // the roster changed mid-session, so we read the socket's actual
+        // membership instead — leaving a room you are not in is a no-op,
+        // staying subscribed to one you asked to leave is not.
+        for (const room of socket.rooms) {
+          if (typeof room === 'string' && room.startsWith('team:')) socket.leave(room);
+        }
         const zoneId = await entitledZoneId(zone_id);
         if (zoneId) socket.leave(`zone:${zoneId}`);
       } catch (err) {
@@ -221,16 +293,21 @@ const emitMemberUpdate = (groupId, event, payload) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Broadcast a rider's new position.
- *   • If zoneId is provided → emit to that zone room.
- *   • If zoneId is null (rider serves every zone) → emit to
- *     `tracking:global` so every subscribed user receives it.
+ * Broadcast a delivery team's position to the people that team is
+ * delivering to, and to nobody else.
  *
- * Consumed by the user track screen to move the marker in real time.
+ * Keyed on the captain because the captain is the run: their helper shares
+ * it, and another captain's residents are in a different room entirely. A
+ * zone room could not do this job once a captain could cover several zones
+ * at once — the position would have gone to one of them and the rest would
+ * have seen a frozen map.
+ *
+ * The event name stays `rider_position` so the client's handler is
+ * unchanged; what moved is who receives it.
  */
-const emitRiderPosition = (zoneId, payload) => {
+const emitTeamPosition = (captainId, payload) => {
   if (!io) return;
-  const room = zoneId ? `zone:${zoneId}` : 'tracking:global';
+  const room = captainId ? `team:${captainId}` : 'tracking:global';
   io.to(room).emit('rider_position', payload);
 };
 
@@ -273,7 +350,7 @@ module.exports = {
   emitMessageDeleted,
   emitMemberUpdate,
   // tracking
-  emitRiderPosition,
+  emitTeamPosition,
   emitEtaUpdate,
   emitStopDelivered,
   emitStopReopened,

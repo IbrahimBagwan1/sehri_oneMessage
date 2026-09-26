@@ -362,6 +362,10 @@ export default function AdminDashboard() {
                 the auth store and locks the audience to this admin's own
                 zone, which the server independently enforces. */}
             <QuickAction icon="megaphone-outline"   label="Broadcast"     onPress={() => router.push('/super-admin/broadcast')} />
+            {/* Same moderation queue the super admin uses. The server
+                scopes an admin to reports from groups covering their own
+                zone, so this shows their room and nobody else's. */}
+            <QuickAction icon="flag-outline"        label="Reported"      onPress={() => router.push('/super-admin/chat-reports')} />
           </View>
         </View>
       </ScrollView>

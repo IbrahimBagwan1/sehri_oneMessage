@@ -39,6 +39,7 @@ const MENU = [
   { title: 'Locations',        icon: 'git-branch-outline',       route: '/super-admin/location-tree', hint: 'Add cities, areas, zones and PGs' },
   { title: 'PG coordinates',   icon: 'location-outline',         route: '/super-admin/locations',     hint: 'Set map pins for delivery ETAs' },
   { title: 'Group chat',       icon: 'chatbubbles-outline',      route: '/super-admin/chat',          hint: 'Manage broadcast groups' },
+  { title: 'Reported messages', icon: 'flag-outline',            route: '/super-admin/chat-reports',  hint: 'Review and act on reported chat' },
   { title: 'Send broadcast',   icon: 'megaphone-outline',        route: '/super-admin/broadcast',     hint: 'Push a notification to a zone' },
   { title: 'Content sync',     icon: 'sync-outline',             route: '/super-admin/content-sync',  hint: "Refresh prayer times, Qur'an, or duas" },
 ];

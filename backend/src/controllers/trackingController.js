@@ -10,9 +10,12 @@ const googleMapsService = require('../services/googleMapsService');
 const etaComputationService = require('../services/etaComputationService');
 const notificationService = require('../services/notificationService');
 const socketService = require('../services/socketService');
+const deliveryTeamService = require('../services/deliveryTeamService');
 const logger = require('../utils/logger');
 
-const { Rider, Poll, PollResponse, User, Location, DeliveryStop } = db;
+const {
+  Rider, Poll, PollResponse, User, Location, DeliveryStop, CaptainZoneAssignment,
+} = db;
 
 // ---------------------------------------------------------------------------
 // Shared: compute today's deliverable {location_id → packet_count} map.
@@ -76,6 +79,46 @@ const computeDeliverablePGs = async (pollId) => {
     byPg.get(key).packet_count += 1;
   }
   return Array.from(byPg.values());
+};
+
+// ---------------------------------------------------------------------------
+// Shape a resolved team for an API response.
+//
+// `viewerId` is the rider asking, so the payload can tell them which seat
+// they are in without the client having to compare ids itself. Both members
+// see the same team; only `my_role` and `i_am_tracking` differ.
+// ---------------------------------------------------------------------------
+const describeTeam = (team, viewerId) => {
+  if (!team || !team.captain) {
+    return { my_role: 'unassigned', captain: null, helper: null, zones: [], i_am_tracking: false };
+  }
+  const tracked = deliveryTeamService.trackedRider(team.captain, team.helper);
+  return {
+    my_role: team.role,
+    captain: deliveryTeamService.publicRider(team.captain),
+    helper:  deliveryTeamService.publicRider(team.helper),
+    zones: (team.zones || []).map((z) => ({ id: z.id, name: z.name, zone_key: z.zone_key })),
+    // Whose phone the community is following. Only one device per team
+    // broadcasts, so the other one must not start its own GPS feed.
+    tracked_rider_id: tracked?.id || null,
+    i_am_tracking: !!tracked && tracked.id === viewerId,
+  };
+};
+
+/**
+ * Authorise a rider to act on a delivery stop.
+ *
+ * A stop belongs to a captain, and their helper acts on it too — they are
+ * at the same door at the same moment, and whichever of them has a hand
+ * free taps the button. Anyone else is refused.
+ *
+ * Returns the resolved team on success, or null when the caller has no
+ * claim to the stop.
+ */
+const teamOwningStop = async (riderId, stop) => {
+  const team = await deliveryTeamService.resolveTeam(riderId);
+  if (!team.captain) return null;
+  return team.captain.id === stop.rider_id ? team : null;
 };
 
 // ---------------------------------------------------------------------------
@@ -348,11 +391,11 @@ const getAllRiders = async (req, res, next) => {
       getTodaysPoll(),
     ]);
 
-    // Multi-rider: derive is_assigned_today from delivery_stops so it
-    // stays correct when a super admin assigns 2+ riders. Fall back
-    // to legacy poll.assigned_rider_id if the poll has no stops yet
-    // (single-rider legacy flow — assignTodaysRider only sets the FK).
-    let assignedRiderIds = new Set();
+    // Who is out tonight. Stops are keyed to the captain, so a helper has
+    // no rows of their own — but they are on the bike, and a list that
+    // showed them as idle would be wrong in the one way that matters at
+    // 3am. Mark the captain of every stop, then their helper with them.
+    const assignedRiderIds = new Set();
     if (todaysPoll) {
       const rows = await DeliveryStop.findAll({
         where: { poll_id: todaysPoll.id },
@@ -365,6 +408,20 @@ const getAllRiders = async (req, res, next) => {
       if (assignedRiderIds.size === 0 && todaysPoll.assigned_rider_id) {
         assignedRiderIds.add(todaysPoll.assigned_rider_id);
       }
+      for (const r of riders) {
+        if (r.helper_rider_id && assignedRiderIds.has(r.id)) {
+          assignedRiderIds.add(r.helper_rider_id);
+        }
+      }
+    }
+
+    // Team shape for the list rows: which zones each captain covers, and
+    // who rides with whom. One roster read rather than a query per row.
+    const roster = await deliveryTeamService.getRoster();
+    const captainById = new Map(roster.captains.map((c) => [c.id, c]));
+    const captainOfHelper = new Map();
+    for (const c of roster.captains) {
+      if (c.helper) captainOfHelper.set(c.helper.id, c);
     }
 
     return success(res, {
@@ -383,6 +440,15 @@ const getAllRiders = async (req, res, next) => {
         current_address: r.current_address,
         eta_minutes: r.eta_minutes,
         is_assigned_today: assignedRiderIds.has(r.id),
+        // Derived, never stored: captaincy IS having zones, and being a
+        // helper IS having a captain point at you. A stored role column
+        // would be a second source of truth to keep in step.
+        team_role: captainById.has(r.id)
+          ? 'captain'
+          : (captainOfHelper.has(r.id) ? 'helper' : 'unassigned'),
+        covered_zones: (captainById.get(r.id)?.zones || []).map((z) => z.name),
+        helper_name: captainById.get(r.id)?.helper?.name || null,
+        captain_name: captainOfHelper.get(r.id)?.name || null,
         created_at: r.created_at,
       })),
     });
@@ -492,9 +558,12 @@ const unassignTodaysRider = async (req, res, next) => {
     // poll cycle. Wrapped in try/catch — the response must still succeed
     // if the socket layer is missing (tests, etc.).
     try {
-      const rider = await Rider.findByPk(priorRiderId, { attributes: ['zone_location_id', 'name'] });
+      const rider = await Rider.findByPk(priorRiderId, { attributes: ['id', 'name'] });
       if (rider) {
-        socketService.emitRiderPosition(rider.zone_location_id, {
+        // To that captain's run room — the people they were delivering to,
+        // and nobody else's residents.
+        socketService.emitTeamPosition(priorRiderId, {
+          captain_rider_id: priorRiderId,
           rider_id: priorRiderId,
           name:     rider.name,
           status:   'done',
@@ -700,16 +769,53 @@ const pushLocation = async (req, res, next) => {
     // this handler runs on every location ping while the rider moves;
     // without the edge check the zone would be notified every few seconds.
     // -----------------------------------------------------------------
-    if (prevStatus !== 'delivering' && rider.status === 'delivering') {
-      notificationService.notifyInBackground(
-        () => notificationService.sendToZone(rider.zone_location_id, {
-          title: 'Sehri is on the way',
-          body: `${rider.name} has started the delivery round. Track it live in the app.`,
-          data: { type: 'delivery_started', rider_id: rider.id, route: '/(user)/track' },
-        }),
-        'delivery started'
-      );
-      logger.info(`[tracking] rider=${rider.id} started delivery — notifying zone ${rider.zone_location_id || 'all'}`);
+    // The team this push belongs to. A helper's fix is the team's fix, so
+    // everything below is scoped to the CAPTAIN's zones and run, never to
+    // whichever of the two happens to be holding the phone.
+    const team = await deliveryTeamService.resolveTeam(rider.id);
+    const captain = team.captain;
+    const trackedId = deliveryTeamService.trackedRider(team.captain, team.helper)?.id || null;
+
+    if (prevStatus !== 'delivering' && rider.status === 'delivering' && captain) {
+      // Notify every zone this captain covers — one message per zone, not
+      // one for the rider's own home zone. A captain covering three zones
+      // used to leave two of them uninformed.
+      //
+      // sendToZone(null) falls through to the entire community, so a
+      // captain with no zones must not reach it: they have no run, and
+      // waking everyone would be the loudest possible way to say nothing.
+      const zoneIds = (team.zones || []).map((z) => z.id).filter(Boolean);
+      if (zoneIds.length > 0) {
+        const teamLabel = team.helper
+          ? `${captain.name} and ${team.helper.name}`
+          : captain.name;
+        notificationService.notifyInBackground(
+          async () => {
+            for (const zoneId of zoneIds) {
+              await notificationService.sendToZone(zoneId, {
+                title: 'Sehri is on the way',
+                body: `${teamLabel} started the delivery round. Track it live in the app.`,
+                data: {
+                  type: 'delivery_started',
+                  captain_rider_id: captain.id,
+                  rider_id: captain.id,
+                  route: '/(user)/track',
+                },
+              });
+            }
+          },
+          'delivery started'
+        );
+        logger.info(
+          `[tracking] captain=${captain.id} started delivery — notifying `
+          + `${zoneIds.length} zone(s)`
+        );
+      } else {
+        logger.warn(
+          `[tracking] rider=${rider.id} started delivering but covers no zones — `
+          + 'no start notification sent'
+        );
+      }
     }
 
     // Broadcast the raw position to every subscribed user IMMEDIATELY —
@@ -719,11 +825,21 @@ const pushLocation = async (req, res, next) => {
     // quota) and short-circuits when there are no destinations with
     // GPS coords. Users at un-geocoded PGs still deserve to see the
     // rider marker even without an ETA number.
-    if (rider.status === 'delivering') {
+    //
+    // Scoped to the captain's run room, so residents of one captain's zones
+    // never see another captain's bike moving across their map.
+    //
+    // Both team members may push — the second device's fixes are what let
+    // us fail over when the first one's battery dies — but only the TRACKED
+    // one broadcasts. Emitting both would make the marker jump between two
+    // phones several metres apart.
+    if (rider.status === 'delivering' && captain && trackedId === rider.id) {
       try {
-        socketService.emitRiderPosition(rider.zone_location_id, {
+        socketService.emitTeamPosition(captain.id, {
+          captain_rider_id: captain.id,
           rider_id:   rider.id,
           name:       rider.name,
+          role:       team.role,
           latitude:   lat,
           longitude:  lng,
           status:     rider.status,
@@ -731,20 +847,28 @@ const pushLocation = async (req, res, next) => {
           at:         new Date().toISOString(),
         });
       } catch (err) {
-        logger.warn(`[tracking] emitRiderPosition failed: ${err.message}`);
+        logger.warn(`[tracking] emitTeamPosition failed: ${err.message}`);
       }
     }
 
     // ETA recompute — fire-and-forget so the hot-path response stays fast.
     // The service is internally throttled (100m OR 30s) so we can call
     // it on every push without burning Distance Matrix quota.
-    if (rider.status === 'delivering') {
+    // ETAs are computed against the CAPTAIN's stop list from the TRACKED
+    // device's position — one recompute per team per push, whoever pushed.
+    if (rider.status === 'delivering' && captain && trackedId === rider.id) {
       etaComputationService
-        .updateETAsForRider(rider, lat, lng)
+        .updateETAsForTeam(captain, lat, lng)
         .catch((err) => logger.warn(`[tracking] eta recompute error: ${err.message}`));
-    } else if (prevStatus === 'delivering' && rider.status === 'done') {
-      // Rider just wrapped up — clear throttle state + notify open maps.
-      etaComputationService.onRiderStopped(rider);
+    } else if (prevStatus === 'delivering' && rider.status === 'done' && captain) {
+      // This member wrapped up. The run is over only when nobody on the
+      // team is still delivering — a helper signing off while the captain
+      // rides on must not clear the map for everyone.
+      const other = team.role === 'helper' ? team.captain : team.helper;
+      const otherStillOut = other && other.id !== rider.id && other.status === 'delivering';
+      if (!otherStillOut) {
+        etaComputationService.onTeamStopped(captain);
+      }
     }
 
     // Server-side reverse-geocode fallback: the rider app already tries to
@@ -809,25 +933,28 @@ const getEta = async (req, res, next) => {
       });
     }
 
-    // Multi-rider resolution — same rule getActiveRider uses. Find the
-    // delivery_stop for the calling user's PG; the stop's rider is
-    // whose ETA we compute. Falls back to legacy poll.assigned_rider_id
-    // for the pre-multi-rider flow.
+    // Same resolution rule getActiveRider uses: the stop at this
+    // resident's PG names their captain. Falls back to the standing
+    // roster, then to the legacy single-rider column.
     const userForStop = await User.findByPk(req.actingUserId, {
       attributes: ['id', 'location_id'],
     });
-    let riderId = null;
+    let captainId = null;
     let stopRow = null;
     if (userForStop?.location_id) {
       stopRow = await DeliveryStop.findOne({
         where: { poll_id: poll.id, location_id: userForStop.location_id },
         attributes: ['id', 'rider_id', 'status'],
       });
-      if (stopRow) riderId = stopRow.rider_id;
+      if (stopRow) captainId = stopRow.rider_id;
+      if (!captainId) {
+        const rosterCaptain = await deliveryTeamService.captainForLocation(userForStop.location_id);
+        captainId = rosterCaptain?.id || null;
+      }
     }
-    if (!riderId && poll.assigned_rider_id) riderId = poll.assigned_rider_id;
+    if (!captainId && poll.assigned_rider_id) captainId = poll.assigned_rider_id;
 
-    if (!riderId) {
+    if (!captainId) {
       return success(res, {
         statusCode: 200,
         message: 'No rider assigned to your PG today',
@@ -845,11 +972,15 @@ const getEta = async (req, res, next) => {
       });
     }
 
-    const rider = await Rider.findByPk(riderId, {
-      attributes: ['id', 'name', 'latitude', 'longitude', 'status', 'is_active'],
-    });
+    // ETA is measured from the tracked device — the helper's phone when
+    // there is one, because that is the position residents see moving.
+    const teamForEta = await deliveryTeamService.resolveTeam(captainId);
+    const captainRow = teamForEta.captain || await Rider.findByPk(captainId);
+    const rider = deliveryTeamService.trackedRider(teamForEta.captain, teamForEta.helper)
+      || captainRow;
 
-    if (!rider || !rider.is_active || rider.status === 'done') {
+    const teamStat = deliveryTeamService.teamStatus(teamForEta.captain || captainRow, teamForEta.helper);
+    if (!rider || !captainRow || !captainRow.is_active || teamStat === 'done') {
       return success(res, {
         statusCode: 200,
         message: 'Rider is not currently delivering',
@@ -973,7 +1104,12 @@ const getEta = async (req, res, next) => {
           name: rider.name,
           latitude: Number(rider.latitude),
           longitude: Number(rider.longitude),
-          status: rider.status,
+          status: teamStat,
+        },
+        team: {
+          captain: deliveryTeamService.publicRider(teamForEta.captain),
+          helper:  deliveryTeamService.publicRider(teamForEta.helper),
+          tracked_rider_id: rider.id,
         },
         // Destination coords so the frontend can drop a "your home" marker.
         // `source` tells the client whether these came from the PG's fixed
@@ -1049,39 +1185,46 @@ const getActiveRider = async (req, res, next) => {
     }
 
     // The stop's location_id is the PG the user belongs to (we key
-    // stops by rootId in computeDeliverablePGs). So the lookup is a
-    // direct match on user.location_id.
+    // stops by rootId in computeDeliverablePGs), so this is a direct
+    // match. Whichever captain owns that stop is this resident's captain —
+    // which is what makes several captains working at once resolve
+    // correctly with no extra logic: two residents at the same PG hit the
+    // same stop and the same captain, two PGs under different captains
+    // each resolve to their own.
     let stop = await DeliveryStop.findOne({
       where: { poll_id: poll.id, location_id: user.location_id },
-      include: [
-        {
-          model: Rider, as: 'rider',
-          include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
-          attributes: [
-            'id', 'name', 'phone', 'zone_location_id',
-            'latitude', 'longitude', 'current_address',
-            'eta_minutes', 'status', 'is_active',
-          ],
-        },
-      ],
+      include: [{ model: Rider, as: 'rider' }],
     });
 
-    // Legacy single-rider fallback: if no stops have been generated
-    // yet for this poll but assigned_rider_id is set (pre-multi-rider
-    // flow), surface that rider for every user.
-    let rider = stop?.rider || null;
-    if (!rider && poll.assigned_rider_id) {
-      rider = await Rider.findByPk(poll.assigned_rider_id, {
-        include: [{ model: Location, as: 'zone', attributes: ['id', 'name'] }],
-        attributes: [
-          'id', 'name', 'phone', 'zone_location_id',
-          'latitude', 'longitude', 'current_address',
-          'eta_minutes', 'status', 'is_active',
-        ],
+    // Legacy fallback: a poll with no stops at all but an assigned_rider_id
+    // from the one-rider era.
+    let captain = stop?.rider || null;
+    if (!captain && poll.assigned_rider_id) {
+      captain = await Rider.findByPk(poll.assigned_rider_id);
+    }
+
+    // Belt and braces for a resident whose PG has no stop yet (they voted
+    // after assign ran): fall back to whoever covers their zone on the
+    // standing roster, so the map is not empty until the next assign.
+    if (!captain) {
+      captain = await deliveryTeamService.captainForLocation(user.location_id);
+    }
+
+    if (!captain) {
+      return success(res, {
+        statusCode: 200,
+        message: 'No rider assigned to your PG today',
+        data: { rider: null },
       });
     }
 
-    if (!rider || !rider.is_active) {
+    // Residents follow the team's tracked device — the helper's phone when
+    // the captain has one, since the helper is the person walking to the
+    // door while the captain drives.
+    const team = await deliveryTeamService.resolveTeam(captain.id);
+    const rider = deliveryTeamService.trackedRider(team.captain, team.helper) || captain;
+
+    if (!rider || !captain.is_active) {
       return success(res, {
         statusCode: 200,
         message: 'No rider assigned to your PG today',
@@ -1093,12 +1236,23 @@ const getActiveRider = async (req, res, next) => {
     // run is done, surface that so the client's empty state is
     // accurate. We still return the rider so the client can show
     // "delivered" attribution.
-    const isDoneForThisUser = stop?.status === 'delivered' || rider.status === 'done';
+    // The run is done for this resident when their own stop is ticked, or
+    // when the captain has closed the round. teamStatus is what decides
+    // "delivering": a helper can be out while the captain's own row still
+    // says idle, and a resident watching the bike move must not be told
+    // nobody is delivering.
+    const status = deliveryTeamService.teamStatus(team.captain, team.helper);
+    const isDoneForThisUser = stop?.status === 'delivered' || status === 'done';
+    const zone = captain.zone_location_id
+      ? await Location.findByPk(captain.zone_location_id, { attributes: ['id', 'name'] })
+      : null;
 
     return success(res, {
       statusCode: 200,
       message: 'Active rider fetched',
       data: {
+        // `rider` stays the tracked device, since that is the marker the
+        // map draws and the name shown beside it.
         rider: {
           id: rider.id,
           name: rider.name,
@@ -1106,8 +1260,15 @@ const getActiveRider = async (req, res, next) => {
           longitude: rider.longitude,
           current_address: rider.current_address,
           eta_minutes: rider.eta_minutes,
-          status: isDoneForThisUser ? 'done' : rider.status,
-          zone: rider.zone ? { id: rider.zone.id, name: rider.zone.name } : null,
+          status: isDoneForThisUser ? 'done' : status,
+          zone: zone ? { id: zone.id, name: zone.name } : null,
+        },
+        // Who is actually bringing it — both names when it is a pair, so a
+        // resident who meets the helper at the door recognises them.
+        team: {
+          captain: deliveryTeamService.publicRider(team.captain),
+          helper:  deliveryTeamService.publicRider(team.helper),
+          tracked_rider_id: rider.id,
         },
         stop: stop ? {
           id: stop.id,
@@ -1142,29 +1303,28 @@ const getDeliveryList = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'No poll found for today' });
     }
 
-    // MULTI-RIDER: the rider is "assigned" if they have at least one
-    // delivery_stop today. Legacy single-rider check (assigned_rider_id)
-    // is kept as a fallback for polls that haven't been migrated to
-    // the delivery_stops model yet.
-    const myStopCount = await DeliveryStop.count({
-      where: { poll_id: poll.id, rider_id: req.auth.id },
-    });
-    const legacyMatch = poll.assigned_rider_id === req.auth.id;
+    // The stops are the captain's, so a helper resolves to their captain
+    // and sees the same list. A rider on nobody's team sees nothing.
+    const captainId = await deliveryTeamService.stopOwnerIdFor(req.auth.id);
+
+    const myStopCount = captainId
+      ? await DeliveryStop.count({ where: { poll_id: poll.id, rider_id: captainId } })
+      : 0;
+    const legacyMatch = captainId != null && poll.assigned_rider_id === captainId;
     if (myStopCount === 0 && !legacyMatch) {
       return error(res, {
         statusCode: 403,
-        message: 'You are not assigned as a delivery rider today.',
+        message: "You have no stops on tonight's run.",
       });
     }
 
-    // MULTI-RIDER predicate: only surface users at PGs this rider is
-    // responsible for. Falls back to all deliverable responses if no
-    // stops exist (legacy flow) so single-rider polls still see the
-    // full list.
+    // Only surface residents at PGs this team is responsible for. Falls
+    // back to every deliverable response when no stops exist (a poll from
+    // before the stop model) so a legacy single-rider night still works.
     let stopLocationIds = null;
     if (myStopCount > 0) {
       const myStops = await DeliveryStop.findAll({
-        where: { poll_id: poll.id, rider_id: req.auth.id },
+        where: { poll_id: poll.id, rider_id: captainId },
         attributes: ['location_id'],
         raw: true,
       });
@@ -1274,19 +1434,52 @@ const deleteRider = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'Rider not found' });
     }
 
-    // Clear assignment if this rider is assigned to today's poll.
+    // Deleting a captain mid-round would strand the PGs they are part way
+    // through: the FK cascades their stops away, and the residents behind
+    // them lose both their delivery and any record that it was coming.
+    // Refuse while there is pending work, and say what to do instead.
     const poll = await getTodaysPoll();
-    if (poll && poll.assigned_rider_id === rider.id) {
-      poll.assigned_rider_id = null;
-      await poll.save();
+    if (poll) {
+      const pendingStops = await DeliveryStop.count({
+        where: { poll_id: poll.id, rider_id: rider.id, status: 'pending' },
+      });
+      if (pendingStops > 0) {
+        return error(res, {
+          statusCode: 409,
+          message: `${rider.name} has ${pendingStops} stop${pendingStops === 1 ? '' : 's'} still to deliver tonight. `
+            + 'Move their zones to another captain and re-run the assignment first.',
+        });
+      }
+      if (poll.assigned_rider_id === rider.id) {
+        poll.assigned_rider_id = null;
+        await poll.save();
+      }
     }
+
+    // What the FKs do on the way out, stated here because it is the whole
+    // reason this is safe: captain_zone_assignments CASCADEs, so the zones
+    // are released and show as uncovered in the roster; riders.helper_rider_id
+    // is SET NULL, so a captain whose helper is deleted simply works solo.
+    const zonesReleased = await CaptainZoneAssignment.count({
+      where: { captain_rider_id: rider.id },
+    });
+    const wasHelperTo = await Rider.findOne({
+      where: { helper_rider_id: rider.id },
+      attributes: ['name'],
+    });
 
     await rider.destroy();
 
+    const notes = [];
+    if (zonesReleased > 0) {
+      notes.push(`${zonesReleased} zone${zonesReleased === 1 ? '' : 's'} now uncovered — assign a captain.`);
+    }
+    if (wasHelperTo) notes.push(`${wasHelperTo.name} is now running solo.`);
+
     return success(res, {
       statusCode: 200,
-      message: 'Rider deleted successfully',
-      data: { id },
+      message: ['Rider deleted successfully', ...notes].join(' '),
+      data: { id, zones_released: zonesReleased, was_helper_to: wasHelperTo?.name || null },
     });
   } catch (err) {
     next(err);
@@ -1322,6 +1515,11 @@ const getMyRiderProfile = async (req, res, next) => {
       });
     }
 
+    // The team comes back with the profile so the rider app knows on
+    // launch whether it is a captain's device or a helper's — which
+    // decides whether it starts the GPS feed at all.
+    const team = await deliveryTeamService.resolveTeam(rider.id);
+
     return success(res, {
       statusCode: 200,
       message: 'Rider profile fetched',
@@ -1334,6 +1532,7 @@ const getMyRiderProfile = async (req, res, next) => {
         zone_location_id: rider.zone_location_id,
         eta_minutes: rider.eta_minutes,
         user_id: rider.user_id,
+        team: describeTeam(team, rider.id),
       },
     });
   } catch (err) {
@@ -1364,10 +1563,11 @@ const undoStopDelivered = async (req, res, next) => {
     const stop = await DeliveryStop.findByPk(id);
     if (!stop) return error(res, { statusCode: 404, message: 'Stop not found.' });
 
-    if (stop.rider_id !== req.auth.id) {
+    const team = await teamOwningStop(req.auth.id, stop);
+    if (!team) {
       return error(res, {
         statusCode: 403,
-        message: 'You can only change your own stops.',
+        message: "That stop belongs to another captain's run.",
       });
     }
     if (stop.status !== 'delivered') {
@@ -1536,43 +1736,50 @@ const recomputeRiderRouteOrder = async (riderId, pollId) => {
 // ---------------------------------------------------------------------------
 // POST /api/tracking/delivery-run/assign
 // Access: super_admin
-// Body: { rider_ids: [uuid, ...] }
+// Body (all optional): { captain_ids: [uuid, ...] }
 //
-// Multi-rider assignment. Replaces the single-rider assumption baked
-// into polls.assigned_rider_id. Zone-based auto-split:
+// Generate tonight's stops from the standing roster.
 //
-//   • For each PG that needs delivery today, find every rider in
-//     rider_ids whose zone_location_id matches the PG's zone (or is
-//     null = "serves all zones").
-//   • Round-robin the PGs of a zone among the eligible riders. If no
-//     rider matches a zone, PGs in that zone are dropped from the run
-//     (super admin needs to add a rider for that zone) — returned in
-//     `orphaned_pgs` so the UI can warn.
-//   • Wipes the existing delivery_stops for this poll and regenerates,
-//     so re-running this endpoint is idempotent (safe to click "Assign
-//     riders" twice with different rider sets).
+// WHAT CHANGED AND WHY
+// This used to take a list of rider ids and round-robin each zone's PGs
+// across whichever of them covered it. Two riders on one zone therefore
+// SPLIT it, alternating PGs, so their routes interleaved down the same
+// streets and "who is bringing my food" changed identity every time anyone
+// re-ran the endpoint.
 //
-// For UI back-compat, polls.assigned_rider_id is set to rider_ids[0]
-// (a "primary" rider) so any legacy single-rider display still works.
-// Callers should prefer GET /delivery-run to see the full picture.
+// Coverage is now standing configuration: captain_zone_assignments says who
+// owns which zone, and that table's unique index means a zone has exactly
+// one captain. So this endpoint no longer decides anything — it reads the
+// roster, resolves each PG to its zone, and hands the PG to that zone's
+// captain. Every stop has one unambiguous owner, and two captains' runs
+// never touch.
+//
+// captain_ids narrows the run to the captains actually working tonight.
+// Their zones are covered; everyone else's report as orphaned, which is the
+// honest answer — those PGs have nobody coming unless an admin moves the
+// zone to a captain who is working. Omit it and the whole roster runs,
+// which is the normal case.
+//
+// Helpers are not named here. A helper shares their captain's stops rather
+// than owning any, so tonight's stop rows are identical whether the captain
+// rides alone or with someone.
 // ---------------------------------------------------------------------------
 const assignDeliveryRun = async (req, res, next) => {
   const t = await db.sequelize.transaction();
   try {
-    const { rider_ids: riderIds } = req.body || {};
-    if (!Array.isArray(riderIds) || riderIds.length === 0) {
+    const body = req.body || {};
+    // rider_ids is the old name for the same idea. Accepted so a client
+    // mid-deploy does not 400, and so the admin screen could be rolled out
+    // independently of the server.
+    const requested = Array.isArray(body.captain_ids)
+      ? body.captain_ids
+      : (Array.isArray(body.rider_ids) ? body.rider_ids : null);
+
+    if (requested && requested.length > 50) {
       await t.rollback();
       return error(res, {
         statusCode: 400,
-        message: 'rider_ids must be a non-empty array of rider UUIDs.',
-      });
-    }
-    // Cap on paranoia — 20 riders is more than any real Sehri run.
-    if (riderIds.length > 20) {
-      await t.rollback();
-      return error(res, {
-        statusCode: 400,
-        message: 'At most 20 riders can be assigned to a single delivery run.',
+        message: 'At most 50 captains can be named in a single delivery run.',
       });
     }
 
@@ -1585,83 +1792,48 @@ const assignDeliveryRun = async (req, res, next) => {
       });
     }
 
-    const riders = await Rider.findAll({
-      where: { id: { [Op.in]: riderIds }, is_active: true },
-      attributes: ['id', 'name', 'zone_location_id'],
+    // ---- the roster -------------------------------------------------
+    // zone -> captain, for every zone that has one. Read inside the
+    // transaction so a concurrent roster edit cannot land halfway through
+    // stop generation and leave a zone assigned to two people.
+    const assignments = await CaptainZoneAssignment.findAll({
+      include: [
+        { model: Rider, as: 'captain', attributes: ['id', 'name', 'is_active', 'helper_rider_id'] },
+        { model: Location, as: 'zone', attributes: ['id', 'name'] },
+      ],
       transaction: t,
     });
-    if (riders.length !== riderIds.length) {
+
+    const captainByZone = new Map();
+    const skippedInactive = new Set();
+    const skippedNotWorking = new Set();
+    const working = requested ? new Set(requested) : null;
+
+    for (const a of assignments) {
+      const captain = a.captain;
+      if (!captain) continue;
+      if (!captain.is_active) { skippedInactive.add(captain.name); continue; }
+      if (working && !working.has(captain.id)) { skippedNotWorking.add(captain.name); continue; }
+      captainByZone.set(a.zone_location_id, captain);
+    }
+
+    if (captainByZone.size === 0) {
       await t.rollback();
       return error(res, {
-        statusCode: 400,
-        message: 'One or more rider_ids are unknown or inactive.',
+        statusCode: 422,
+        message: assignments.length === 0
+          ? 'No captain covers any zone yet. Assign zones to a captain before starting a run.'
+          : 'None of the captains covering a zone are available for tonight.',
       });
     }
 
-    // Compute today's PGs (packet counts per PG) — coord-less PGs still
-    // count. computeDeliverablePGs is transaction-agnostic (it hits
-    // the same connection pool) so we run it without the transaction
-    // context; the writes below are what needs to be atomic.
+    // ---- tonight's PGs ----------------------------------------------
     const pgs = await computeDeliverablePGs(poll.id);
-    if (pgs.length === 0) {
-      // Still valid — a super admin might assign riders before anyone
-      // votes yes; the run is just empty and can be re-run later.
-      // Only pending stops. A delivered stop is a record of something that
-      // physically happened — see the note on the main wipe below.
-      await DeliveryStop.destroy({
-        where: { poll_id: poll.id, status: 'pending' },
-        transaction: t,
-      });
-      poll.assigned_rider_id = riderIds[0];
-      await poll.save({ transaction: t });
-      await t.commit();
-      return success(res, {
-        statusCode: 200,
-        message: 'Riders assigned. No PGs need delivery yet — stops will be regenerated on the next assign.',
-        data: {
-          poll_id: poll.id,
-          rider_count: riders.length,
-          stop_count: 0,
-          orphaned_pgs: [],
-        },
-      });
-    }
 
-    // Group PGs by the zone snapshot on their poll responses so
-    // round-robin only matches riders eligible for THAT zone. We
-    // resolve each PG's zone by looking at its own Location record's
-    // parent chain (same rule the vote-time snapshot uses).
-    const pgsByZone = new Map(); // zone_location_id → [pg,...]
-    for (const pg of pgs) {
-      // Walk up the PG's Location chain to find the zone ancestor.
-      const zone = await resolveZone(pg.location_id, db);
-      const zoneId = zone?.id || null;
-      if (!pgsByZone.has(zoneId)) pgsByZone.set(zoneId, []);
-      pgsByZone.get(zoneId).push(pg);
-    }
-
-    // Deterministic PG ordering within a zone so round-robin is stable.
-    for (const arr of pgsByZone.values()) {
-      arr.sort((a, b) => a.location_id.localeCompare(b.location_id));
-    }
-
-    // For each zone, pick eligible riders: those whose zone matches
-    // OR who serve all zones (zone_location_id === null).
-    const eligibleForZone = (zoneId) =>
-      riders.filter((r) => r.zone_location_id === zoneId || r.zone_location_id == null);
-
-    // Regenerate the PENDING stops only.
-    //
-    // This used to wipe every stop for the poll. Re-assigning mid-run is a
-    // real scenario — a rider's phone dies at 4am and the super admin hands
-    // their PGs to someone else — and the old behaviour erased every stop
-    // already marked delivered along with it: the remaining riders started
-    // from zero, residents who had been served were queued again, and the
-    // record of what actually happened was gone.
-    //
-    // A delivered stop is a record of a physical event. It is never
-    // regenerated, and the PGs behind those stops are excluded below so
-    // nobody gets assigned a delivery that has already been made.
+    // A delivered stop records something that physically happened. It is
+    // never regenerated, and its PG is excluded below so nobody is sent to
+    // a door that has already been served. Only pending work is rebuilt,
+    // which is what makes re-running this safe mid-round.
     const deliveredStops = await DeliveryStop.findAll({
       where: { poll_id: poll.id, status: 'delivered' },
       attributes: ['location_id'],
@@ -1676,66 +1848,93 @@ const assignDeliveryRun = async (req, res, next) => {
 
     const stopsToCreate = [];
     const orphanedPgs = [];
-    for (const [zoneId, zonePgs] of pgsByZone) {
-      const eligible = eligibleForZone(zoneId);
-      if (eligible.length === 0) {
-        // No rider covers this zone — collect for the response so the
-        // super admin can add a rider and re-run assign.
-        for (const pg of zonePgs) orphanedPgs.push(pg.location_id);
+    const uncoveredZones = new Map(); // zone_location_id -> name, for the message
+    const perCaptain = new Map();     // captain_id -> { name, stops, packets }
+
+    for (const pg of pgs) {
+      if (alreadyDelivered.has(pg.location_id)) continue;
+
+      const zone = await resolveZone(pg.location_id, db);
+      const captain = zone ? captainByZone.get(zone.id) : null;
+
+      if (!captain) {
+        orphanedPgs.push(pg.location_id);
+        if (zone) uncoveredZones.set(zone.id, zone.name);
         continue;
       }
-      // Round-robin: PG i → eligible[i % eligible.length]. PGs that were
-      // already delivered are dropped first, so the index used for
-      // round-robin reflects the work that actually remains.
-      const remaining = zonePgs.filter((pg) => !alreadyDelivered.has(pg.location_id));
-      for (let i = 0; i < remaining.length; i++) {
-        const rider = eligible[i % eligible.length];
-        const pg = remaining[i];
-        stopsToCreate.push({
-          poll_id:      poll.id,
-          rider_id:     rider.id,
-          location_id:  pg.location_id,
-          packet_count: pg.packet_count,
-          status:       'pending',
-          sort_order:   null,
-        });
+
+      stopsToCreate.push({
+        poll_id:      poll.id,
+        rider_id:     captain.id,
+        location_id:  pg.location_id,
+        packet_count: pg.packet_count,
+        status:       'pending',
+        sort_order:   null,
+      });
+
+      if (!perCaptain.has(captain.id)) {
+        perCaptain.set(captain.id, { name: captain.name, stops: 0, packets: 0 });
       }
+      const agg = perCaptain.get(captain.id);
+      agg.stops += 1;
+      agg.packets += pg.packet_count;
     }
 
     if (stopsToCreate.length > 0) {
       await DeliveryStop.bulkCreate(stopsToCreate, { transaction: t });
     }
 
-    // Legacy backcompat — the old assigned_rider_id column is still
-    // read by a few UI paths. Set it to the first rider so those
-    // paths keep working; new callers use GET /delivery-run.
-    poll.assigned_rider_id = riderIds[0];
+    // polls.assigned_rider_id is a single column from the one-rider era.
+    // It is still read by the legacy fallback in getActiveRider/getEta for
+    // a poll with no stops at all. Point it at a captain who actually has
+    // work, so that fallback cannot surface someone with an empty route.
+    poll.assigned_rider_id = stopsToCreate.length > 0 ? stopsToCreate[0].rider_id : null;
     await poll.save({ transaction: t });
 
     await t.commit();
 
-    // Kick off route optimization per rider — fire-and-forget so the
-    // assign response returns fast. Each recomputeRiderRouteOrder
-    // catches its own errors and never throws.
-    for (const rider of riders) {
-      recomputeRiderRouteOrder(rider.id, poll.id).catch((err) =>
-        logger.warn(`[tracking] initial route recompute failed for ${rider.id}: ${err.message}`)
+    // Route optimisation per captain — fire-and-forget so the response is
+    // fast. Each call catches its own errors and never throws. One captain
+    // per call, so the routes stay independent by construction.
+    for (const captainId of perCaptain.keys()) {
+      recomputeRiderRouteOrder(captainId, poll.id).catch((err) =>
+        logger.warn(`[tracking] initial route recompute failed for captain ${captainId}: ${err.message}`)
       );
     }
 
     logger.info(
-      `[tracking] super_admin=${req.auth.id} assigned delivery run for poll=${poll.id}: ` +
-      `${riders.length} rider(s), ${stopsToCreate.length} stop(s), ${orphanedPgs.length} orphan PG(s)`
+      `[tracking] super_admin=${req.auth.id} generated delivery run for poll=${poll.id}: `
+      + `${perCaptain.size} captain(s), ${stopsToCreate.length} stop(s), `
+      + `${orphanedPgs.length} orphan PG(s)`
     );
+
+    const captainSummary = Array.from(perCaptain.entries()).map(([id, v]) => ({
+      captain_id: id,
+      name: v.name,
+      stop_count: v.stops,
+      packet_count: v.packets,
+    }));
 
     return success(res, {
       statusCode: 200,
-      message: `Assigned ${stopsToCreate.length} stop${stopsToCreate.length === 1 ? '' : 's'} to ${riders.length} rider${riders.length === 1 ? '' : 's'}.`,
+      message: stopsToCreate.length === 0
+        ? 'No PGs need delivery yet — run this again once votes are in.'
+        : `Assigned ${stopsToCreate.length} stop${stopsToCreate.length === 1 ? '' : 's'} `
+          + `across ${perCaptain.size} captain${perCaptain.size === 1 ? '' : 's'}.`,
       data: {
         poll_id: poll.id,
-        rider_count: riders.length,
+        captain_count: perCaptain.size,
         stop_count: stopsToCreate.length,
+        captains: captainSummary,
         orphaned_pgs: orphanedPgs,
+        uncovered_zones: Array.from(uncoveredZones.entries()).map(([id, name]) => ({ id, name })),
+        skipped_captains: {
+          off_duty: Array.from(skippedInactive),
+          not_working_tonight: Array.from(skippedNotWorking),
+        },
+        // Old field name, same number. Kept so a client that has not been
+        // updated still renders a count rather than "undefined riders".
+        rider_count: perCaptain.size,
       },
     });
   } catch (err) {
@@ -1743,8 +1942,6 @@ const assignDeliveryRun = async (req, res, next) => {
     next(err);
   }
 };
-
-// ---------------------------------------------------------------------------
 // GET /api/tracking/delivery-run
 // Access: super_admin
 //
@@ -1807,15 +2004,118 @@ const getDeliveryRun = async (req, res, next) => {
       if (s.status === 'delivered') bucket.delivered_stops += 1;
     }
 
+    // Attach each captain's helper and zones, so the super admin sees the
+    // run as teams rather than as a list of rider ids.
+    const teams = [];
+    for (const [captainId, bucket] of byRider) {
+      const team = await deliveryTeamService.resolveTeam(captainId);
+      teams.push({
+        ...bucket,
+        captain: bucket.rider,
+        helper: deliveryTeamService.publicRider(team.helper),
+        zones: (team.zones || []).map((z) => ({ id: z.id, name: z.name })),
+        tracked_rider_id:
+          deliveryTeamService.trackedRider(team.captain, team.helper)?.id || captainId,
+      });
+    }
+
     return success(res, {
       statusCode: 200,
       message: 'Delivery run fetched.',
       data: {
         poll: { id: poll.id, date: poll.date },
+        teams,
+        // Old key, same array. A client that has not been updated still
+        // renders the run instead of an empty list.
         riders: Array.from(byRider.values()),
       },
     });
   } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/tracking/teams
+// Access: super_admin
+//
+// The standing roster: every captain with their zones and helper, which
+// zones nobody covers, and who is free to be picked as a helper. This is
+// what the admin configuration screen renders.
+// ---------------------------------------------------------------------------
+const getTeamRoster = async (req, res, next) => {
+  try {
+    const roster = await deliveryTeamService.getRoster();
+    return success(res, {
+      statusCode: 200,
+      message: 'Roster fetched.',
+      data: roster,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PUT /api/tracking/teams/:captainId/zones
+// Access: super_admin
+// Body: { zone_ids: [uuid, ...] }
+//
+// Replace a captain's zone set outright. Whole-set semantics because that
+// is what the screen shows — a list of zones with this captain's ticked —
+// so the write is idempotent and a half-applied edit is not expressible.
+//
+// A zone already held by another captain is refused with 409 rather than
+// silently moved. Taking a zone off someone is a decision worth making
+// deliberately; at 3am it should not be a side effect of a mis-tap.
+// ---------------------------------------------------------------------------
+const setCaptainZones = async (req, res, next) => {
+  try {
+    const { captainId } = req.params;
+    const { zone_ids: zoneIds } = req.body || {};
+    if (zoneIds != null && !Array.isArray(zoneIds)) {
+      return error(res, { statusCode: 400, message: 'zone_ids must be an array of zone UUIDs.' });
+    }
+    const result = await deliveryTeamService.setCaptainZones(captainId, zoneIds || []);
+    const roster = await deliveryTeamService.getRoster();
+    return success(res, {
+      statusCode: 200,
+      message: result.total === 0
+        ? 'Zones cleared.'
+        : `${result.total} zone${result.total === 1 ? '' : 's'} assigned.`,
+      data: { ...result, roster },
+    });
+  } catch (err) {
+    if (err.status) {
+      return error(res, { statusCode: err.status, message: err.message, code: err.code });
+    }
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PUT /api/tracking/teams/:captainId/helper
+// Access: super_admin
+// Body: { helper_rider_id: uuid | null }
+//
+// Assign, swap, or remove a captain's helper. null removes it and the
+// captain works solo, which is the normal state for most runs.
+// ---------------------------------------------------------------------------
+const setCaptainHelper = async (req, res, next) => {
+  try {
+    const { captainId } = req.params;
+    const helperId = (req.body || {}).helper_rider_id ?? null;
+    const result = await deliveryTeamService.setCaptainHelper(captainId, helperId);
+    const roster = await deliveryTeamService.getRoster();
+    return success(res, {
+      statusCode: 200,
+      message: result.helper ? `${result.helper.name} added as helper.` : 'Helper removed.',
+      data: { ...result, roster },
+    });
+  } catch (err) {
+    if (err.status) {
+      return error(res, { statusCode: err.status, message: err.message, code: err.code });
+    }
     next(err);
   }
 };
@@ -1835,12 +2135,26 @@ const getMyStops = async (req, res, next) => {
       return success(res, {
         statusCode: 200,
         message: 'No poll for today.',
-        data: { poll: null, stops: [] },
+        data: { poll: null, stops: [], team: null },
+      });
+    }
+
+    // Stops belong to the captain. A helper reads their captain's list —
+    // that shared state is the whole point of a team, and it is why a
+    // helper is never given rows of their own to drift out of sync.
+    const team = await deliveryTeamService.resolveTeam(req.auth.id);
+    const teamPayload = describeTeam(team, req.auth.id);
+
+    if (!team.captain) {
+      return success(res, {
+        statusCode: 200,
+        message: "You are not on tonight's roster yet.",
+        data: { poll: { id: poll.id, date: poll.date }, stops: [], team: teamPayload },
       });
     }
 
     const stops = await DeliveryStop.findAll({
-      where: { poll_id: poll.id, rider_id: req.auth.id },
+      where: { poll_id: poll.id, rider_id: team.captain.id },
       include: [
         { model: Location, as: 'location', attributes: ['id', 'name', 'parent_id', 'latitude', 'longitude'] },
       ],
@@ -1856,7 +2170,7 @@ const getMyStops = async (req, res, next) => {
       return success(res, {
         statusCode: 200,
         message: "You haven't been assigned any stops today.",
-        data: { poll: { id: poll.id, date: poll.date }, stops: [] },
+        data: { poll: { id: poll.id, date: poll.date }, stops: [], team: teamPayload },
       });
     }
 
@@ -1898,7 +2212,10 @@ const getMyStops = async (req, res, next) => {
     try {
       const pending = out.filter((s) => s.status === 'pending' && s.has_pin);
       if (pending.length >= 1) {
-        const me = await Rider.findByPk(req.auth.id, { attributes: ['latitude', 'longitude'] });
+        // Origin is the team's tracked device — the helper's phone when
+        // there is one. Using the caller's own row would give a captain
+        // and their helper two different routes for the same bike.
+        const me = deliveryTeamService.trackedRider(team.captain, team.helper);
         const origin = (me?.latitude != null && me?.longitude != null)
           ? { lat: Number(me.latitude), lng: Number(me.longitude) }
           : { lat: pending[0].latitude, lng: pending[0].longitude };
@@ -1938,6 +2255,7 @@ const getMyStops = async (req, res, next) => {
         poll: { id: poll.id, date: poll.date },
         stops: out,
         route_polyline: routePolyline,
+        team: teamPayload,
         summary: {
           total_stops:      totalStops,
           delivered_stops:  deliveredStops,
@@ -1968,10 +2286,11 @@ const markStopDelivered = async (req, res, next) => {
     const stop = await DeliveryStop.findByPk(id);
     if (!stop) return error(res, { statusCode: 404, message: 'Stop not found.' });
 
-    if (stop.rider_id !== req.auth.id) {
+    const team = await teamOwningStop(req.auth.id, stop);
+    if (!team) {
       return error(res, {
         statusCode: 403,
-        message: 'You can only mark your own stops as delivered.',
+        message: "That stop belongs to another captain's run.",
       });
     }
     if (stop.status === 'delivered') {
@@ -1984,6 +2303,8 @@ const markStopDelivered = async (req, res, next) => {
 
     stop.status                = 'delivered';
     stop.delivered_at          = new Date();
+    // Who physically ticked it — the helper, when they are the one at the
+    // door. The stop stays owned by the captain; this records the hand.
     stop.delivered_by_rider_id = req.auth.id;
     await stop.save();
 
@@ -2038,11 +2359,22 @@ const recomputeMyRoute = async (req, res, next) => {
   try {
     const poll = await getTodaysPoll();
     if (!poll) return error(res, { statusCode: 404, message: 'No poll for today.' });
-    await recomputeRiderRouteOrder(req.auth.id, poll.id);
+
+    // Recompute the CAPTAIN's route even when a helper asks. One team, one
+    // route — a helper recomputing against their own (empty) stop set would
+    // be a no-op that looks like a success.
+    const captainId = await deliveryTeamService.stopOwnerIdFor(req.auth.id);
+    if (!captainId) {
+      return error(res, {
+        statusCode: 409,
+        message: "You are not on tonight's roster, so there is no route to recompute.",
+      });
+    }
+    await recomputeRiderRouteOrder(captainId, poll.id);
     return success(res, {
       statusCode: 200,
       message: 'Route recomputed.',
-      data: { poll_id: poll.id },
+      data: { poll_id: poll.id, captain_rider_id: captainId },
     });
   } catch (err) {
     next(err);
@@ -2050,6 +2382,9 @@ const recomputeMyRoute = async (req, res, next) => {
 };
 
 module.exports = {
+  getTeamRoster,
+  setCaptainZones,
+  setCaptainHelper,
   getMyRiderProfile,
   undoStopDelivered,
   riderLogin,

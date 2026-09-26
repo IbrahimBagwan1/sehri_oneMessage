@@ -99,7 +99,23 @@ const shouldSkipRecompute = (riderId, lat, lng) => {
  */
 const updateETAsForRider = async (rider, lat, lng) => {
   try {
-    if (!rider || rider.status !== 'delivering') return;
+    if (!rider) return;
+
+    // `rider` is the CAPTAIN — the owner of the stop list. The position is
+    // the team's tracked device, which may be the helper's phone. The
+    // throttle is keyed on the captain so a pair does not recompute twice
+    // as often as a solo rider.
+    if (rider.status !== 'delivering') {
+      // A captain whose own row says idle can still have a helper out
+      // delivering, so check the team before giving up on the run.
+      const helperOut = rider.helper_rider_id
+        ? await Rider.findOne({
+            where: { id: rider.helper_rider_id, status: 'delivering' },
+            attributes: ['id'],
+          })
+        : null;
+      if (!helperOut) return;
+    }
 
     if (shouldSkipRecompute(rider.id, lat, lng)) return;
 
@@ -363,7 +379,7 @@ const updateETAsForRider = async (rider, lat, lng) => {
     lastRecomputeByRider.set(rider.id, { lat, lng, at: Date.now() });
 
     logger.info(
-      `[eta] rider=${rider.id} zone=${rider.zone_location_id || 'all'} ` +
+      `[eta] captain=${rider.id} ` +
       `destinations=${destByKey.size} recipients=${inZoneResponses.length} ` +
       `noCoords=${responsesWithoutCoords.length} pushes=${pushes.length}`
     );
@@ -375,26 +391,33 @@ const updateETAsForRider = async (rider, lat, lng) => {
 };
 
 /**
- * Called when a rider stops delivering. Clears the throttle state and
- * emits a zone event so open user maps can hide the marker cleanly.
+ * The captain's run is over. Clears the throttle state and tells that
+ * team's watchers to drop the marker.
+ *
+ * Emitted to the captain's run room rather than a zone room: a captain may
+ * cover several zones, and residents of the other captains' zones have no
+ * business being told anything about this one.
  */
-const onRiderStopped = (rider) => {
-  if (!rider) return;
-  lastRecomputeByRider.delete(rider.id);
-  if (rider.zone_location_id) {
-    try {
-      socketService.emitRiderPosition(rider.zone_location_id, {
-        rider_id: rider.id,
-        name: rider.name,
-        status: 'done',
-        at: new Date().toISOString(),
-      });
-    } catch (_) { /* noop */ }
-  }
+const onTeamStopped = (captain) => {
+  if (!captain) return;
+  lastRecomputeByRider.delete(captain.id);
+  try {
+    socketService.emitTeamPosition(captain.id, {
+      captain_rider_id: captain.id,
+      rider_id: captain.id,
+      name: captain.name,
+      status: 'done',
+      at: new Date().toISOString(),
+    });
+  } catch (_) { /* noop */ }
 };
 
 module.exports = {
+  // Named for the team, since a pair shares one stop list and one ETA run.
+  updateETAsForTeam: updateETAsForRider,
+  onTeamStopped,
+  // Old names, same functions. Anything still calling these keeps working.
   updateETAsForRider,
-  onRiderStopped,
+  onRiderStopped: onTeamStopped,
   PROXIMITY_ETA_MINUTES,
 };

@@ -73,6 +73,14 @@ export default function RiderMapScreen() {
   const myStops         = useRiderStore((s) => s.myStops);
   const routePolyline   = useRiderStore((s) => s.routePolyline);
   const stopsSummary    = useRiderStore((s) => s.stopsSummary);
+  const team            = useRiderStore((s) => s.team);
+
+  // A team has one broadcasting phone. The helper's, when there is one,
+  // because the captain is driving and the helper is the one walking to
+  // the door. The other device still shows the route and marks stops — it
+  // just does not run a GPS feed.
+  const iAmTracking = team ? team.i_am_tracking !== false : true;
+  const myRole      = team?.my_role || null;
 
   const mapRef      = useRef<any>(null);
   const followRef   = useRef(0);
@@ -183,8 +191,23 @@ export default function RiderMapScreen() {
   const handleToggle = async () => {
     setToggling(true);
     try {
-      if (isDelivering) await stopDelivery();
-      else              await startDelivery(); // also recomputes + refetches stops
+      if (isDelivering) {
+        await stopDelivery();
+      } else {
+        // Also recomputes the route and refetches stops. Returns whether
+        // this device is the one broadcasting, so a captain riding with a
+        // helper is told plainly rather than wondering why their status
+        // chip does not say "broadcasting".
+        const res = await startDelivery();
+        if (res && res.tracking === false) {
+          Alert.alert(
+            'Round started',
+            `${res.helperName || 'Your helper'} is sharing the location for your team, `
+            + 'so your phone will not broadcast. You still have the full route and can '
+            + 'mark stops as delivered.'
+          );
+        }
+      }
     } catch (err: any) {
       Alert.alert('Something went wrong', err?.message || 'Try again in a moment.');
     } finally {
@@ -389,10 +412,28 @@ export default function RiderMapScreen() {
       {/* Bottom panel */}
       <View style={styles.panel}>
         <View style={styles.panelHead}>
+          {myRole === 'captain' && (
+            <Chip
+              label={team?.helper ? `Captain · with ${team.helper.name}` : 'Captain'}
+              tone="teal"
+              icon="car-outline"
+            />
+          )}
+          {myRole === 'helper' && (
+            <Chip
+              label={`Helper · ${team?.captain?.name || 'team'}`}
+              tone="gold"
+              icon="walk-outline"
+            />
+          )}
           <Chip
-            label={isDelivering ? 'Broadcasting location' : 'Idle'}
-            tone={isDelivering ? 'teal' : 'neutral'}
-            icon={isDelivering ? 'radio-outline' : 'ellipse-outline'}
+            label={
+              !isDelivering ? 'Idle'
+                : iAmTracking ? 'Broadcasting location'
+                  : 'On the round'
+            }
+            tone={isDelivering ? (iAmTracking ? 'teal' : 'neutral') : 'neutral'}
+            icon={isDelivering && iAmTracking ? 'radio-outline' : 'ellipse-outline'}
           />
           {stopsSummary && (
             <Chip
@@ -407,6 +448,26 @@ export default function RiderMapScreen() {
           <View style={styles.addressRow}>
             <Ionicons name="location-outline" size={16} color={colors.inkFaint} />
             <Text style={styles.addressText} numberOfLines={2}>{currentAddress}</Text>
+          </View>
+        )}
+
+        {myRole === 'unassigned' && (
+          <View style={styles.noticeRow}>
+            <Ionicons name="information-circle-outline" size={16} color={colors.warn} />
+            <Text style={styles.noticeText}>
+              You are not on a team yet. Ask a super admin for zones, or to add you
+              to a captain.
+            </Text>
+          </View>
+        )}
+
+        {isDelivering && !iAmTracking && (
+          <View style={styles.noticeRow}>
+            <Ionicons name="phone-portrait-outline" size={16} color={colors.inkFaint} />
+            <Text style={styles.noticeText}>
+              {team?.helper?.name || 'Your helper'} is sharing the location for your
+              team. You still have the full route.
+            </Text>
           </View>
         )}
 
@@ -427,6 +488,11 @@ export default function RiderMapScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.paperSoft },
+  noticeRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: space[2],
+    marginBottom: space[3],
+  },
+  noticeText: { ...type.meta, flex: 1 },
 
   mapContainer: { flex: 1 },
   map:          { flex: 1 },

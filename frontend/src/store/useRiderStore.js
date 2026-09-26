@@ -49,6 +49,18 @@ export const useRiderStore = create((set, get) => ({
   // be worse than degraded tracking.
   backgroundLocationGranted: false,
 
+  // The team this rider is on, as the server resolves it:
+  //   { my_role: 'captain' | 'helper' | 'unassigned',
+  //     captain, helper, zones, tracked_rider_id, i_am_tracking }
+  //
+  // i_am_tracking is the one that changes behaviour rather than wording:
+  // a team has ONE broadcasting device, the helper's when there is one,
+  // because the captain is driving. The other phone still shows the route
+  // and can mark stops, it just does not run a GPS feed — two feeds would
+  // make the marker jump between two phones metres apart, and would drain
+  // a second battery for nothing.
+  team: null,
+
   // -------------------------------------------------------------------------
   // hydrate — called once at app startup inside (rider)/_layout
   // Reads persisted token + profile from SecureStore.
@@ -138,6 +150,7 @@ export const useRiderStore = create((set, get) => ({
           myStops:       Array.isArray(result.data?.stops) ? result.data.stops : [],
           routePolyline: Array.isArray(result.data?.route_polyline) ? result.data.route_polyline : null,
           stopsSummary:  result.data?.summary || null,
+          team:          result.data?.team || null,
         });
       }
     } catch (err) {
@@ -205,6 +218,45 @@ export const useRiderStore = create((set, get) => ({
     const rider = get().rider;
     if (!rider) throw new Error('Not signed in as a rider');
 
+    // Refresh the team before deciding anything — a helper may have been
+    // assigned since this app last looked, which changes which phone
+    // broadcasts. Non-fatal if it fails; we fall back to what we have.
+    let team = get().team;
+    try {
+      const me = await trackingApi.getMyRiderProfile(await get().riderToken());
+      if (me?.success && me.data?.team) {
+        team = me.data.team;
+        set({ team });
+      }
+    } catch {
+      // Offline. Whatever the last fetch said is the best available answer.
+    }
+
+    if (team && team.my_role === 'unassigned') {
+      throw new Error(
+        'You are not on tonight\u2019s roster yet. Ask a super admin to give you '
+        + 'zones, or to add you to a captain\u2019s team.'
+      );
+    }
+
+    const token = await get().riderToken();
+
+    // Only the tracked device runs a GPS feed. A captain with a helper
+    // still starts their round — they see the route and can mark stops —
+    // they simply are not the phone the community is following.
+    const iAmTracking = team ? team.i_am_tracking !== false : true;
+
+    if (!iAmTracking) {
+      set({ isDelivering: true });
+      try {
+        await trackingApi.recomputeMyRoute(token);
+        await get().fetchMyStops();
+      } catch (err) {
+        console.warn('[rider] route recompute at start failed:', err?.message);
+      }
+      return { tracking: false, helperName: team?.helper?.name || null };
+    }
+
     const { granted, background } = await requestRiderLocationPermission();
     if (!granted) {
       throw new Error(
@@ -212,8 +264,6 @@ export const useRiderStore = create((set, get) => ({
         + 'Enable it in Settings and try again.'
       );
     }
-
-    const token = await get().riderToken();
 
     // One immediate fix so the map has something before the first
     // scheduled update lands 30 seconds later.
@@ -237,6 +287,7 @@ export const useRiderStore = create((set, get) => ({
       // Directions being down must not stop someone starting their round.
       console.warn('[rider] route recompute at start failed:', err?.message);
     }
+    return { tracking: true, helperName: null };
   },
 
   // -------------------------------------------------------------------------
@@ -289,9 +340,11 @@ export const useRiderStore = create((set, get) => ({
         const res = await trackingApi.getMyRiderProfile(await get().riderToken());
         if (res?.success) {
           serverSaysDelivering = res.data.status === 'delivering';
-          // Refresh the cached profile while we have the live one.
+          // Refresh the cached profile while we have the live one. The team
+          // comes with it, so a rider who was made a helper overnight finds
+          // out on launch rather than by broadcasting when they should not.
           const fresh = { ...rider, ...res.data };
-          set({ rider: fresh });
+          set({ rider: fresh, team: res.data.team || null });
           await SecureStore.setItemAsync(RIDER_DATA_KEY, JSON.stringify(fresh));
         }
       } catch {
@@ -304,12 +357,22 @@ export const useRiderStore = create((set, get) => ({
       // The server thinks the round is live but the OS dropped our task
       // (force-stop, battery optimiser, a reboot). Restart the feed so the
       // community is not watching a rider who stopped reporting.
-      if (serverSaysDelivering && !running) {
+      //
+      // Only on the tracked device. Resuming on a captain whose helper is
+      // out would put two feeds on one team.
+      const iAmTracking = get().team ? get().team.i_am_tracking !== false : true;
+      if (serverSaysDelivering && !running && iAmTracking) {
         try {
           await startRiderLocationUpdates();
         } catch (err) {
           console.warn('[rider] could not resume the location feed:', err?.message);
         }
+      }
+
+      // A device that is no longer the tracked one must stop broadcasting,
+      // whatever it was doing before the roster changed.
+      if (running && !iAmTracking) {
+        await stopRiderLocationUpdates();
       }
     } catch (err) {
       console.warn('[rider] delivery state sync failed:', err?.message);
@@ -339,6 +402,7 @@ export const useRiderStore = create((set, get) => ({
       myStops:         [],
       routePolyline:   null,
       stopsSummary:    null,
+      team:            null,
     });
   },
 }));

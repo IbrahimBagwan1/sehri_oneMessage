@@ -1,8 +1,10 @@
 'use strict';
 
 const express = require('express');
+const { param, query, body } = require('express-validator');
 const router = express.Router();
 const { verifyToken, requireRole } = require('../middleware/auth');
+const { handleValidationErrors } = require('../middleware/otpValidation');
 const {
   getMyGroups,
   createGroup,
@@ -18,6 +20,10 @@ const {
   listZones,
   addZone,
   removeZone,
+  reportMessage,
+  blockUser,
+  unblockUser,
+  listBlockedUsers,
 } = require('../controllers/chatController');
 
 // ---------------------------------------------------------------------------
@@ -38,6 +44,8 @@ const {
 //  11. DELETE /groups/:id/members/:userId  (param + param)
 //  12. POST /groups/:id/zones              (param + literal)
 //  13. DELETE /groups/:id/zones/:zoneId    (param + param)
+//  14. GET/POST /blocks, DELETE /blocks/:userId   (literal — above /groups/:id)
+//  15. POST /groups/:id/messages/:msgId/report    (param + param + literal)
 // ---------------------------------------------------------------------------
 
 // GET /api/chat/groups — list groups the caller belongs to
@@ -52,6 +60,41 @@ router.get('/admins', verifyToken, requireRole('super_admin'), listAdmins);
 // GET /api/chat/zones — zones + member counts for the zone picker
 // ?group_id=<uuid> marks the ones this group already covers
 router.get('/zones', verifyToken, requireRole('super_admin'), listZones);
+
+// ---------------------------------------------------------------------------
+// Blocks — "I do not want to see this person".
+//
+// One-way and silent: the blocker stops seeing the blocked person, and the
+// blocked person's view is unchanged and they are never told. The reasoning
+// is at the top of services/chatModerationService.js.
+//
+// Literal segments, so they sit above /groups/:id.
+// ---------------------------------------------------------------------------
+
+// GET /api/chat/blocks — the caller's own blocked list
+router.get('/blocks', verifyToken, listBlockedUsers);
+
+// POST /api/chat/blocks — Body: { user_id, user_type }
+router.post(
+  '/blocks',
+  verifyToken,
+  body('user_id').isUUID().withMessage('user_id must be a UUID'),
+  body('user_type').isIn(['user', 'admin', 'super_admin'])
+    .withMessage('user_type must be user, admin, or super_admin'),
+  handleValidationErrors,
+  blockUser
+);
+
+// DELETE /api/chat/blocks/:userId?user_type=user|admin|super_admin
+router.delete(
+  '/blocks/:userId',
+  verifyToken,
+  param('userId').isUUID().withMessage('userId must be a UUID'),
+  query('user_type').isIn(['user', 'admin', 'super_admin'])
+    .withMessage('user_type must be user, admin, or super_admin'),
+  handleValidationErrors,
+  unblockUser
+);
 
 // GET /api/chat/groups/:id — group details + member list + covered zones
 router.get('/groups/:id', verifyToken, getGroupDetails);
@@ -77,6 +120,22 @@ router.post('/groups/:id/members', verifyToken, requireRole('super_admin'), addM
 // DELETE /api/chat/groups/:id/messages/:msgId — soft-delete a message
 // (owner or super admin — enforced in controller)
 router.delete('/groups/:id/messages/:msgId', verifyToken, deleteMessage);
+
+// POST /api/chat/groups/:id/messages/:msgId/report
+// Body: { reason?, block_sender? }
+// Flags a message for moderation, optionally blocking its sender in the
+// same action. Idempotent — reporting twice is one report.
+router.post(
+  '/groups/:id/messages/:msgId/report',
+  verifyToken,
+  param('id').isUUID().withMessage('group id must be a UUID'),
+  param('msgId').isUUID().withMessage('message id must be a UUID'),
+  body('reason').optional({ nullable: true }).isString().isLength({ max: 1000 })
+    .withMessage('reason must be 1000 characters or fewer'),
+  body('block_sender').optional().isBoolean().toBoolean(),
+  handleValidationErrors,
+  reportMessage
+);
 
 // DELETE /api/chat/groups/:id/members/:userId — remove a member
 // ?user_type=user|admin|super_admin  (required query param)

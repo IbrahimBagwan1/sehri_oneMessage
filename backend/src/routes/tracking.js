@@ -22,6 +22,9 @@ const {
   undoStopDelivered,
   getMyRiderProfile,
   recomputeMyRoute,
+  getTeamRoster,
+  setCaptainZones,
+  setCaptainHelper,
 } = require('../controllers/trackingController');
 
 // ---------------------------------------------------------------------------
@@ -84,10 +87,30 @@ router.patch('/stops/:id/mark-delivered', verifyToken, requireRole('rider'), mar
 router.patch('/stops/:id/undo-delivered', verifyToken, requireRole('rider'), undoStopDelivered);
 
 // POST /api/tracking/delivery-run/assign
-// Super admin assigns N riders to today's run — backend generates
-// delivery_stops with zone-based round-robin auto-split.
-// Body: { rider_ids: [uuid, ...] }
+// Generate tonight's stops from the standing roster. Each PG goes to the
+// captain who covers its zone, so two captains' runs are always disjoint.
+// Body (optional): { captain_ids: [uuid, ...] } to narrow the run to the
+// captains actually working tonight.
 router.post('/delivery-run/assign', verifyToken, requireRole('super_admin'), assignDeliveryRun);
+
+// ---------------------------------------------------------------------------
+// Super admin — delivery team roster
+//
+// Standing configuration, not a nightly choice: who captains which zones,
+// and who rides with them. The delivery run above is generated from it.
+// Literal segments, so they sit above any /:id route.
+// ---------------------------------------------------------------------------
+
+// GET /api/tracking/teams — the full roster + uncovered zones + free riders.
+router.get('/teams', verifyToken, requireRole('super_admin'), getTeamRoster);
+
+// PUT /api/tracking/teams/:captainId/zones — replace a captain's zone set.
+// Body: { zone_ids: [uuid, ...] }. 409 if a zone is another captain's.
+router.put('/teams/:captainId/zones', verifyToken, requireRole('super_admin'), setCaptainZones);
+
+// PUT /api/tracking/teams/:captainId/helper — set, swap, or remove a helper.
+// Body: { helper_rider_id: uuid | null }
+router.put('/teams/:captainId/helper', verifyToken, requireRole('super_admin'), setCaptainHelper);
 
 // GET /api/tracking/delivery-run
 // Super admin's view of today's run — every rider + their stops.

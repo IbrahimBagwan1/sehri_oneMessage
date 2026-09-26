@@ -50,6 +50,32 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         defaultValue: null,
       },
+      // Moderation: this member may read the group but not post in it.
+      //
+      // A BAN rather than a removal, because removal does not stick. An
+      // 'auto' member is in the room because the group's zones put them
+      // there, and services/chatGroupSync.js re-adds anyone entitled who
+      // is missing — so deleting the row of an abusive member would be
+      // silently undone on the next reconcile. The row stays; this flag is
+      // what sendMessage checks, and the reconciler preserves it.
+      is_banned: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
+      banned_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      // admin.id or super_admin.id — polymorphic, resolved by the controller.
+      banned_by: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      ban_reason: {
+        type: DataTypes.STRING(500),
+        allowNull: true,
+      },
     },
     {
       tableName: 'chat_group_members',
@@ -59,6 +85,7 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['group_id'] },
         { fields: ['user_id'] },
         { fields: ['group_id', 'source'] },
+        { fields: ['group_id', 'is_banned'], name: 'idx_chat_group_members_banned' },
       ],
     }
   );

@@ -25,6 +25,7 @@ import {
   LoadingState,
 } from '../components/ui';
 import { connect as connectSocket, getSocket } from '../services/socket';
+import ReportMessageSheet from '../components/ReportMessageSheet';
 import { colors, radius, space, type } from '../theme';
 
 // -----------------------------------------------------------------------------
@@ -42,6 +43,13 @@ import { colors, radius, space, type } from '../theme';
 //      the room; we dedupe locally by id so the sender doesn't see the
 //      message twice.
 //   5. On unmount, emit 'leave_group' and remove listeners.
+//
+// Blocking: message HISTORY is filtered server-side, so a blocked person's
+// words never reach this device. A live socket broadcast goes to a room and
+// has no per-recipient view, so the blocked list is fetched on mount and
+// incoming messages are checked against it too. That second check is belt
+// and braces — a client that skipped it still could not fetch the message
+// back from history.
 //
 // Guest wrapper — the outer component checks isGuest and returns
 // GuestGate before rendering the real screen, so hooks stay disciplined.
@@ -83,12 +91,27 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
   const meId        = user?.id;
 
   const listRef = useRef(null);
+  // The socket handler is registered once; a state value captured in its
+  // closure would go stale the moment someone blocks anyone. A ref keeps
+  // the handler reading the current set without making the socket effect
+  // depend on it and rebuild the connection on every change.
+  const blockedRef = useRef(new Set());
 
   const [messages, setMessages] = useState([]);   // ordered oldest → newest
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
   const [sending,  setSending]  = useState(false);
   const [draft,    setDraft]    = useState('');
+
+  // Moderation state.
+  //   blockedKeys  — "type:id" of everyone this member has blocked, used to
+  //                   drop live socket messages (history is already filtered)
+  //   reportTarget — the message the report sheet is open for, or null
+  //   banInfo      — set when a moderator has closed the composer for us
+  const [blockedKeys, setBlockedKeys] = useState(() => new Set());
+  const [reportTarget, setReportTarget] = useState(null);
+  const [reporting, setReporting] = useState(false);
+  const [banInfo, setBanInfo] = useState(null);
 
   // --- Initial history + mark-as-read -------------------------------------
   const loadHistory = useCallback(async () => {
@@ -110,7 +133,43 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
     }
   }, [groupId]);
 
-  useFocusEffect(useCallback(() => { loadHistory(); }, [loadHistory]));
+  // The blocked list, for filtering live socket traffic. Fetched alongside
+  // history rather than inside the socket effect so a reconnect does not
+  // re-request it.
+  const loadBlocked = useCallback(async () => {
+    try {
+      const res = await chatApi.getBlockedUsers();
+      if (res.success) {
+        setBlockedKeys(new Set((res.data.blocked || []).map((b) => `${b.user_type}:${b.user_id}`)));
+      }
+    } catch {
+      // Non-fatal. History is filtered server-side regardless; the worst
+      // case is a blocked person's live message appearing until refresh.
+    }
+  }, []);
+
+  // Am I banned from posting here? Read from this one group's details
+  // rather than the whole group list — the list computes an unread count
+  // and a preview message per group, which is a lot of work to find one
+  // boolean on every time a room is opened.
+  const loadBanState = useCallback(async () => {
+    try {
+      const res = await chatApi.getGroup(groupId);
+      if (res.success) {
+        const m = res.data?.my_membership;
+        setBanInfo(m?.is_banned ? { reason: m.ban_reason } : null);
+      }
+    } catch {
+      // Leave the composer open. A banned send returns 403 with a clear
+      // message, so the worst case is one wasted attempt.
+    }
+  }, [groupId]);
+
+  useFocusEffect(useCallback(() => {
+    loadHistory();
+    loadBlocked();
+    loadBanState();
+  }, [loadHistory, loadBlocked, loadBanState]));
 
   // --- Socket subscription -----------------------------------------------
   useEffect(() => {
@@ -125,6 +184,10 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
 
       const onNew = (msg) => {
         if (!alive || !msg || msg.group_id !== groupId) return;
+        // A room broadcast reaches everyone in it, including people who
+        // blocked the sender. Drop it here; history is filtered server-side.
+        const senderKey = `${msg.sender?.role}:${msg.sender?.id}`;
+        if (blockedRef.current.has(senderKey)) return;
         // Dedupe — the sender already appended optimistically.
         setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
         // Nudge scroll if the user is near the bottom.
@@ -151,6 +214,8 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
       if (s?.connected) s.emit('leave_group', { group_id: groupId });
     };
   }, [groupId]);
+
+  useEffect(() => { blockedRef.current = blockedKeys; }, [blockedKeys]);
 
   // --- Send / delete -----------------------------------------------------
   const handleSend = async () => {
@@ -179,8 +244,48 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
     return iOwnIt || iAmSuperAdmin;
   };
 
+  const isMine = (msg) => msg?.sender?.id === meId;
+
+  // Long-press already existed on this screen, as a delete-only shortcut
+  // that silently did nothing on anyone else's message. Rather than adding
+  // a second interaction, it now opens the actions that apply to whichever
+  // message was pressed — so the gesture people already know is the one
+  // that reaches reporting.
   const handleLongPress = (msg) => {
-    if (!canDelete(msg)) return;
+    if (!msg || msg.is_deleted) return;
+
+    const options = [];
+
+    if (canDelete(msg)) {
+      options.push({
+        text: 'Delete message',
+        style: 'destructive',
+        onPress: () => confirmDelete(msg),
+      });
+    }
+
+    // You cannot report or block yourself; both are refused server-side
+    // too, but offering them would be a confusing thing to tap.
+    if (!isMine(msg)) {
+      options.push({ text: 'Report message', onPress: () => setReportTarget(msg) });
+      options.push({
+        text: `Block ${msg.sender?.name || 'this person'}`,
+        style: 'destructive',
+        onPress: () => confirmBlock(msg.sender),
+      });
+    }
+
+    if (options.length === 0) return;
+    options.push({ text: 'Cancel', style: 'cancel' });
+
+    Alert.alert(
+      msg.sender?.name || 'Message',
+      truncate(msg.content, 100),
+      options
+    );
+  };
+
+  const confirmDelete = (msg) => {
     Alert.alert(
       'Delete message?',
       "This can't be undone. Others will see 'This message was deleted.'",
@@ -202,6 +307,71 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
         },
       ]
     );
+  };
+
+  // Standalone block, without reporting. Someone can be tiresome without
+  // having done anything a moderator needs to see.
+  const confirmBlock = (sender) => {
+    if (!sender?.id) return;
+    Alert.alert(
+      `Block ${sender.name}?`,
+      "You'll stop seeing their messages in every group. They can still see yours, "
+      + "and they won't be told. You can undo this from your profile.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await chatApi.blockUser(sender.id, sender.role);
+              applyBlock(sender);
+              Alert.alert('Blocked', `You will no longer see messages from ${sender.name}.`);
+            } catch (err) {
+              Alert.alert("Couldn't block", err?.response?.data?.message || 'Try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Hide their messages immediately rather than waiting for a refetch —
+  // the whole point of blocking is that the content goes away now.
+  const applyBlock = (sender) => {
+    const key = `${sender.role}:${sender.id}`;
+    setBlockedKeys((prev) => new Set(prev).add(key));
+    setMessages((prev) => prev.filter((m) => `${m.sender?.role}:${m.sender?.id}` !== key));
+  };
+
+  const submitReport = async ({ reason, blockSender }) => {
+    if (!reportTarget) return;
+    setReporting(true);
+    try {
+      const res = await chatApi.reportMessage(groupId, reportTarget.id, { reason, blockSender });
+      const sender = reportTarget.sender;
+      setReportTarget(null);
+      if (blockSender && sender?.id) applyBlock(sender);
+
+      const alreadyReported = res?.data?.already_reported;
+      Alert.alert(
+        alreadyReported ? 'Already reported' : 'Report sent',
+        [
+          alreadyReported
+            ? 'You had already reported this message. Our team is reviewing it.'
+            : 'Thank you. Our moderation team will review this message.',
+          blockSender ? `You will no longer see messages from ${sender?.name}.` : null,
+          `${sender?.name || 'They'} will not be told.`,
+        ].filter(Boolean).join('\n\n')
+      );
+    } catch (err) {
+      Alert.alert(
+        "Couldn't send the report",
+        err?.response?.data?.message || 'Try again in a moment.'
+      );
+    } finally {
+      setReporting(false);
+    }
   };
 
   // --- Render ------------------------------------------------------------
@@ -227,7 +397,10 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
             styles.bubble,
             mine ? styles.bubbleMine : styles.bubbleTheirs,
             item.is_deleted && styles.bubbleDeleted,
-            pressed && canDelete(item) && { opacity: 0.7 },
+            // Every live message now has actions behind a long press, so
+            // the pressed state is no longer conditional on being able to
+            // delete — it would have made reporting feel unavailable.
+            pressed && !item.is_deleted && { opacity: 0.7 },
           ]}
           accessibilityLabel={
             item.is_deleted
@@ -282,7 +455,23 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
           />
         )}
 
-        {/* Composer — matches the app's flat input style. */}
+        {/* Composer. A moderator can close it — the member keeps reading
+            the room, which is where their zone's delivery announcements
+            are, but cannot post. Shown as a bar rather than a hidden
+            input, so the state is explained instead of just broken. */}
+        {banInfo ? (
+          <View style={styles.bannedBar}>
+            <Ionicons name="remove-circle-outline" size={18} color={colors.inkFaint} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bannedTitle}>You can no longer post in this group</Text>
+              <Text style={styles.bannedHint}>
+                {banInfo.reason
+                  ? `Reason: ${banInfo.reason}`
+                  : 'Contact an admin if you think this is a mistake.'}
+              </Text>
+            </View>
+          </View>
+        ) : (
         <View style={styles.composer}>
           <TextInput
             style={styles.composerInput}
@@ -314,9 +503,30 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
             )}
           </Pressable>
         </View>
+        )}
       </KeyboardAvoidingView>
+
+      {/* Mounted only while a report is open, so the sheet's fields are
+          fresh for each report without a reset effect. */}
+      {reportTarget && (
+        <ReportMessageSheet
+          visible
+          senderName={reportTarget.sender?.name}
+          messagePreview={reportTarget.content}
+          submitting={reporting}
+          onCancel={() => setReportTarget(null)}
+          onSubmit={submitReport}
+        />
+      )}
     </SafeAreaView>
   );
+}
+
+// Trim a message for the action-sheet title so a long paragraph does not
+// push the actions off a small screen.
+function truncate(text, max) {
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 // "10:24 am"
@@ -380,6 +590,15 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   timestampMine: { color: 'rgba(255,255,255,0.85)' },
+
+  bannedBar: {
+    flexDirection: 'row', alignItems: 'center', gap: space[3],
+    padding: space[4],
+    backgroundColor: colors.paperSoft,
+    borderTopWidth: 1, borderTopColor: colors.ruleSoft,
+  },
+  bannedTitle: { ...type.metaStrong },
+  bannedHint:  { ...type.meta, marginTop: 2 },
 
   // Composer
   composer: {

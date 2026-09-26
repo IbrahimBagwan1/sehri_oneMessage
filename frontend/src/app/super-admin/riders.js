@@ -77,40 +77,53 @@ export default function SuperAdminRidersScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   // --- Actions ---------------------------------------------------------
-  // ---- Multi-rider assign ------------------------------------------------
-  // Backend supports any number of assigned riders per day via
-  // delivery_stops. The old "assign today" replaced whichever single
-  // rider was there — new behavior: this button ADDS the rider to the
-  // current run, keeping everyone else assigned. Remove works the same
-  // way in reverse. Both flow through POST /delivery-run/assign which
-  // regenerates the stops from the full rider set (idempotent).
-  const currentlyAssignedIds = () =>
-    riders.filter((r) => r.is_assigned_today).map((r) => r.id);
-
-  const applyDeliveryRun = async (nextIds, action, riderName) => {
-    setBusyId(nextIds.length > 0 ? nextIds[0] : 'run'); // spin something
+  // ---- Start tonight's run -----------------------------------------------
+  // Coverage is standing configuration now (who captains which zone), set on
+  // the Delivery teams screen. This button does not choose anybody — it
+  // generates tonight's stops from that roster, handing every PG to the
+  // captain who covers its zone.
+  //
+  // It replaced a per-rider "add to today's run" toggle. That toggle looked
+  // like it was assigning work, but underneath it round-robined each zone's
+  // PGs across whoever was ticked, so two riders on one zone interleaved
+  // down the same streets and the answer to "who is bringing my food"
+  // changed every time it was pressed.
+  //
+  // Safe to press more than once: stops already marked delivered survive,
+  // and their PGs are not queued again.
+  const startRun = async () => {
+    setBusyId('run');
     try {
-      if (nextIds.length === 0) {
-        // Empty = wipe today's run entirely.
-        await trackingApi.unassignTodayRider();
-      } else {
-        const res = await trackingApi.assignDeliveryRun(nextIds);
-        // Surface orphaned PGs if any — those are zones the current
-        // rider set can't cover. Non-blocking notice.
-        const orphans = res?.data?.orphaned_pgs || [];
-        if (orphans.length > 0) {
-          Alert.alert(
-            'Some PGs uncovered',
-            `${orphans.length} PG${orphans.length === 1 ? '' : 's'} in the run has no eligible rider ` +
-            `(no assigned rider matches their zone). Assign a rider whose zone covers those PGs, ` +
-            `or a rider with "all zones" access.`,
-          );
-        }
+      const res = await trackingApi.assignDeliveryRun();
+      const d = res?.data || {};
+      const lines = [];
+      if (d.stop_count > 0) {
+        lines.push(
+          (d.captains || [])
+            .map((c) => `${c.name}: ${c.stop_count} stop${c.stop_count === 1 ? '' : 's'}, `
+              + `${c.packet_count} packet${c.packet_count === 1 ? '' : 's'}`)
+            .join('\n')
+        );
       }
+      const uncovered = d.uncovered_zones || [];
+      if (uncovered.length > 0) {
+        lines.push(
+          `Nobody covers ${uncovered.map((z) => z.name).join(', ')} — `
+          + `${(d.orphaned_pgs || []).length} PG(s) there have no delivery. `
+          + 'Assign those zones on the Delivery teams screen and press this again.'
+        );
+      }
+      const offDuty = d.skipped_captains?.off_duty || [];
+      if (offDuty.length > 0) lines.push(`Skipped (off duty): ${offDuty.join(', ')}`);
+
+      Alert.alert(
+        uncovered.length > 0 ? 'Run started — with gaps' : 'Run started',
+        lines.join('\n\n') || res?.message || 'Nothing to deliver yet.'
+      );
       await load(true);
     } catch (err) {
       Alert.alert(
-        `Couldn't ${action} ${riderName}`,
+        "Couldn't start the run",
         err?.response?.data?.message || 'Try again in a moment.'
       );
     } finally {
@@ -118,35 +131,25 @@ export default function SuperAdminRidersScreen() {
     }
   };
 
-  const handleAssign = (rider) => {
-    const already = currentlyAssignedIds();
-    if (already.includes(rider.id)) return; // no-op
-    const nextIds = [...already, rider.id];
-    const others = already.length;
+  const clearRun = () => {
     Alert.alert(
-      `Add ${rider.name} to today's run?`,
-      others === 0
-        ? "You'll be the only rider on today's run."
-        : `They'll deliver alongside ${others} other rider${others === 1 ? '' : 's'}. PGs are auto-split by zone.`,
+      "Clear tonight's run?",
+      'Every pending stop is removed. Deliveries already marked done are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Add', onPress: () => applyDeliveryRun(nextIds, 'add', rider.name) },
-      ]
-    );
-  };
-
-  const handleUnassign = (rider) => {
-    const already = currentlyAssignedIds();
-    const nextIds = already.filter((id) => id !== rider.id);
-    const remaining = nextIds.length;
-    Alert.alert(
-      `Remove ${rider.name} from today's run?`,
-      remaining === 0
-        ? "No riders will be assigned for today. The delivery run is cleared."
-        : `Their PGs get reassigned to the remaining ${remaining} rider${remaining === 1 ? '' : 's'} (auto-split by zone).`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: () => applyDeliveryRun(nextIds, 'remove', rider.name) },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            setBusyId('run');
+            try {
+              await trackingApi.unassignTodayRider();
+              await load(true);
+            } catch (err) {
+              Alert.alert("Couldn't clear", err?.response?.data?.message || 'Try again.');
+            } finally { setBusyId(null); }
+          },
+        },
       ]
     );
   };
@@ -224,6 +227,40 @@ export default function SuperAdminRidersScreen() {
         }
       />
 
+      {/* Tonight's run, and the roster it is generated from. Kept above the
+          rider list because these are the two things touched every night,
+          while the list below is edited a handful of times a year. */}
+      <View style={styles.runBar}>
+        <Pressable
+          onPress={() => router.push('/super-admin/delivery-teams')}
+          style={({ pressed }) => [styles.runLink, pressed && { opacity: 0.6 }]}
+          accessibilityRole="button"
+        >
+          <Ionicons name="people-outline" size={18} color={colors.teal} />
+          <Text style={styles.runLinkText}>Delivery teams</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.teal} />
+        </Pressable>
+        <View style={styles.runButtons}>
+          <Button
+            label="Start tonight's run"
+            onPress={startRun}
+            size="sm"
+            icon="navigate-outline"
+            disabled={busyId === 'run'}
+            loading={busyId === 'run'}
+            style={{ flex: 2 }}
+          />
+          <Button
+            label="Clear"
+            onPress={clearRun}
+            size="sm"
+            variant="secondary"
+            disabled={busyId === 'run'}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </View>
+
       {loading ? (
         <LoadingState message="Loading riders…" />
       ) : error ? (
@@ -259,8 +296,6 @@ export default function SuperAdminRidersScreen() {
               <RiderRow
                 rider={item}
                 busy={busyId === item.id}
-                onAssign={() => handleAssign(item)}
-                onUnassign={() => handleUnassign(item)}
                 onToggle={() => handleToggle(item)}
                 onDelete={() => handleDelete(item)}
               />
@@ -279,16 +314,17 @@ export default function SuperAdminRidersScreen() {
 }
 
 // -----------------------------------------------------------------------------
-// RiderRow — one rider card with quick actions.
+// RiderRow — one rider card.
 //
-// Assignment state: when this rider is today's assigned rider
-// (`is_assigned_today` set by the backend), the primary action swaps
-// from "Assign today" to a "Remove" button so the super admin can clear
-// the assignment without navigating anywhere. A green "Assigned today"
-// chip appears in the header so the state is obvious at a glance from
-// a scroll list of many riders.
+// This screen manages PEOPLE: create, activate, deactivate, delete, and the
+// manual GPS override. It no longer assigns work — who covers which zone is
+// standing configuration on the Delivery teams screen, and tonight's stops
+// are generated from it by the button in the header.
+//
+// `is_assigned_today` still marks whoever has stops tonight, so a glance
+// down the list shows who is actually out.
 // -----------------------------------------------------------------------------
-function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
+function RiderRow({ rider, busy, onToggle, onDelete }) {
   const status     = STATUS_TONE[rider.status] || STATUS_TONE.idle;
   const isAssigned = !!rider.is_assigned_today;
   return (
@@ -298,9 +334,15 @@ function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
         <View style={{ flex: 1 }}>
           <View style={styles.rowNameRow}>
             <Text style={styles.rowName}>{rider.name}</Text>
+            {rider.team_role === 'captain' && (
+              <Chip label="Captain" tone="teal" icon="car-outline" />
+            )}
+            {rider.team_role === 'helper' && (
+              <Chip label="Helper" tone="gold" icon="walk-outline" />
+            )}
             {isAssigned && (
               <Chip
-                label="Assigned today"
+                label="Out tonight"
                 tone="success"
                 icon="checkmark-circle-outline"
               />
@@ -314,34 +356,23 @@ function RiderRow({ rider, busy, onAssign, onUnassign, onToggle, onDelete }) {
       </View>
 
       <View style={styles.rowMeta}>
-        <MetaCell label="Zone" value={rider.zone?.name || 'All zones'} />
+        {rider.team_role === 'captain' ? (
+          <MetaCell
+            label="Covers"
+            value={rider.covered_zones?.length ? rider.covered_zones.join(', ') : 'No zones yet'}
+            wide
+          />
+        ) : rider.team_role === 'helper' ? (
+          <MetaCell label="Rides with" value={rider.captain_name || '—'} wide />
+        ) : (
+          <MetaCell label="Team" value="Not on a team" wide />
+        )}
+        {rider.helper_name ? <MetaCell label="Helper" value={rider.helper_name} /> : null}
         <MetaCell label="Linked user" value={rider.user_id ? 'Yes' : 'No'} />
         {rider.current_address ? <MetaCell label="Last seen" value={rider.current_address} wide /> : null}
       </View>
 
       <View style={styles.rowActions}>
-        {isAssigned ? (
-          <Button
-            label="Remove from run"
-            onPress={onUnassign}
-            size="sm"
-            icon="close-circle-outline"
-            disabled={busy}
-            loading={busy}
-            variant="secondary"
-            style={{ flex: 1 }}
-          />
-        ) : (
-          <Button
-            label="Add to run"
-            onPress={onAssign}
-            size="sm"
-            icon="add-circle-outline"
-            disabled={!rider.is_active || busy}
-            loading={busy}
-            style={{ flex: 1 }}
-          />
-        )}
         <Button
           label={rider.is_active ? 'Deactivate' : 'Activate'}
           onPress={onToggle}
@@ -528,6 +559,18 @@ const styles = StyleSheet.create({
   // Card gets a subtle green tint + border when this rider is the one
   // assigned for today. Deliberately understated — the "Assigned today"
   // chip carries the primary signal; this is peripheral reinforcement.
+  runBar: {
+    paddingHorizontal: space[4], paddingBottom: space[3],
+    borderBottomWidth: 1, borderBottomColor: colors.ruleFaint,
+    backgroundColor: colors.paper,
+  },
+  runLink: {
+    flexDirection: 'row', alignItems: 'center', gap: space[2],
+    paddingVertical: space[3],
+  },
+  runLinkText: { ...type.bodyStrong, color: colors.teal, flex: 1 },
+  runButtons: { flexDirection: 'row', gap: space[2] },
+
   rowAssignedCard: {
     borderColor: colors.success,
     borderWidth: 1,

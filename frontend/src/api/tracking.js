@@ -100,12 +100,54 @@ export const trackingApi = {
   // ---------------------------------------------------------------------------
 
   // POST /api/tracking/delivery-run/assign — super-admin only.
-  // Body: { rider_ids: [uuid, ...] }
-  assignDeliveryRun: async (riderIds) => {
-    const response = await apiClient.post('/tracking/delivery-run/assign', {
-      rider_ids: riderIds,
+  //
+  // Stops are generated from the standing roster (who captains which zone),
+  // so this takes no rider list in the normal case. Pass captainIds only to
+  // narrow tonight's run to the captains actually working — everyone else's
+  // zones then report as uncovered, which is the honest answer rather than
+  // silently handing their PGs to someone who never agreed to them.
+  assignDeliveryRun: async (captainIds) => {
+    const response = await apiClient.post(
+      '/tracking/delivery-run/assign',
+      captainIds && captainIds.length ? { captain_ids: captainIds } : {}
+    );
+    return response.data;
+    // { success, data: { poll_id, captain_count, stop_count, captains,
+    //                    orphaned_pgs, uncovered_zones, skipped_captains } }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Delivery teams — the standing roster. Super-admin only.
+  //
+  // A team is one captain, who drives and owns the route, plus zero or one
+  // helper, who rides along and shares it. Coverage is configured here once
+  // and reused every night; the run above is generated from it.
+  // ---------------------------------------------------------------------------
+
+  // GET /api/tracking/teams
+  getTeamRoster: async () => {
+    const response = await apiClient.get('/tracking/teams');
+    return response.data;
+    // { success, data: { captains, uncovered_zones, available_riders, all_zones } }
+  },
+
+  // PUT /api/tracking/teams/:captainId/zones
+  // Replaces the captain's zone set outright — send the full list you want
+  // them to end up with. 409 if a zone already belongs to another captain.
+  setCaptainZones: async (captainId, zoneIds) => {
+    const response = await apiClient.put(`/tracking/teams/${captainId}/zones`, {
+      zone_ids: zoneIds,
     });
-    return response.data; // { success, data: { poll_id, rider_count, stop_count, orphaned_pgs } }
+    return response.data;
+  },
+
+  // PUT /api/tracking/teams/:captainId/helper
+  // null removes the helper and the captain runs solo.
+  setCaptainHelper: async (captainId, helperRiderId) => {
+    const response = await apiClient.put(`/tracking/teams/${captainId}/helper`, {
+      helper_rider_id: helperRiderId,
+    });
+    return response.data;
   },
 
   // GET /api/tracking/delivery-run — super-admin only.

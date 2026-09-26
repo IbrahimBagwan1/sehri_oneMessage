@@ -25,7 +25,12 @@ import {
 import { colors, radius, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
-// Rider deliveries — the stop queue for today's optimized route.
+// Rider deliveries — the stop queue for tonight's optimized route.
+//
+// The queue belongs to the CAPTAIN. A helper opening this screen sees the
+// identical list, and either of them can tick a stop: they are at the same
+// door at the same moment, so whoever has a hand free taps it. The row
+// updates for both, because there is one list, not two copies.
 //
 // One row per assigned PG (delivery_stop on the backend). Rows render
 // in `sort_order` — Google Directions' optimized visit order (recomputed
@@ -41,6 +46,7 @@ export default function DeliveriesScreen() {
   const markStopDelivered  = useRiderStore((s) => s.markStopDelivered);
   const undoStopDelivered  = useRiderStore((s) => s.undoStopDelivered);
   const stops              = useRiderStore((s) => s.myStops);
+  const team               = useRiderStore((s) => s.team);
   const summary            = useRiderStore((s) => s.stopsSummary);
   const loading            = useRiderStore((s) => s.loadingStops);
   const error              = useRiderStore((s) => s.stopsError);
@@ -254,6 +260,24 @@ export default function DeliveriesScreen() {
     <SafeAreaView style={styles.screen} edges={['top']}>
       <Header title="Deliveries" subtitle={`${s.pending_stops} of ${s.total_stops} left`} />
 
+      {/* Who this route belongs to. A helper needs to know these are their
+          captain's stops, not a list of their own — and a captain riding
+          with someone needs to know the ticks can come from either phone. */}
+      {team && team.my_role !== 'unassigned' && (team.helper || team.my_role === 'helper') && (
+        <View style={styles.teamStrip}>
+          <Ionicons
+            name={team.my_role === 'helper' ? 'walk-outline' : 'car-outline'}
+            size={16}
+            color={colors.tealDark}
+          />
+          <Text style={styles.teamStripText}>
+            {team.my_role === 'helper'
+              ? `Helping ${team.captain?.name} — this is your team's shared route`
+              : `Riding with ${team.helper?.name} — either of you can mark a stop`}
+          </Text>
+        </View>
+      )}
+
       {/* Summary strip — matches the aesthetic of admin dashboards' StatCells */}
       <View style={styles.summaryStrip}>
         <SummaryCell label="Stops"       value={s.pending_stops}    total={s.total_stops}       color={allDone ? colors.success : colors.tealDark} />
@@ -298,6 +322,13 @@ function SummaryCell({ label, value, total, color, suffix }) {
 }
 
 const styles = StyleSheet.create({
+  teamStrip: {
+    flexDirection: 'row', alignItems: 'center', gap: space[2],
+    paddingHorizontal: space[4], paddingVertical: space[2],
+    backgroundColor: colors.tealSoft,
+    borderBottomWidth: 1, borderBottomColor: colors.tealBorder,
+  },
+  teamStripText: { ...type.meta, color: colors.tealDark, flex: 1 },
   screen: { flex: 1, backgroundColor: colors.paperSoft },
 
   summaryStrip: {

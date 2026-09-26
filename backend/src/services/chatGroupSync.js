@@ -132,6 +132,11 @@ const reconcileGroup = async (group, zoneIndex) => {
   const existingByKey = new Map(existing.map((m) => [key(m.user_type, m.user_id), m]));
 
   // ADD anyone entitled who isn't in the room yet.
+  //
+  // A ban lives on the membership row, so nothing here may clear one. The
+  // update below touches `source` only, and the insert only ever runs for
+  // someone with no row at all — a banned member always has one, since
+  // banning writes to it rather than deleting it.
   const toInsert = [];
   let promoted = 0;
   for (const [k, who] of wanted) {
@@ -152,8 +157,15 @@ const reconcileGroup = async (group, zoneIndex) => {
 
   // REMOVE auto members who are no longer entitled — left the zone, lost
   // their admin role, were deactivated. Manual members are not ours to touch.
+  //
+  // A BANNED member is never swept, even when entitlement lapses. Otherwise
+  // a ban could be laundered: leave the zone, let the reconciler delete the
+  // row, come back, and the reconciler inserts a fresh unbanned one. The
+  // row is cheap and it is the only place the ban is recorded.
   const staleIds = existing
-    .filter((m) => m.source === 'auto' && !wanted.has(key(m.user_type, m.user_id)))
+    .filter((m) => m.source === 'auto'
+      && !m.is_banned
+      && !wanted.has(key(m.user_type, m.user_id)))
     .map((m) => m.id);
   if (staleIds.length) {
     await ChatGroupMember.destroy({ where: { id: { [Op.in]: staleIds } } });

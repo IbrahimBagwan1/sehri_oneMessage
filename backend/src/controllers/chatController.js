@@ -5,6 +5,7 @@ const db = require('../models');
 const { success, error } = require('../utils/response');
 const { FORMER_MEMBER_LABEL } = require('../utils/memberDisplay');
 const chatGroupSync = require('../services/chatGroupSync');
+const moderation = require('../services/chatModerationService');
 const logger = require('../utils/logger');
 const {
   emitNewMessage,
@@ -14,6 +15,7 @@ const {
 
 const {
   ChatGroup, ChatGroupMember, ChatGroupZone, ChatMessage,
+  ChatMessageReport, ChatUserBlock,
   User, Admin, SuperAdmin, Location,
 } = db;
 
@@ -103,6 +105,30 @@ const resolveMemberProfiles = async (members) => {
 };
 
 /**
+ * A Sequelize where-fragment excluding every sender this actor has blocked.
+ *
+ * Blocks are polymorphic, so "not this id" is not enough on its own — a
+ * user and an admin could in principle share a uuid. Each blocked identity
+ * becomes an AND NOT (sender_id = x AND sender_type = y).
+ *
+ * Returns {} for an actor who has blocked nobody, which is almost everyone,
+ * so the common case adds nothing to the query at all.
+ */
+const buildBlockExclusion = (blockedSet) => {
+  if (!blockedSet || blockedSet.size === 0) return {};
+  const clauses = [];
+  for (const key of blockedSet) {
+    const idx = key.indexOf(':');
+    const type = key.slice(0, idx);
+    const id = key.slice(idx + 1);
+    clauses.push({
+      [Op.not]: { sender_id: id, sender_type: type },
+    });
+  }
+  return { [Op.and]: clauses };
+};
+
+/**
  * Shapes a ChatMessage row into the response object sent to clients
  * and emitted via Socket.IO.
  */
@@ -144,6 +170,13 @@ const getMyGroups = async (req, res, next) => {
     const groupIds = memberships.map((m) => m.group_id);
     const membershipMap = Object.fromEntries(memberships.map((m) => [m.group_id, m]));
 
+    // A blocked person must not reach the blocker through the group list
+    // either. Without this their message is still the preview line under
+    // the group name, and still counts toward the unread badge — so the
+    // blocker is pulled into the room by someone they chose not to see.
+    const blocked = await moderation.blockedByActor(actorId, actorType);
+    const blockClause = buildBlockExclusion(blocked);
+
     // Fetch group records (active only)
     const groups = await ChatGroup.findAll({
       where: { id: groupIds, is_active: true },
@@ -161,13 +194,15 @@ const getMyGroups = async (req, res, next) => {
           where: {
             group_id: group.id,
             is_deleted: false,
+            ...blockClause,
             ...(lastReadAt ? { created_at: { [Op.gt]: lastReadAt } } : {}),
           },
         });
 
-        // Latest message preview
+        // Latest message preview — the newest one this member can see,
+        // which is not necessarily the newest one in the group.
         const latestMessage = await ChatMessage.findOne({
-          where: { group_id: group.id },
+          where: { group_id: group.id, ...blockClause },
           order: [['created_at', 'DESC']],
           attributes: ['id', 'sender_id', 'sender_type', 'content', 'is_deleted', 'created_at'],
         });
@@ -194,6 +229,10 @@ const getMyGroups = async (req, res, next) => {
           created_by: group.created_by,
           unread_count: unreadCount,
           latest_message: latestPreview,
+          // So the room can open with the composer already closed rather
+          // than letting someone type a paragraph into a 403.
+          is_banned: !!membership.is_banned,
+          ban_reason: membership.is_banned ? membership.ban_reason : null,
           updated_at: group.updated_at,
         };
       })
@@ -346,6 +385,12 @@ const getGroupDetails = async (req, res, next) => {
         is_default: group.is_default,
         zones,
         members: enrichedMembers,
+        // The caller's own posting state. Surfaced here rather than making
+        // the chat room fetch the whole group list to find one boolean.
+        my_membership: {
+          is_banned: !!membership.is_banned,
+          ban_reason: membership.is_banned ? membership.ban_reason : null,
+        },
         created_at: group.created_at,
       },
     });
@@ -387,8 +432,17 @@ const getMessages = async (req, res, next) => {
       return error(res, { statusCode: 403, message: 'You are not a member of this group' });
     }
 
+    // Blocked senders are excluded IN THE QUERY, not after it. Filtering
+    // the page afterwards would silently shrink pages — a page of 30 that
+    // returns 24 looks to the client like the end of the history — and
+    // would still have loaded the content we promised never to show.
+    //
+    // See services/chatModerationService.js for why this is server-side.
+    const blocked = await moderation.blockedByActor(actorId, actorType);
+    const blockClause = buildBlockExclusion(blocked);
+
     const { count, rows: messages } = await ChatMessage.findAndCountAll({
-      where: { group_id: groupId },
+      where: { group_id: groupId, ...blockClause },
       order: [['created_at', 'DESC']],
       limit,
       offset,
@@ -494,6 +548,20 @@ const sendMessage = async (req, res, next) => {
     });
     if (!membership) {
       return error(res, { statusCode: 403, message: 'You are not a member of this group' });
+    }
+
+    // A moderator has banned this member from posting here. They keep
+    // reading the room — cutting their access to a zone's delivery
+    // announcements would punish them with something unrelated to what
+    // they did — but the composer is closed.
+    if (membership.is_banned) {
+      return error(res, {
+        statusCode: 403,
+        code: 'BANNED_FROM_GROUP',
+        message: membership.ban_reason
+          ? `You can no longer post in this group. Reason: ${membership.ban_reason}`
+          : 'You can no longer post in this group. Contact an admin if you think this is a mistake.',
+      });
     }
 
     // Validate reply_to_id if provided
@@ -1001,7 +1069,292 @@ const listAdmins = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// POST /api/chat/groups/:id/messages/:msgId/report
+// Body: { reason?, block_sender? }
+// Access: group members only
+//
+// Flags a message for moderation, and optionally blocks its sender in the
+// same action — the two-things-one-tap shape the reference flow uses,
+// because someone who has just been shown something abusive should not have
+// to find a second screen to stop seeing it.
+//
+// WHAT GETS STORED, AND WHY A SNAPSHOT
+// deleteMessage overwrites content with '[deleted]'. Storing only a message
+// id would mean a reported sender could erase the evidence with two taps,
+// and the moderator would open the queue to a blank row. The text and the
+// sender's name are copied in here and never updated.
+//
+// The reported person is told nothing. No socket event, no push, no change
+// they can observe — the reference flow's promise that "this person won't
+// know you reported them" is a promise this endpoint has to keep.
+// ---------------------------------------------------------------------------
+const reportMessage = async (req, res, next) => {
+  try {
+    const { id: groupId, msgId } = req.params;
+    const { reason, block_sender: blockSender } = req.body || {};
+    const { actorId, actorType } = getActor(req.auth);
+
+    const group = await ChatGroup.findOne({ where: { id: groupId, is_active: true } });
+    if (!group) {
+      return error(res, { statusCode: 404, message: 'Group not found' });
+    }
+
+    const membership = await ChatGroupMember.findOne({
+      where: { group_id: groupId, user_id: actorId, user_type: actorType },
+    });
+    if (!membership) {
+      return error(res, { statusCode: 403, message: 'You are not a member of this group' });
+    }
+
+    const message = await ChatMessage.findOne({ where: { id: msgId, group_id: groupId } });
+    if (!message) {
+      return error(res, { statusCode: 404, message: 'Message not found' });
+    }
+
+    // Reporting yourself is almost certainly a mis-tap, and it would put
+    // noise in a queue that exists to surface real problems.
+    if (message.sender_id === actorId && message.sender_type === actorType) {
+      return error(res, {
+        statusCode: 422,
+        message: 'You cannot report your own message.',
+      });
+    }
+
+    const senderProfile = await resolveProfile(message.sender_id, message.sender_type);
+
+    // Idempotent: reporting twice is the same single report. The unique
+    // index enforces it; this check is what turns a duplicate-key crash
+    // into a calm "already reported".
+    const existing = await ChatMessageReport.findOne({
+      where: { message_id: message.id, reporter_id: actorId, reporter_type: actorType },
+    });
+
+    let report = existing;
+    if (!existing) {
+      report = await ChatMessageReport.create({
+        message_id: message.id,
+        group_id: groupId,
+        reporter_id: actorId,
+        reporter_type: actorType,
+        reported_user_id: message.sender_id,
+        reported_user_type: message.sender_type,
+        reason: (reason || '').trim() || null,
+        // Frozen evidence. If the message was already deleted before the
+        // report, say so plainly rather than storing the '[deleted]'
+        // placeholder as though it were what someone objected to.
+        message_snapshot: message.is_deleted
+          ? '[the sender deleted this message before it was reported]'
+          : message.content,
+        reported_user_name_snapshot: senderProfile?.name || null,
+        reported_at: new Date(),
+        status: 'pending',
+      });
+      logger.info(
+        `[moderation] ${actorType}:${actorId} reported message ${message.id} `
+        + `by ${message.sender_type}:${message.sender_id} in group ${groupId}`
+      );
+    }
+
+    // Same action, both outcomes — see the note above.
+    let blocked = false;
+    if (blockSender) {
+      const [, created] = await ChatUserBlock.findOrCreate({
+        where: {
+          blocker_id: actorId,
+          blocker_type: actorType,
+          blocked_id: message.sender_id,
+          blocked_type: message.sender_type,
+        },
+        defaults: {
+          blocker_id: actorId,
+          blocker_type: actorType,
+          blocked_id: message.sender_id,
+          blocked_type: message.sender_type,
+        },
+      });
+      blocked = true;
+      if (created) {
+        logger.info(
+          `[moderation] ${actorType}:${actorId} blocked `
+          + `${message.sender_type}:${message.sender_id}`
+        );
+      }
+    }
+
+    return success(res, {
+      statusCode: existing ? 200 : 201,
+      message: existing
+        ? 'You have already reported this message. Our team is reviewing it.'
+        : 'Report sent to our moderation team.',
+      data: {
+        report_id: report.id,
+        already_reported: !!existing,
+        blocked_sender: blocked,
+        // Echoed so the client can say "you will no longer see messages
+        // from X" without holding the name itself.
+        sender_name: senderProfile?.name || null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/chat/blocks
+// Body: { user_id, user_type }
+// Access: any authenticated member
+//
+// Block someone. One-way and silent — see the long note at the top of
+// services/chatModerationService.js for why one-way rather than mutual.
+//
+// Idempotent: blocking someone already blocked returns 200, not a duplicate
+// row and not an error.
+// ---------------------------------------------------------------------------
+const blockUser = async (req, res, next) => {
+  try {
+    const { user_id: targetId, user_type: targetType } = req.body || {};
+    const { actorId, actorType } = getActor(req.auth);
+
+    if (!targetId || !['user', 'admin', 'super_admin'].includes(targetType)) {
+      return error(res, {
+        statusCode: 400,
+        message: 'user_id and a valid user_type are required.',
+      });
+    }
+
+    if (targetId === actorId && targetType === actorType) {
+      return error(res, { statusCode: 422, message: 'You cannot block yourself.' });
+    }
+
+    const profile = await resolveProfile(targetId, targetType);
+    if (profile?.is_former_member) {
+      return error(res, {
+        statusCode: 404,
+        message: 'That account no longer exists, so there is nothing to block.',
+      });
+    }
+
+    const [, created] = await ChatUserBlock.findOrCreate({
+      where: {
+        blocker_id: actorId,
+        blocker_type: actorType,
+        blocked_id: targetId,
+        blocked_type: targetType,
+      },
+      defaults: {
+        blocker_id: actorId,
+        blocker_type: actorType,
+        blocked_id: targetId,
+        blocked_type: targetType,
+      },
+    });
+
+    if (created) {
+      logger.info(`[moderation] ${actorType}:${actorId} blocked ${targetType}:${targetId}`);
+    }
+
+    return success(res, {
+      statusCode: created ? 201 : 200,
+      message: created
+        ? `You will no longer see messages from ${profile.name}.`
+        : `${profile.name} is already blocked.`,
+      data: { blocked: true, user_id: targetId, user_type: targetType, name: profile.name },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/chat/blocks/:userId?user_type=user|admin|super_admin
+// Access: any authenticated member
+//
+// Unblock. Their past messages reappear immediately on the next fetch —
+// nothing was deleted, only hidden.
+// ---------------------------------------------------------------------------
+const unblockUser = async (req, res, next) => {
+  try {
+    const { userId: targetId } = req.params;
+    const targetType = req.query.user_type;
+    const { actorId, actorType } = getActor(req.auth);
+
+    if (!['user', 'admin', 'super_admin'].includes(targetType)) {
+      return error(res, {
+        statusCode: 400,
+        message: 'user_type query parameter is required (user, admin, or super_admin).',
+      });
+    }
+
+    const removed = await ChatUserBlock.destroy({
+      where: {
+        blocker_id: actorId,
+        blocker_type: actorType,
+        blocked_id: targetId,
+        blocked_type: targetType,
+      },
+    });
+
+    // Idempotent: unblocking someone who was not blocked is a no-op with a
+    // 200, not a 404 — the caller's intent is satisfied either way.
+    return success(res, {
+      statusCode: 200,
+      message: removed ? 'Unblocked. Their messages are visible again.' : 'They were not blocked.',
+      data: { unblocked: removed > 0 },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/chat/blocks
+// Access: any authenticated member
+//
+// The caller's own blocked list, for the management screen. Also read by
+// the client at chat-room mount so live socket messages from a blocked
+// sender can be dropped before render — history is already filtered
+// server-side, but a room broadcast has no per-recipient view.
+// ---------------------------------------------------------------------------
+const listBlockedUsers = async (req, res, next) => {
+  try {
+    const { actorId, actorType } = getActor(req.auth);
+
+    const rows = await ChatUserBlock.findAll({
+      where: { blocker_id: actorId, blocker_type: actorType },
+      order: [['created_at', 'DESC']],
+    });
+
+    const blocked = await Promise.all(
+      rows.map(async (r) => {
+        const profile = await resolveProfile(r.blocked_id, r.blocked_type);
+        return {
+          user_id: r.blocked_id,
+          user_type: r.blocked_type,
+          name: profile?.name || FORMER_MEMBER_LABEL,
+          is_former_member: !!profile?.is_former_member,
+          blocked_at: r.created_at,
+        };
+      })
+    );
+
+    return success(res, {
+      statusCode: 200,
+      message: 'Blocked users fetched',
+      data: { blocked, total: blocked.length },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
+  // Trust & safety
+  reportMessage,
+  blockUser,
+  unblockUser,
+  listBlockedUsers,
   listZones,
   addZone,
   removeZone,

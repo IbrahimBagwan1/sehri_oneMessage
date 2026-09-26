@@ -103,4 +103,96 @@ export const chatApi = {
     const response = await apiClient.delete(`/chat/groups/${groupId}/zones/${zoneId}`);
     return response.data;
   },
+
+  // ---------------------------------------------------------------------------
+  // Trust & safety — reporting and blocking.
+  //
+  // Both app stores require an app with user messaging to offer in-app
+  // reporting of abusive content and in-app blocking of abusive users.
+  // ---------------------------------------------------------------------------
+
+  // POST /api/chat/groups/:id/messages/:msgId/report
+  // Body: { reason?, block_sender? }
+  //
+  // Idempotent — reporting the same message twice returns 200 with
+  // already_reported: true rather than creating a second report.
+  // The reported person is told nothing.
+  reportMessage: async (groupId, msgId, { reason, blockSender } = {}) => {
+    const response = await apiClient.post(
+      `/chat/groups/${groupId}/messages/${msgId}/report`,
+      { reason: reason || undefined, block_sender: !!blockSender }
+    );
+    return response.data; // { data: { report_id, already_reported, blocked_sender, sender_name } }
+  },
+
+  // GET /api/chat/blocks — the caller's own blocked list.
+  // Also read when a chat room mounts: history is filtered server-side, but
+  // a live socket broadcast goes to a room and has no per-recipient view,
+  // so the client drops incoming messages from blocked senders too.
+  getBlockedUsers: async () => {
+    const response = await apiClient.get('/chat/blocks');
+    return response.data; // { data: { blocked: [...], total } }
+  },
+
+  // POST /api/chat/blocks — Body: { user_id, user_type }
+  // One-way and silent: they are never told, and their own view is unchanged.
+  blockUser: async (userId, userType) => {
+    const response = await apiClient.post('/chat/blocks', {
+      user_id: userId, user_type: userType,
+    });
+    return response.data;
+  },
+
+  // DELETE /api/chat/blocks/:userId?user_type=...
+  // Their past messages reappear — nothing was deleted, only hidden.
+  unblockUser: async (userId, userType) => {
+    const response = await apiClient.delete(`/chat/blocks/${userId}`, {
+      params: { user_type: userType },
+    });
+    return response.data;
+  },
+};
+
+// -----------------------------------------------------------------------------
+// chatModerationApi — /api/admin/chat/*
+//
+// The moderation queue. Admin or super admin: an admin sees reports from
+// groups covering their own zone, a super admin sees everything. That
+// scoping is enforced server-side, not here.
+// -----------------------------------------------------------------------------
+export const chatModerationApi = {
+  // GET /api/admin/chat/reports?status=pending|reviewed|all&page=&limit=
+  listReports: async ({ status = 'pending', page = 1, limit = 20 } = {}) => {
+    const response = await apiClient.get('/admin/chat/reports', {
+      params: { status, page, limit },
+    });
+    return response.data; // { data: { reports, total, pending_count, page, limit } }
+  },
+
+  // PATCH /api/admin/chat/reports/:id
+  // Body: { delete_message?, ban_user?, note? }
+  // Sending neither flag marks it reviewed with no action, which is a real
+  // outcome and the one most reports deserve.
+  resolveReport: async (reportId, { deleteMessage, banUser, note } = {}) => {
+    const response = await apiClient.patch(`/admin/chat/reports/${reportId}`, {
+      delete_message: !!deleteMessage,
+      ban_user: !!banUser,
+      note: note || undefined,
+    });
+    return response.data;
+  },
+
+  // GET /api/admin/chat/bans — everyone currently banned
+  listBans: async () => {
+    const response = await apiClient.get('/admin/chat/bans');
+    return response.data;
+  },
+
+  // DELETE /api/admin/chat/groups/:groupId/bans/:userId?user_type=...
+  liftBan: async (groupId, userId, userType) => {
+    const response = await apiClient.delete(`/admin/chat/groups/${groupId}/bans/${userId}`, {
+      params: { user_type: userType },
+    });
+    return response.data;
+  },
 };

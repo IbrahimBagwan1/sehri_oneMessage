@@ -15,6 +15,7 @@ const prayerRoutes = require('./routes/prayers');
 const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
 const trackingRoutes = require('./routes/tracking');   // rider management + live tracking
 const chatRoutes = require('./routes/chat');           // group chat + Socket.IO backed messaging
+const adminChatRoutes = require('./routes/adminChat'); // chat moderation queue (reports + bans)
 const donationsRoutes = require('./routes/donations'); // user-facing donation submit + history
 const adminDonationsRoutes = require('./routes/adminDonations'); // super-admin donation review
 const feedbackRoutes = require('./routes/feedback');   // user feedback + admin review
@@ -77,6 +78,7 @@ app.use('/api/prayers', prayerRoutes);
 app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
 app.use('/api/tracking', trackingRoutes);    // rider login, live tracking, rider management
 app.use('/api/chat', chatRoutes);            // group chat rooms + REST message history
+app.use('/api/admin/chat', adminChatRoutes); // moderation queue - reported messages + bans
 app.use('/api/donations', donationsRoutes);         // user donation submit + own history
 app.use('/api/admin/donations', adminDonationsRoutes); // super-admin donation review
 app.use('/api/feedback', feedbackRoutes);           // user feedback submission + admin review

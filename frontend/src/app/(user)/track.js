@@ -138,6 +138,14 @@ function TrackScreenAuthed() {
   // Initial snapshot from REST (so the map isn't empty for the first
   // second before the socket kicks in).
   const [rider,      setRider]      = useState(null);
+  // Who is actually bringing it: { captain, helper, tracked_rider_id }.
+  //
+  // Several captains can be out at once, each covering their own zones, so
+  // the backend resolves this from the delivery stop at THIS resident's PG
+  // rather than from "today's rider". When the team has a helper it is the
+  // helper's phone on the map, because the captain is driving — so the
+  // marker and the names beside it are not always the same person.
+  const [team,       setTeam]       = useState(null);
   const [userPin,    setUserPin]    = useState(null); // shared PG coord — { latitude, longitude }
   const [route,      setRoute]      = useState(null); // [{latitude,longitude}, ...] — shared per destination
   const [loading,    setLoading]    = useState(true);
@@ -172,6 +180,7 @@ function TrackScreenAuthed() {
       if (res.success) {
         const r = res.data.rider;
         setRider(r);
+        setTeam(res.data?.team || null);
         if (r?.eta_minutes != null) setEta(r.eta_minutes);
         // The delivery_stop for this user's PG comes with the snapshot
         // now (multi-rider resolution) — surface its status so the
@@ -273,6 +282,15 @@ function TrackScreenAuthed() {
         // copy — matches the existing done-status pattern.
         setRider((prev) => (prev ? { ...prev, status: 'done' } : prev));
       });
+
+      // The rider undid a mistap. Without this the resident is left on a
+      // "delivered" screen for food that is still coming — the worse of
+      // the two wrong states, and the reason undo exists at all.
+      s.on('stop_reopened', () => {
+        if (!mounted) return;
+        setStopStatus('pending');
+        setRider((prev) => (prev ? { ...prev, status: 'delivering' } : prev));
+      });
     })();
 
     return () => {
@@ -281,6 +299,7 @@ function TrackScreenAuthed() {
         currentSocket.off('rider_position');
         currentSocket.off('eta_update');
         currentSocket.off('stop_delivered');
+        currentSocket.off('stop_reopened');
       }
       unsubscribeTracking();
     };
@@ -395,8 +414,8 @@ function TrackScreenAuthed() {
           title={isDelivered ? 'Sehri delivered' : 'No active delivery'}
           message={
             isDelivered
-              ? (rider?.name
-                  ? `${rider.name} marked your Sehri as delivered. Jazak-Allahu-khayran.`
+              ? ((team?.helper?.name || rider?.name)
+                  ? `${team?.helper?.name || rider.name} marked your Sehri as delivered. Jazak-Allahu-khayran.`
                   : 'Your Sehri has been delivered.')
               : "The rider hasn't started yet. Check back closer to Sehri time."
           }
@@ -606,14 +625,27 @@ function TrackScreenAuthed() {
           </View>
         )}
 
-        {/* Rider identity row */}
+        {/* Who is bringing it.
+            The marker follows one phone, but a pair is two people, and the
+            one who knocks is usually the helper. Naming both means the
+            person at the door is someone the resident was told about. */}
         <View style={styles.riderRow}>
           <View style={styles.riderAvatar}>
             <Ionicons name="person" size={18} color={colors.tealDark} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.riderName}>{rider.name}</Text>
-            {rider.zone?.name ? <Text style={styles.riderZone}>Serving {rider.zone.name}</Text> : null}
+            <Text style={styles.riderName}>
+              {team?.helper
+                ? `${team.captain?.name || rider.name} & ${team.helper.name}`
+                : rider.name}
+            </Text>
+            {team?.helper ? (
+              <Text style={styles.riderZone}>
+                {team.helper.name} is bringing it to your door
+              </Text>
+            ) : rider.zone?.name ? (
+              <Text style={styles.riderZone}>Serving {rider.zone.name}</Text>
+            ) : null}
           </View>
         </View>
 
