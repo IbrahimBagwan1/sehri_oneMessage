@@ -73,20 +73,21 @@ const isDemoPassword = (password) =>
 // Sandbox membership — read on hot paths, so cached briefly.
 // ---------------------------------------------------------------------------
 const CACHE_MS = 60 * 1000;
-let sandboxCache = { ids: new Set(), zoneIds: new Set(), at: 0 };
+let sandboxCache = { ids: new Set(), zoneIds: new Set(), zoneKeys: [], at: 0 };
 
-const invalidate = () => { sandboxCache = { ids: new Set(), zoneIds: new Set(), at: 0 }; };
+const invalidate = () => { sandboxCache = { ids: new Set(), zoneIds: new Set(), zoneKeys: [], at: 0 }; };
 
 const loadSandbox = async () => {
   if (Date.now() - sandboxCache.at < CACHE_MS) return sandboxCache;
   const rows = await Location.findAll({
     where: { is_sandbox: true },
-    attributes: ['id', 'type'],
+    attributes: ['id', 'type', 'zone_key'],
     raw: true,
   });
   sandboxCache = {
     ids: new Set(rows.map((r) => r.id)),
     zoneIds: new Set(rows.filter((r) => r.type === 'zone').map((r) => r.id)),
+    zoneKeys: rows.filter((r) => r.type === 'zone' && r.zone_key).map((r) => r.zone_key),
     at: Date.now(),
   };
   return sandboxCache;
@@ -98,6 +99,22 @@ const sandboxLocationIds = async () => (await loadSandbox()).ids;
 const sandboxZoneIds = async () => (await loadSandbox()).zoneIds;
 const isSandboxLocation = async (locationId) =>
   !!locationId && (await loadSandbox()).ids.has(locationId);
+/** zone_key of every sandbox zone — what poll_responses.zone records. */
+const sandboxZoneKeys = async () => (await loadSandbox()).zoneKeys;
+
+/**
+ * Refuse to turn a sandbox (App Review) account into staff. The demo member
+ * is an approved user, so it appears in the super admin's user search; one
+ * mis-tap would otherwise give App Review a real admin role.
+ */
+const assertNotSandboxUser = async (user) => {
+  if (user && (isDemoPhone(user.phone) || await isSandboxLocation(user.location_id))) {
+    const err = new Error('This is the App Review demo account. It cannot be given a staff role.');
+    err.status = 409;
+    err.code = 'SANDBOX_ACCOUNT';
+    throw err;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Provisioning
@@ -291,6 +308,8 @@ module.exports = {
   sandboxLocationIds,
   sandboxZoneIds,
   isSandboxLocation,
+  sandboxZoneKeys,
+  assertNotSandboxUser,
   excludeSandboxLocations,
   invalidate,
 };

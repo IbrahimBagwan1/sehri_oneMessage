@@ -180,7 +180,7 @@ const riderLogin = async (req, res, next) => {
 
     // Same per-phone lockout as the member sign-in — one counter per number,
     // whichever screen the guesses come through.
-    await loginThrottle.assertNotLocked(phone);
+    await loginThrottle.assertNotLocked(phone, req.ip);
 
     // The App Review demo rider repairs itself on a sign-in with the
     // documented password. See services/reviewDemoService.js.
@@ -203,10 +203,10 @@ const riderLogin = async (req, res, next) => {
 
     const isPasswordValid = await bcrypt.compare(password, rider.password);
     if (!isPasswordValid) {
-      await loginThrottle.recordFailure(phone);
+      await loginThrottle.recordFailure(phone, req.ip);
       return error(res, { statusCode: 401, message: 'Invalid phone or password', code: 'INVALID_CREDENTIALS' });
     }
-    await loginThrottle.recordSuccess(phone);
+    await loginThrottle.recordSuccess(phone, req.ip);
 
     if (!rider.is_active) {
       return error(res, {
@@ -282,9 +282,15 @@ const createRider = async (req, res, next) => {
 
     if (user_id) {
       // --- Mode A: promote an existing user ---
-      const user = await User.findByPk(user_id, { attributes: ['id', 'name', 'phone', 'status'] });
+      const user = await User.findByPk(user_id, { attributes: ['id', 'name', 'phone', 'status', 'location_id'] });
       if (!user) {
         return error(res, { statusCode: 404, message: 'User not found' });
+      }
+      try {
+        await reviewDemo.assertNotSandboxUser(user);
+      } catch (err) {
+        if (err.code !== 'SANDBOX_ACCOUNT') throw err;
+        return error(res, { statusCode: 409, message: err.message, code: err.code });
       }
       if (user.status !== 'approved') {
         return error(res, {
@@ -1382,7 +1388,11 @@ const getDeliveryList = async (req, res, next) => {
     //   (response = 'yes' AND NOT (is_special_case = true AND special_case_type = 'dont_want' AND sehri_allowed = 'approved'))
     //   OR
     //   (is_special_case = true AND special_case_type = 'want' AND sehri_allowed = 'approved')
-    const userWhere = stopLocationIds ? { location_id: { [Op.in]: stopLocationIds } } : undefined;
+    // The legacy (stop-less) path lists every deliverable response, so the
+    // App Review sandbox has to be excluded explicitly there.
+    const userWhere = stopLocationIds
+      ? { location_id: { [Op.in]: stopLocationIds } }
+      : await reviewDemo.excludeSandboxLocations('location_id');
     const responses = await PollResponse.findAll({
       where: {
         poll_id: poll.id,
@@ -1514,6 +1524,9 @@ const deleteRider = async (req, res, next) => {
       attributes: ['name'],
     });
 
+    // Stops this rider ticked as a helper belong to their captain; keep the
+    // delivery, forget the hand (FK is SET NULL too — migration 20260928000004).
+    await DeliveryStop.update({ delivered_by_rider_id: null }, { where: { delivered_by_rider_id: id } });
     await rider.destroy();
     await authSessionService.revokeSubjects([{ type: 'rider', id }], 'account_deleted');
 
