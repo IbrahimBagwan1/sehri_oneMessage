@@ -27,6 +27,7 @@ import {
   KeyboardAvoidingView
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super-admin only — create a new chat group.
@@ -99,7 +100,7 @@ function ChatCreateGroupInner({ router }) {
       setUsers(Array.isArray(userRes?.data) ? userRes.data : []);
       setZones(zoneRes?.data?.zones || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load the member list.");
+      setError(describeError(err, "Couldn't load the member list."));
     } finally {
       setLoading(false);
     }
@@ -169,7 +170,7 @@ function ChatCreateGroupInner({ router }) {
         });
       }
     } catch (err) {
-      Alert.alert("Couldn't create group", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't create group", describeError(err, 'Try again in a moment.'));
     } finally {
       setCreating(false);
     }
@@ -264,7 +265,7 @@ function ChatCreateGroupInner({ router }) {
                   </Text>
                 </View>
                 {totalSelected > 0 && (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => { setSelectedAdmins({}); setSelectedUsers({}); }}
                     hitSlop={8}
                     accessibilityLabel="Clear selection"

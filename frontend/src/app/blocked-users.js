@@ -21,6 +21,7 @@ import {
   LoadingState,
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // Blocked people — the undo for a block.
@@ -52,7 +53,7 @@ export default function BlockedUsersScreen() {
       const res = await chatApi.getBlockedUsers();
       if (res.success) setBlocked(res.data.blocked || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your blocked list.");
+      setError(describeError(err, "Couldn't load your blocked list."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -79,7 +80,7 @@ export default function BlockedUsersScreen() {
                 (b) => !(b.user_id === person.user_id && b.user_type === person.user_type)
               ));
             } catch (err) {
-              Alert.alert("Couldn't unblock", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't unblock", describeError(err, 'Try again.'));
             } finally {
               setBusyKey(null);
             }

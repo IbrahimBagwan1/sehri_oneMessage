@@ -30,6 +30,7 @@ import {
   KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — Zone admin management + promote a user to admin / super admin.
@@ -107,7 +108,7 @@ export default function SuperAdminAdminsScreen() {
       const res = await apiClient.get('/admin/list-admins');
       if (res.data.success) setAdmins(res.data.data || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load zone admins.");
+      setError(describeError(err, "Couldn't load zone admins."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -128,7 +129,7 @@ export default function SuperAdminAdminsScreen() {
         setSearch({ q, results: res?.data?.users || [], error: null });
       } catch (err) {
         if (searchReqId.current !== reqId) return;
-        setSearch({ q, results: [], error: err?.response?.data?.message || "Couldn't run the search." });
+        setSearch({ q, results: [], error: describeError(err, "Couldn't run the search.") });
       }
     })();
   }, [debouncedSearch]);
@@ -216,7 +217,7 @@ export default function SuperAdminAdminsScreen() {
     } catch (err) {
       Alert.alert(
         "Couldn't promote",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setPromoting(false);
@@ -239,7 +240,7 @@ export default function SuperAdminAdminsScreen() {
               await apiClient.delete(`/admin/admins/${id}`);
               setAdmins((prev) => prev.filter((a) => a.id !== id));
             } catch (err) {
-              Alert.alert("Couldn't remove", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't remove", describeError(err, 'Try again.'));
             } finally { setBusyId(null); }
           },
         },
@@ -365,7 +366,7 @@ export default function SuperAdminAdminsScreen() {
               {renderResult(u)}
             </React.Fragment>
           ))}
-          <Pressable onPress={clearSearch} hitSlop={8} style={styles.clearBtn}>
+          <Pressable accessibilityRole="button" onPress={clearSearch} hitSlop={8} style={styles.clearBtn}>
             <Text style={styles.clearBtnText}>Clear results</Text>
           </Pressable>
         </View>
@@ -379,7 +380,7 @@ export default function SuperAdminAdminsScreen() {
         title="Zone admins"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => load(true)} hitSlop={8} accessibilityLabel="Refresh">
+          <Pressable accessibilityRole="button" onPress={() => load(true)} hitSlop={12} accessibilityLabel="Refresh">
             <Ionicons name="refresh" size={22} color={colors.teal} />
           </Pressable>
         }

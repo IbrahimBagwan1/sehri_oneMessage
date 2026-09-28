@@ -25,6 +25,7 @@ import {
   KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Location tree — super admin only.
@@ -84,7 +85,7 @@ export default function LocationTreeScreen() {
       });
       setByType(next);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load locations.");
+      setError(describeError(err, "Couldn't load locations."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -126,7 +127,7 @@ export default function LocationTreeScreen() {
             } catch (err) {
               // 409 here is the server refusing because children or residents
               // remain — that message is the useful part, so show it as-is.
-              Alert.alert("Couldn't remove", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't remove", describeError(err, 'Try again.'));
             } finally {
               setBusyId(null);
             }
@@ -232,7 +233,7 @@ export default function LocationTreeScreen() {
                         ) : null}
                         <Pressable
                           onPress={() => handleDelete(row)}
-                          hitSlop={8}
+                          hitSlop={12}
                           style={styles.rowBtn}
                           accessibilityRole="button"
                           accessibilityLabel={`Remove ${row.name}`}
@@ -335,7 +336,7 @@ function LocationFormSheet({ visible, type, parents, onClose, onSaved }) {
     } catch (err) {
       Alert.alert(
         `Couldn't add the ${level.label.toLowerCase()}`,
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSaving(false);

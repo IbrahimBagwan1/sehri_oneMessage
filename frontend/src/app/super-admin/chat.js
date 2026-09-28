@@ -19,6 +19,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — group list. Backed by the real /api/chat/groups endpoint.
@@ -52,7 +53,7 @@ export default function SuperAdminChatScreen() {
       const res = await chatApi.getMyGroups();
       if (res.success) setGroups(res.data.groups || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your groups.");
+      setError(describeError(err, "Couldn't load your groups."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -76,7 +77,7 @@ export default function SuperAdminChatScreen() {
               await chatApi.deleteGroup(id);
               setGroups((prev) => prev.filter((g) => g.id !== id));
             } catch (err) {
-              Alert.alert("Couldn't delete", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't delete", describeError(err, 'Try again.'));
             } finally {
               setDeleting(null);
             }
@@ -128,17 +129,17 @@ export default function SuperAdminChatScreen() {
         {/* Settings, not delete, is the primary action on a zone group: the
             zones it covers are what its membership is made of, and a zone's
             own group cannot be deleted at all. */}
-        <Pressable
+        <Pressable accessibilityRole="button"
           onPress={() => router.push({ pathname: '/chat-group-manage', params: { id: item.id } })}
-          hitSlop={8}
+          hitSlop={12}
           style={styles.manageBtn}
           accessibilityLabel={`Manage ${item.name}`}
         >
           <Ionicons name="settings-outline" size={18} color={colors.tealDark} />
         </Pressable>
-        <Pressable
+        <Pressable accessibilityRole="button"
           onPress={() => handleDelete(item.id, item.name)}
-          hitSlop={8}
+          hitSlop={12}
           style={styles.deleteBtn}
           accessibilityLabel={`Delete ${item.name}`}
         >
@@ -154,7 +155,7 @@ export default function SuperAdminChatScreen() {
         title="Group chat"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => router.push('/chat-create-group')} hitSlop={8} accessibilityLabel="Create group">
+          <Pressable accessibilityRole="button" onPress={() => router.push('/chat-create-group')} hitSlop={12} accessibilityLabel="Create group">
             <Ionicons name="add" size={24} color={colors.teal} />
           </Pressable>
         }

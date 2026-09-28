@@ -28,6 +28,7 @@ import {
   KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // AdminDonationsScreen — super-admin verification.
@@ -92,7 +93,7 @@ export default function AdminDonationsScreen() {
       if (listRes.success)    setDonations(listRes.data.donations || []);
       if (summaryRes.success) setSummary(summaryRes.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load donations right now.");
+      setError(describeError(err, "Couldn't load donations right now."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -121,7 +122,7 @@ export default function AdminDonationsScreen() {
               );
               load();
             } catch (err) {
-              Alert.alert("Couldn't verify", err?.response?.data?.message || 'Try again in a moment.');
+              Alert.alert("Couldn't verify", describeError(err, 'Try again in a moment.'));
             } finally {
               setActioningId(null);
             }
@@ -151,7 +152,7 @@ export default function AdminDonationsScreen() {
       setRejectReason('');
       load();
     } catch (err) {
-      Alert.alert("Couldn't reject", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't reject", describeError(err, 'Try again in a moment.'));
     } finally {
       setActioningId(null);
     }
@@ -338,7 +339,12 @@ export default function AdminDonationsScreen() {
           behavior="padding"
           style={styles.sheetOverlay}
         >
-          <Pressable style={styles.sheetBackdrop} onPress={() => setRejectFor(null)} />
+          <Pressable
+            style={styles.sheetBackdrop}
+            onPress={() => setRejectFor(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Close without rejecting"
+          />
           <View style={styles.sheet}>
             <View style={styles.sheetGrip} />
             <Text style={styles.sheetTitle}>Reject donation?</Text>

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { describeError } from '../api/errors';
+import { colors } from '../theme';
 
 /**
  * ResendOtpButton — text-only button with a countdown lockout.
@@ -37,7 +39,7 @@ export default function ResendOtpButton({
       await onResend();
       setSecondsLeft(cooldownSeconds);
     } catch (err) {
-      const msg = err?.response?.data?.message || 'Failed to resend OTP. Try again.';
+      const msg = describeError(err, 'Failed to resend OTP. Try again.');
       Alert.alert('Could not resend', msg);
     } finally {
       setBusy(false);
@@ -73,6 +75,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  textActive:   { color: '#0D9488' },
-  textDisabled: { color: '#94A3B8' },
+  textActive:   { color: colors.teal },
+  textDisabled: { color: colors.inkGhost },
 });

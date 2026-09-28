@@ -26,6 +26,7 @@ import {
 import { connect as connectSocket, getSocket } from '../services/socket';
 import ReportMessageSheet from '../components/ReportMessageSheet';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // Chat room — real-time message thread.
@@ -126,7 +127,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
         chatApi.markRead(groupId).catch(() => {});
       }
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load messages.");
+      setError(describeError(err, "Couldn't load messages."));
     } finally {
       setLoading(false);
     }
@@ -242,7 +243,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
         requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
       }
     } catch (err) {
-      Alert.alert("Couldn't send", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't send", describeError(err, 'Try again in a moment.'));
     } finally {
       setSending(false);
     }
@@ -312,7 +313,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
                 prev.map((m) => (m.id === msg.id ? { ...m, is_deleted: true, content: null } : m))
               );
             } catch (err) {
-              Alert.alert("Couldn't delete", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't delete", describeError(err, 'Try again.'));
             }
           },
         },
@@ -339,7 +340,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
               applyBlock(sender);
               Alert.alert('Blocked', `You will no longer see messages from ${sender.name}.`);
             } catch (err) {
-              Alert.alert("Couldn't block", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't block", describeError(err, 'Try again.'));
             }
           },
         },
@@ -378,7 +379,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
     } catch (err) {
       Alert.alert(
         "Couldn't send the report",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setReporting(false);
@@ -496,6 +497,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
             value={draft}
             onChangeText={setDraft}
             placeholder="Message…"
+            accessibilityLabel="Message"
             placeholderTextColor={colors.inkGhost}
             multiline
             maxLength={2000}
@@ -503,7 +505,7 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
             onSubmitEditing={handleSend}
             blurOnSubmit={false}
           />
-          <Pressable
+          <Pressable hitSlop={6}
             onPress={handleSend}
             disabled={!draft.trim() || sending}
             style={({ pressed }) => [

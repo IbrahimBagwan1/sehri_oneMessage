@@ -26,6 +26,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — polls management screen.
@@ -175,11 +176,11 @@ function TodayTab() {
         const statsRes = await adminApi.getActiveStats();
         if (statsRes.success) setStats(statsRes.data);
       } catch (statsErr) {
-        setStatsError(statsErr?.response?.data?.message || "Couldn't load vote totals.");
+        setStatsError(describeError(statsErr, "Couldn't load vote totals."));
         setStats(null);
       }
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load today's poll.");
+      setError(describeError(err, "Couldn't load today's poll."));
     } finally {
       setLoading(false);
     }
@@ -225,7 +226,7 @@ function TodayTab() {
                 await load();
               }
             } catch (err) {
-              const msg = err?.response?.data?.message || 'Try again in a moment.';
+              const msg = describeError(err, 'Try again in a moment.');
               Alert.alert("Couldn't create poll", msg);
               // If the backend says it already exists, reload so the UI
               // reflects reality (someone else beat us to it).
@@ -292,7 +293,7 @@ function TodayTab() {
           );
         }
       } catch (err) {
-        Alert.alert("Couldn't update poll", err?.response?.data?.message || 'Try again in a moment.');
+        Alert.alert("Couldn't update poll", describeError(err, 'Try again in a moment.'));
       } finally {
         setToggling(false);
       }
@@ -556,7 +557,7 @@ function HistoryTab() {
         setPage(p);
       }
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load past polls.");
+      setError(describeError(err, "Couldn't load past polls."));
     } finally {
       setLoading(false);
     }
@@ -639,7 +640,7 @@ function DateStatsTab() {
         if (!alive) return;
         setVoters(res?.data?.voters?.[votersZone] || []);
       } catch (err) {
-        if (alive) setVotersError(err?.response?.data?.message || "Couldn't load voters.");
+        if (alive) setVotersError(describeError(err, "Couldn't load voters."));
       } finally {
         if (alive) setVotersLoading(false);
       }
@@ -679,7 +680,7 @@ function DateStatsTab() {
       const res = await pollsApi.getDateStats(date);
       if (res.success) setData(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || `No poll on record for ${date}.`);
+      setError(describeError(err, `No poll on record for ${date}.`));
     } finally {
       setLoading(false);
     }

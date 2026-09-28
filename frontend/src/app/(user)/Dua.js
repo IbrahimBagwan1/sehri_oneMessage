@@ -12,6 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { duaApi } from '../../api/dua';
+import { describeError } from '../../api/errors';
+import { OfflineNote } from '../../components/ui';
 import { colors, fonts, ARABIC_TEXT_STYLE } from '../../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
@@ -46,6 +48,7 @@ export default function DuaCategoryList() {
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error,      setError]      = useState(null);
+  const [savedCopy,  setSavedCopy]  = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -57,8 +60,9 @@ export default function DuaCategoryList() {
         setCategories(res.data.categories || []);
         setFeatured(res.data.featured_today || null);
       }
-    } catch {
-      setError("Couldn't load duas right now — check your connection and pull to refresh.");
+      setSavedCopy(res.offline || null);
+    } catch (err) {
+      setError(describeError(err, "Couldn't load duas right now. Pull down to try again."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -144,7 +148,7 @@ export default function DuaCategoryList() {
         <View style={styles.centered}>
           <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={() => load()}>
+          <TouchableOpacity accessibilityRole="button" style={styles.retryBtn} onPress={() => load()}>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
         </View>
@@ -157,6 +161,7 @@ export default function DuaCategoryList() {
           columnWrapperStyle={styles.gridRow}
           ListHeaderComponent={
             <>
+              <OfflineNote offline={savedCopy} style={{ marginBottom: 12 }} />
               {FeaturedHeader}
               {categories.length > 0 ? (
                 <Text style={styles.sectionEyebrow}>All categories</Text>
@@ -193,7 +198,7 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     backgroundColor: colors.paper,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.ruleSoft,
   },
   headerTitle:    { fontSize: 22, fontWeight: '800', color: colors.ink },
   headerSubtitle: { fontSize: 12, color: colors.inkFaint, marginTop: 2 },
@@ -246,7 +251,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.ruleSoft,
     minHeight: 108,
   },
   tileIconWrap: {

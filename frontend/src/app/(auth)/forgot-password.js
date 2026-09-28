@@ -12,6 +12,7 @@ import PasswordInput from '../../components/PasswordInput';
 import ResendOtpButton from '../../components/ResendOtpButton';
 import { Button, Header, Input, KeyboardAwareScroll } from '../../components/ui';
 import { colors, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -33,7 +34,7 @@ export default function ForgotPasswordScreen() {
       setOtpSent(true);
       Alert.alert('OTP sent', 'Enter the 6-digit code we just sent to your phone.');
     } catch (err) {
-      Alert.alert("Couldn't send OTP", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't send OTP", describeError(err, 'Try again in a moment.'));
     } finally {
       setLoading(false);
     }
@@ -59,7 +60,7 @@ export default function ForgotPasswordScreen() {
         [{ text: 'Go to sign-in', onPress: () => router.replace('/(auth)/login') }]
       );
     } catch (err) {
-      Alert.alert("Couldn't reset password", err?.response?.data?.message || 'Check your OTP and try again.');
+      Alert.alert("Couldn't reset password", describeError(err, 'Check your OTP and try again.'));
     } finally {
       setLoading(false);
     }

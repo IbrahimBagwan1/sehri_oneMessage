@@ -13,6 +13,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { quranApi } from '../../api/quran';
+import { describeError } from '../../api/errors';
+import { OfflineNote } from '../../components/ui';
 import { colors, fonts } from '../../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
@@ -30,6 +32,7 @@ export default function QuranChapterList() {
   const [refreshing, setRefreshing] = useState(false);
   const [error,      setError]      = useState(null);
   const [query,      setQuery]      = useState('');
+  const [savedCopy,  setSavedCopy]  = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -39,8 +42,9 @@ export default function QuranChapterList() {
     try {
       const res = await quranApi.getChapters();
       if (res.success) setChapters(res.data.chapters || []);
-    } catch {
-      setError("Couldn't load the chapter list — check your connection and pull to refresh.");
+      setSavedCopy(res.offline || null);
+    } catch (err) {
+      setError(describeError(err, "Couldn't load the chapter list. Pull down to try again."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -118,14 +122,20 @@ export default function QuranChapterList() {
           value={query}
           onChangeText={setQuery}
           placeholder="Search by number, Arabic or English name"
+          accessibilityLabel="Search surahs"
           placeholderTextColor={colors.inkGhost}
           returnKeyType="search"
           autoCapitalize="none"
           autoCorrect={false}
         />
         {query.length > 0 && (
-          <TouchableOpacity onPress={() => setQuery('')}>
-            <Ionicons name="close-circle" size={16} color="#CBD5E1" />
+          <TouchableOpacity
+            onPress={() => setQuery('')}
+            hitSlop={14}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Ionicons name="close-circle" size={16} color={colors.ruleStrong} />
           </TouchableOpacity>
         )}
       </View>
@@ -139,7 +149,7 @@ export default function QuranChapterList() {
         <View style={styles.centered}>
           <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={() => load()}>
+          <TouchableOpacity accessibilityRole="button" style={styles.retryBtn} onPress={() => load()}>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
         </View>
@@ -154,6 +164,7 @@ export default function QuranChapterList() {
           renderItem={renderChapter}
           contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
+          ListHeaderComponent={savedCopy ? <OfflineNote offline={savedCopy} style={{ marginBottom: 12 }} /> : null}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -185,7 +196,7 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     backgroundColor: colors.paper,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.ruleSoft,
   },
   headerTitle:    { fontSize: 22, fontWeight: '800', color: colors.ink },
   headerSubtitle: { fontSize: 12, color: colors.inkFaint, marginTop: 2 },
@@ -202,7 +213,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.paper,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.ruleSoft,
   },
   searchInput: { flex: 1, fontSize: 14, color: colors.ink, paddingVertical: 2 },
 

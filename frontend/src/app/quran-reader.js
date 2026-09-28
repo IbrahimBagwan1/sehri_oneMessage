@@ -11,6 +11,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { quranApi } from '../api/quran';
+import { describeError } from '../api/errors';
+import { OfflineNote } from '../components/ui';
 import { colors, fonts, ARABIC_TEXT_STYLE, toArabicDigits } from '../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
@@ -35,6 +37,7 @@ export default function QuranReaderScreen() {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
+  const [savedCopy, setSavedCopy] = useState(null);
 
   const load = useCallback(async () => {
     if (!Number.isInteger(surahId) || surahId < 1 || surahId > 114) {
@@ -47,12 +50,13 @@ export default function QuranReaderScreen() {
     try {
       const res = await quranApi.getSurah(surahId);
       if (res.success) setData(res.data);
+      setSavedCopy(res.offline || null);
     } catch (err) {
       const status = err?.response?.status;
       if (status === 404) {
         setError("This surah isn't loaded yet. Ask the coordinator to run the Quran sync.");
       } else {
-        setError("Couldn't load this surah — check your connection and try again.");
+        setError(describeError(err, "Couldn't load this surah. Try again."));
       }
     } finally {
       setLoading(false);
@@ -87,7 +91,7 @@ export default function QuranReaderScreen() {
         <View style={styles.centered}>
           <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={load}>
+          <TouchableOpacity accessibilityRole="button" style={styles.retryBtn} onPress={load}>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
         </View>
@@ -100,6 +104,7 @@ export default function QuranReaderScreen() {
       <ReaderHeader router={router} chapter={chapter} surahId={surahId} />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator>
+        <OfflineNote offline={savedCopy} style={{ marginBottom: 12 }} />
         {/* Surah title strip */}
         <View style={styles.titleBlock}>
           <Text style={styles.surahArabic} accessibilityLanguage="ar">
@@ -186,7 +191,13 @@ export default function QuranReaderScreen() {
 function ReaderHeader({ router, chapter, surahId }) {
   return (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+      <TouchableOpacity
+        onPress={() => router.back()}
+        style={styles.backBtn}
+        hitSlop={12}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+      >
         <Ionicons name="arrow-back" size={22} color={colors.inkMuted} />
       </TouchableOpacity>
       <View style={styles.headerCenter}>
@@ -215,7 +226,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: colors.paper,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.ruleSoft,
     gap: 8,
   },
   backBtn:          { padding: 4 },

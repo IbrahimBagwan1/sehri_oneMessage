@@ -26,6 +26,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 const MENU = [
   { title: 'Users & zones',    icon: 'people-outline',           route: '/super-admin/users',         hint: 'Approve, promote, or remove members' },
@@ -92,7 +93,7 @@ export default function SuperAdminDashboard() {
         Alert.alert('Linked', res.message);
       }
     } catch (err) {
-      Alert.alert("Couldn't link", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't link", describeError(err, 'Try again in a moment.'));
     } finally {
       setLinking(false);
     }

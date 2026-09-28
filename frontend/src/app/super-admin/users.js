@@ -24,6 +24,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — all users, all zones. Approve pending, delete accounts,
@@ -67,7 +68,7 @@ export default function SuperAdminUsers() {
       const res = await adminApi.getUsers(tab);
       if (res.success) setUsers(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load users.");
+      setError(describeError(err, "Couldn't load users."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -92,7 +93,7 @@ export default function SuperAdminUsers() {
               await adminApi.updateUserStatus(id, status);
               setUsers((prev) => prev.filter((u) => u.id !== id));
             } catch (err) {
-              Alert.alert("Couldn't save", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't save", describeError(err, 'Try again.'));
             } finally {
               setBusyId(null);
             }
@@ -121,7 +122,7 @@ export default function SuperAdminUsers() {
               await usersApi.deleteUserById(id);
               setUsers((prev) => prev.filter((u) => u.id !== id));
             } catch (err) {
-              Alert.alert("Couldn't delete", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't delete", describeError(err, 'Try again.'));
             } finally {
               setBusyId(null);
             }
@@ -177,11 +178,17 @@ export default function SuperAdminUsers() {
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <Header title="Users & zones" onBack={() => router.back()} />
 
-      <View style={styles.tabRow}>
+      <View style={styles.tabRow} accessibilityRole="tablist">
         {TABS.map((t) => {
           const active = activeTab === t.key;
           return (
-            <Pressable key={t.key} onPress={() => setActiveTab(t.key)} style={[styles.tab, active && styles.tabActive]}>
+            <Pressable
+              key={t.key}
+              onPress={() => setActiveTab(t.key)}
+              style={[styles.tab, active && styles.tabActive]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+            >
               <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{t.label}</Text>
             </Pressable>
           );

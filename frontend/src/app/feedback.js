@@ -21,6 +21,7 @@ import {
   KeyboardAwareScroll
 } from '../components/ui';
 import { colors, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 const CATEGORIES = [
   { key: 'suggestion',   label: 'Suggestion',   icon: 'bulb-outline'    },
@@ -74,7 +75,7 @@ export default function UserFeedbackScreen() {
       setCategory('suggestion');
       fetchHistory();
     } catch (err) {
-      Alert.alert("Couldn't submit feedback", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't submit feedback", describeError(err, 'Try again in a moment.'));
     } finally { setSubmitting(false); }
   };
 

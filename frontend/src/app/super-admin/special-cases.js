@@ -24,6 +24,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — special cases review + allotment.
@@ -75,7 +76,7 @@ export default function SuperAdminSpecialCasesScreen() {
       const res = await pollsApi.getSpecialCases();
       if (res.success) setData(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load special cases.");
+      setError(describeError(err, "Couldn't load special cases."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -113,7 +114,7 @@ export default function SuperAdminSpecialCasesScreen() {
       // Most common: 403 outside the 5–6 PM window.
       Alert.alert(
         "Couldn't save decision",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     }
   };
@@ -241,7 +242,7 @@ export default function SuperAdminSpecialCasesScreen() {
         title="Special cases"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => load(true)} hitSlop={8} accessibilityLabel="Refresh">
+          <Pressable accessibilityRole="button" onPress={() => load(true)} hitSlop={12} accessibilityLabel="Refresh">
             <Ionicons name="refresh" size={22} color={colors.teal} />
           </Pressable>
         }
@@ -441,8 +442,8 @@ const toneFg = (tone) => ({
 }[tone] || colors.inkMuted);
 
 const toneBorder = (tone) => ({
-  teal: colors.tealBorder, gold: colors.goldBorder, success: '#BBF7D0',
-  warn: '#FDE68A', danger: '#FECACA', neutral: colors.ruleSoft,
+  teal: colors.tealBorder, gold: colors.goldBorder, success: colors.successBorder,
+  warn: colors.warnBorder, danger: colors.dangerBorder, neutral: colors.ruleSoft,
 }[tone] || colors.ruleSoft);
 
 const styles = StyleSheet.create({

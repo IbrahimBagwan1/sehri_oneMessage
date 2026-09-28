@@ -12,6 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { duaApi } from '../api/dua';
+import { describeError } from '../api/errors';
+import { OfflineNote } from '../components/ui';
 import { colors, fonts, ARABIC_TEXT_STYLE } from '../components/islamicTheme';
 
 // -----------------------------------------------------------------------------
@@ -41,6 +43,7 @@ export default function DuaDetailScreen() {
   const [data,     setData]     = useState(null); // { category, duas }
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
+  const [savedCopy, setSavedCopy] = useState(null);
   const [expanded, setExpanded] = useState({});   // duaSlug → bool
 
   const load = useCallback(async () => {
@@ -55,6 +58,7 @@ export default function DuaDetailScreen() {
       const res = await duaApi.getCategory(slug);
       if (res.success) {
         setData(res.data);
+        setSavedCopy(res.offline || null);
         if (highlight) {
           setExpanded({ [highlight]: true });
         } else if (res.data.duas?.length === 1) {
@@ -66,7 +70,7 @@ export default function DuaDetailScreen() {
       if (status === 404) {
         setError("This category isn't loaded yet. Ask the coordinator to run the dua sync.");
       } else {
-        setError("Couldn't load this category — check your connection and try again.");
+        setError(describeError(err, "Couldn't load this category. Try again."));
       }
     } finally {
       setLoading(false);
@@ -108,7 +112,7 @@ export default function DuaDetailScreen() {
         <View style={styles.centered}>
           <Ionicons name="cloud-offline-outline" size={40} color={colors.inkGhost} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={load}>
+          <TouchableOpacity accessibilityRole="button" style={styles.retryBtn} onPress={load}>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
         </View>
@@ -127,6 +131,7 @@ export default function DuaDetailScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator
       >
+        <OfflineNote offline={savedCopy} style={{ marginBottom: 12 }} />
         {category?.description ? (
           <Text style={styles.categoryDescription}>{category.description}</Text>
         ) : null}
@@ -213,7 +218,13 @@ export default function DuaDetailScreen() {
 function Header({ router, title, subtitle }) {
   return (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+      <TouchableOpacity
+        onPress={() => router.back()}
+        style={styles.backBtn}
+        hitSlop={12}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+      >
         <Ionicons name="arrow-back" size={22} color={colors.inkMuted} />
       </TouchableOpacity>
       <View style={styles.headerCenter}>
@@ -236,7 +247,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: colors.paper,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.ruleSoft,
     gap: 8,
   },
   backBtn:        { padding: 4 },
@@ -252,7 +263,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.ruleSoft,
     overflow: 'hidden',
   },
   cardHeader: {

@@ -23,6 +23,7 @@ import {
   SectionHeader,
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // My vote history — a month calendar the user can tap to see the vote they
@@ -103,7 +104,7 @@ function VoteHistoryAuthed() {
 
       setRows(all);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your vote history.");
+      setError(describeError(err, "Couldn't load your vote history."));
     } finally {
       setLoading(false);
       setRefreshing(false);

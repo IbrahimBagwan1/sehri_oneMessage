@@ -23,6 +23,7 @@ import {
   KeyboardAwareScroll
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super-admin — send a push broadcast to every user in a zone (or all).
@@ -88,7 +89,7 @@ export default function SuperAdminBroadcastScreen() {
       const res = await broadcastsApi.list({ limit: 50 });
       setHistory(res?.data?.broadcasts || []);
     } catch (err) {
-      setHistoryError(err?.response?.data?.message || "Couldn't load broadcast history.");
+      setHistoryError(describeError(err, "Couldn't load broadcast history."));
     } finally {
       setHistoryLoading(false);
     }
@@ -150,7 +151,7 @@ export default function SuperAdminBroadcastScreen() {
                 loadHistory();
               }
             } catch (err) {
-              Alert.alert("Couldn't send", err?.response?.data?.message || 'Try again in a moment.');
+              Alert.alert("Couldn't send", describeError(err, 'Try again in a moment.'));
             } finally {
               setSending(false);
             }

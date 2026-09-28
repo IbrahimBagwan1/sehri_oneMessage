@@ -25,6 +25,7 @@ import {
   SectionHeader,
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // Manage a chat group — super admin only.
@@ -82,7 +83,7 @@ export default function ChatGroupManageScreen() {
       const res = await chatApi.listZones(groupId);
       if (res.success) setZoneOptions(res.data.zones || []);
     } catch (err) {
-      setZonesError(err?.response?.data?.message || "Couldn't load zones.");
+      setZonesError(describeError(err, "Couldn't load zones."));
     } finally {
       setZonesLoading(false);
     }
@@ -101,7 +102,7 @@ export default function ChatGroupManageScreen() {
       const res = await chatApi.getGroup(groupId);
       if (res.success) setGroup(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load this group.");
+      setError(describeError(err, "Couldn't load this group."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -131,7 +132,7 @@ export default function ChatGroupManageScreen() {
       await load();
       Alert.alert('Zone added', res.message);
     } catch (err) {
-      Alert.alert("Couldn't add that zone", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't add that zone", describeError(err, 'Try again in a moment.'));
     } finally {
       setBusy(null);
     }
@@ -154,7 +155,7 @@ export default function ChatGroupManageScreen() {
               await load();
               Alert.alert('Zone removed', res.message);
             } catch (err) {
-              Alert.alert("Couldn't remove that zone", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't remove that zone", describeError(err, 'Try again.'));
             } finally {
               setBusy(null);
             }
@@ -179,7 +180,7 @@ export default function ChatGroupManageScreen() {
               await chatApi.removeMember(groupId, member.user_id, member.user_type);
               await load();
             } catch (err) {
-              Alert.alert("Couldn't remove", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't remove", describeError(err, 'Try again.'));
             } finally {
               setBusy(null);
             }
@@ -309,7 +310,7 @@ export default function ChatGroupManageScreen() {
               {isAuto ? null : (
                 <Pressable
                   onPress={() => handleRemoveMember(item)}
-                  hitSlop={8}
+                  hitSlop={12}
                   style={styles.removeBtn}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove ${item.name}`}
@@ -354,8 +355,10 @@ export default function ChatGroupManageScreen() {
 function ZonePickerSheet({ visible, zones, loading, error, busyId, onRetry, onClose, onPick }) {
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.overlay} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => { /* absorb */ }}>
+      {/* accessible={false}: an accessible wrapper would hide the sheet's
+          buttons from VoiceOver. The Close button below is the SR path. */}
+      <Pressable style={styles.overlay} onPress={onClose} accessible={false}>
+        <Pressable style={styles.sheet} onPress={() => { /* absorb */ }} accessible={false} onAccessibilityEscape={onClose}>
           <View style={styles.handle} />
           <Text style={styles.sheetTitle}>Add a zone</Text>
           <Text style={styles.sheetSubtitle}>

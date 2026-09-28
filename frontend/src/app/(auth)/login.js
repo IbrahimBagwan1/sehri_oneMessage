@@ -143,7 +143,7 @@ export default function LoginScreen() {
               />
             </View>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => router.push('/(auth)/forgot-password')}
               hitSlop={8}
               style={({ pressed }) => [styles.forgotWrap, pressed && { opacity: 0.6 }]}
@@ -169,7 +169,7 @@ export default function LoginScreen() {
                 <View style={styles.errorBody}>
                   <Text style={styles.errorText}>{formError}</Text>
                   {noAccount ? (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => router.push({
                         pathname: '/(auth)/verify-phone',
                         params: phone ? { phone } : {},

@@ -23,6 +23,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 const TABS = [
   { key: 'pending',  label: 'Pending'  },
@@ -59,7 +60,7 @@ export default function AdminUsersScreen() {
       const res = await adminApi.getUsers(tab);
       if (res.success) setUsers(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load users. Try again in a moment.");
+      setError(describeError(err, "Couldn't load users. Try again in a moment."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -86,7 +87,7 @@ export default function AdminUsersScreen() {
               await adminApi.updateUserStatus(userId, status);
               setUsers((prev) => prev.filter((u) => u.id !== userId));
             } catch (err) {
-              Alert.alert("Couldn't save", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't save", describeError(err, 'Try again.'));
             } finally {
               setActioningId(null);
             }
@@ -154,7 +155,7 @@ export default function AdminUsersScreen() {
       <Header
         title="Users"
         trailing={
-          <Pressable onPress={() => load(activeTab, true)} hitSlop={8} accessibilityLabel="Refresh">
+          <Pressable accessibilityRole="button" onPress={() => load(activeTab, true)} hitSlop={12} accessibilityLabel="Refresh">
             <Ionicons name="refresh" size={22} color={colors.teal} />
           </Pressable>
         }

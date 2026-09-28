@@ -27,10 +27,12 @@ import {
   Header,
   Hero,
   LoadingState,
+  OfflineNote,
   RubStar,
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // ==========================================
 // Constants
@@ -73,6 +75,8 @@ export default function HomeScreen() {
   const [loadingAyat,   setLoadingAyat] = useState(true);
   const [ayatError,     setAyatError]   = useState<string | null>(null);
   const [prayerData,    setPrayerData]  = useState<any>(null);
+  // Set when prayer times or the ayat came from the saved copy (offline).
+  const [savedCopy,     setSavedCopy]   = useState<any>(null);
   const [pollData,      setPollData]    = useState<any>(null);
   const [loadingPrayer, setLoadingP]    = useState(true);
   const [loadingPoll,   setLoadingV]    = useState(true);
@@ -96,8 +100,9 @@ export default function HomeScreen() {
     try {
       const res = await prayersApi.getToday();
       if (res.success) setPrayerData(res.data);
-    } catch {
-      setPrayerErr("Couldn't load today's namaz times.");
+      setSavedCopy(res.offline || null);
+    } catch (err) {
+      setPrayerErr(describeError(err, "Couldn't load today's namaz times."));
     } finally {
       setLoadingP(false);
     }
@@ -110,8 +115,9 @@ export default function HomeScreen() {
     try {
       const res = await quranApi.getAyatOfTheDay();
       if (res.success) setAyatData(res.data);
-    } catch {
-      setAyatError("Couldn't load today's ayat.");
+      if (res.offline) setSavedCopy((prev: any) => prev || res.offline);
+    } catch (err) {
+      setAyatError(describeError(err, "Couldn't load today's ayat."));
     } finally {
       setLoadingAyat(false);
     }
@@ -126,8 +132,8 @@ export default function HomeScreen() {
     try {
       const res = await pollsApi.getActive();
       if (res.success) setPollData(res.data);
-    } catch {
-      setPollErr("Couldn't load today's Sehri poll.");
+    } catch (err) {
+      setPollErr(describeError(err, "Couldn't load today's Sehri poll."));
     } finally {
       setLoadingV(false);
     }
@@ -156,7 +162,7 @@ export default function HomeScreen() {
       await pollsApi.submitVote(pollData.poll.id, vote);
       await loadPoll();
     } catch (err) {
-      Alert.alert('Vote not recorded', err?.response?.data?.message || "Couldn't submit your vote. Try again.");
+      Alert.alert('Vote not recorded', describeError(err, "Couldn't submit your vote. Try again."));
     } finally {
       setSubmitting(false);
     }
@@ -176,7 +182,7 @@ export default function HomeScreen() {
     } catch (err) {
       Alert.alert(
         "Couldn't submit special case",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSubmittingSpecial(false);
@@ -195,7 +201,7 @@ export default function HomeScreen() {
     } catch (err) {
       Alert.alert(
         "Couldn't undo",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSubmittingSpecial(false);
@@ -256,6 +262,7 @@ export default function HomeScreen() {
 
         {/* -------------------- Prayer timeline card -------------------- */}
         <View style={styles.section}>
+          <OfflineNote offline={savedCopy} style={{ marginBottom: space[3] }} />
           <PrayerWidget
             data={prayerData}
             loading={loadingPrayer}

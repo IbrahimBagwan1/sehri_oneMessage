@@ -16,6 +16,8 @@ import { trackingApi } from '../../api/tracking';
 import { useRiderStore } from '../../store/useRiderStore';
 import PasswordInput from '../../components/PasswordInput';
 import KeyboardAwareScroll from '../../components/ui/KeyboardAwareScroll';
+import { describeError } from '../../api/errors';
+import { colors } from '../../theme';
 
 export default function RiderLoginScreen() {
   const router       = useRouter();
@@ -48,7 +50,7 @@ export default function RiderLoginScreen() {
       // Replace so back button doesn't return to login
       router.replace('/(rider)/map');
     } catch (err) {
-      const msg = err.response?.data?.message || 'Login failed. Check your credentials.';
+      const msg = describeError(err, 'Login failed. Check your credentials.');
       Alert.alert('Login Failed', msg);
     } finally {
       setLoading(false);
@@ -75,7 +77,7 @@ export default function RiderLoginScreen() {
           </View>
           <View style={styles.brandRule}>
             <View style={styles.brandRuleLine} />
-            <Ionicons name="bicycle" size={13} color="#B8860B" />
+            <Ionicons name="bicycle" size={13} color={colors.gold} />
             <View style={styles.brandRuleLine} />
           </View>
         </View>
@@ -88,6 +90,8 @@ export default function RiderLoginScreen() {
         <TextInput
           style={styles.input}
           placeholder="Enter your phone number"
+          accessibilityLabel="Phone number"
+          placeholderTextColor={colors.inkGhost}
           keyboardType="phone-pad"
           value={phone}
           onChangeText={(val) => setPhone(val.replace(/\D/g, ''))}
@@ -118,7 +122,7 @@ export default function RiderLoginScreen() {
           accessibilityRole="button"
         >
           {loading ? (
-            <ActivityIndicator color="#FFF" />
+            <ActivityIndicator color={colors.paper} />
           ) : (
             <Text style={styles.loginButtonText}>Login</Text>
           )}
@@ -136,7 +140,7 @@ export default function RiderLoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.paperSoft,
   },
   scrollContent: {
     flexGrow: 1,
@@ -157,13 +161,13 @@ const styles = StyleSheet.create({
   brandNameRow: { flexDirection: 'row', alignItems: 'center' },
   brandDot: {
     width: 9, height: 9, borderRadius: 4.5,
-    backgroundColor: '#0D9488',
+    backgroundColor: colors.teal,
     marginRight: 8,
   },
   brandName: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#0F172A',
+    color: colors.ink,
     letterSpacing: -0.4,
   },
   brandRule: {
@@ -176,17 +180,17 @@ const styles = StyleSheet.create({
   brandRuleLine: {
     flex: 1,
     height: 1,
-    backgroundColor: '#E8D8A8',
+    backgroundColor: colors.goldBorder,
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    color: '#0F172A',
+    color: colors.ink,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 14,
-    color: '#64748B',
+    color: colors.inkFaint,
     textAlign: 'center',
     marginTop: 6,
     marginBottom: 32,
@@ -194,22 +198,22 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#334155',
+    color: colors.inkMuted,
     marginBottom: 6,
     marginTop: 14,
   },
   input: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.paper,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: colors.ruleStrong,
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    color: '#0F172A',
+    color: colors.ink,
   },
   loginButton: {
-    backgroundColor: '#0D9488',
+    backgroundColor: colors.teal,
     paddingVertical: 14,
     borderRadius: 8,
     alignItems: 'center',
@@ -221,13 +225,13 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   loginButtonText: {
-    color: '#FFFFFF',
+    color: colors.paper,
     fontSize: 16,
     fontWeight: '700',
   },
   note: {
     fontSize: 12,
-    color: '#94A3B8',
+    color: colors.inkGhost,
     textAlign: 'center',
     marginTop: 24,
     lineHeight: 18,

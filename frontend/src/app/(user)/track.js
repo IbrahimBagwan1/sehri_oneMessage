@@ -26,6 +26,7 @@ import {
   subscribeTracking,
   unsubscribeTracking,
 } from '../../services/socket';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // TrackScreen — live delivery map for signed-in users.
@@ -223,7 +224,7 @@ function TrackScreenAuthed() {
         }
       } catch (_) { /* non-fatal — map still renders rider without ETA */ }
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load the rider's location.");
+      setError(describeError(err, "Couldn't load the rider's location."));
     } finally {
       setLoading(false);
       hasLoadedOnceRef.current = true;
@@ -725,7 +726,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
       android: { elevation: 6 },
     }),
   },
@@ -737,7 +738,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
       android: { elevation: 6 },
     }),
   },
@@ -750,7 +751,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.goldBorder,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.18, shadowRadius: 2 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.18, shadowRadius: 2 },
       android: { elevation: 3 },
     }),
   },
@@ -771,7 +772,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.ruleSoft,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
       android: { elevation: 4 },
     }),
   },
@@ -783,7 +784,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.ruleSoft,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
       android: { elevation: 4 },
     }),
   },

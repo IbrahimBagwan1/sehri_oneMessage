@@ -23,6 +23,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 const CATEGORY = {
   suggestion:   { label: 'Suggestion',   tone: 'teal',    icon: 'bulb-outline'    },
@@ -71,7 +72,7 @@ export default function SuperAdminFeedback() {
       const res = await feedbackApi.list(params);
       if (res.success) setItems(res.data.feedback || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load feedback.");
+      setError(describeError(err, "Couldn't load feedback."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -85,7 +86,7 @@ export default function SuperAdminFeedback() {
       await feedbackApi.markRead(id);
       setItems((prev) => prev.map((f) => f.id === id ? { ...f, is_read: true, read_at: new Date().toISOString() } : f));
     } catch (err) {
-      Alert.alert("Couldn't mark as read", err?.response?.data?.message || 'Try again.');
+      Alert.alert("Couldn't mark as read", describeError(err, 'Try again.'));
     }
   };
 
@@ -129,7 +130,7 @@ export default function SuperAdminFeedback() {
         title="Feedback"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => load(true)} hitSlop={8} accessibilityLabel="Refresh">
+          <Pressable accessibilityRole="button" onPress={() => load(true)} hitSlop={12} accessibilityLabel="Refresh">
             <Ionicons name="refresh" size={22} color={colors.teal} />
           </Pressable>
         }
