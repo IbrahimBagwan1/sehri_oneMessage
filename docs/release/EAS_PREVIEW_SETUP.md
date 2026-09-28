@@ -18,7 +18,7 @@ key, and push needs Firebase). Each step below unblocks the next.
 - The API from this branch running somewhere the phones can reach over
   **HTTPS** (a staging server, or a reserved ngrok domain), with
   `npm run migrate` done. Release builds refuse `http://` URLs.
-- Your local checkout on the branch: `git checkout release/qa-pass-2 && git pull`.
+- Your local checkout on `main`, up to date: `git checkout main && git pull`.
   EAS uploads your working folder as it is, so keep it clean.
 
 ## 1. Install the CLI and sign in
@@ -52,8 +52,7 @@ Pick it once, e.g. `in.onemessage.app`. It becomes the Android package and
 the iOS bundle id, and Firebase, Maps and Apple are all tied to it.
 
 Edit `frontend/eas.json` and replace **both** `REPLACE_WITH_YOUR_BUNDLE_ID`
-(under `build.preview.env` and `build.production.env`). Commit it on this
-branch:
+(under `build.preview.env` and `build.production.env`). Commit it:
 
 ```bash
 git commit -am "Set the app's bundle identifier"

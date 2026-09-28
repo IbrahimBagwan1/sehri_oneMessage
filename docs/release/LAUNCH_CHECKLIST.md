@@ -6,10 +6,8 @@ decision. Work top to bottom — later items depend on earlier ones.
 
 ## 0. Decisions and housekeeping (do first)
 
-- [ ] **Test a preview build from `release/qa-pass-2`, then merge its PR.**
-      The QA pass is committed on that branch with a PR into `main` (not
-      merged). Build it with `EAS_PREVIEW_SETUP.md`, run `QA_TEST_PLAN.md`,
-      then merge.
+- [ ] **Test a preview build from `main`.** The QA pass is merged into
+      `main`. Build it with `EAS_PREVIEW_SETUP.md` and run `QA_TEST_PLAN.md`.
 - [ ] **Delete the local database dump** used for migration testing if you
       still see one — this pass removed its copy; nothing was committed.
 
