@@ -30,6 +30,13 @@ require('dotenv').config({ quiet: true });
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// The suite writes and deletes rows. Never let it start with a production
+// environment loaded, whatever database name it would pick.
+if (process.env.NODE_ENV === 'production') {
+  console.error('Refusing to run tests with NODE_ENV=production.');
+  process.exit(1);
+}
+
 const ROOT = path.resolve(__dirname, '..');
 const env = { ...process.env, NODE_ENV: 'test' };
 const args = process.argv.slice(2);

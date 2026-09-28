@@ -1,5 +1,7 @@
 'use strict';
 
+const { assertNotProduction } = require('../utils/seedGuard');
+
 // The Stanza zone id is not deterministic — the locations seeder
 // generates a fresh UUID for every zone. Look it up by name here so
 // this seeder works no matter which machine created the zones.
@@ -25,6 +27,7 @@ const ADDRESS_NAMES = [
 
 module.exports = {
   async up(queryInterface, Sequelize) {
+    assertNotProduction();
     // Locate the Stanza zone by name so we get whatever UUID the
     // previous seeder assigned it on this machine.
     const [rowsFound] = await queryInterface.sequelize.query(
