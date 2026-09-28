@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   Alert,
-  Platform,
   Pressable,
   Image,
   Linking,
@@ -13,7 +12,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import * as Clipboard from 'expo-clipboard';
 import { donationsApi } from '../../api/donations';
 import {
   Button,
@@ -29,14 +27,17 @@ import {
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
-// DonateScreen — external UPI donation flow, platform-branched.
+// DonateScreen — external UPI donation flow.
 //
-// Android: shows the UPI number inline with a Copy button.
-// iOS:     shows a "View payment details" button that opens the hosted
-//          payment.html page in the system Safari browser (Apple App Store
-//          rules discourage rendering direct payment CTAs in-app).
+// On both platforms "View payment details" opens the hosted payment.html
+// page in the system browser (Safari / the default Android browser). The
+// app itself never shows the payment number or starts a payment: Apple
+// 3.2.2(iv) requires charity funds to be collected outside the app, and
+// Google Play only exempts tax-exempt donations from its billing rule, so
+// keeping the payment step on the web satisfies both.
 //
 // After paying externally, the user snaps a screenshot in their UPI app
 // and uploads it here. The donation is created as pending and only
@@ -76,10 +77,9 @@ function DonateScreenAuthed() {
   const [screenshot, setScreenshot] = useState(null);   // { uri, mimeType?, fileName? }
   const [submitting, setSubmitting] = useState(false);
 
-  const [payment, setPayment]       = useState(null);   // { contact_number, payment_url }
+  const [payment, setPayment]       = useState(null);   // { payment_url, ... }
   const [loadingPay, setLoadingPay] = useState(true);
   const [payError, setPayError]     = useState(null);
-  const [copied, setCopied]         = useState(false);
 
   const fetchPayment = useCallback(async () => {
     setPayError(null);
@@ -87,31 +87,14 @@ function DonateScreenAuthed() {
     try {
       const res = await donationsApi.getPaymentInfo();
       if (res.success) setPayment(res.data);
-    } catch {
-      setPayError("Couldn't load payment details right now.");
+    } catch (err) {
+      setPayError(describeError(err, "Couldn't load payment details right now."));
     } finally {
       setLoadingPay(false);
     }
   }, []);
 
   useFocusEffect(useCallback(() => { fetchPayment(); }, [fetchPayment]));
-
-  const handleCopy = async () => {
-    if (!payment?.contact_number) return;
-    try {
-      // UPI apps expect just the 10-digit local number. Strip formatting
-      // and drop the +91 country code if present so pasting is clean.
-      const digits = payment.contact_number.replace(/\D/g, '');
-      const local = digits.startsWith('91') && digits.length === 12
-        ? digits.slice(2)
-        : digits;
-      await Clipboard.setStringAsync(local);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      Alert.alert("Couldn't copy", 'Long-press the number to copy it manually.');
-    }
-  };
 
   const handleOpenPaymentPage = async () => {
     if (!payment?.payment_url) return;
@@ -120,7 +103,7 @@ function DonateScreenAuthed() {
       if (!supported) throw new Error('unsupported');
       await Linking.openURL(payment.payment_url);
     } catch {
-      Alert.alert("Couldn't open the payment page", 'Try again or copy the number from your admin.');
+      Alert.alert("Couldn't open the payment page", 'Check that a web browser is installed and try again.');
     }
   };
 
@@ -178,7 +161,7 @@ function DonateScreenAuthed() {
     } catch (err) {
       Alert.alert(
         "Couldn't submit donation",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSubmitting(false);
@@ -210,45 +193,25 @@ function DonateScreenAuthed() {
               <Card><LoadingState message="Loading payment details…" compact /></Card>
             ) : payError ? (
               <Card><ErrorState message={payError} onRetry={fetchPayment} /></Card>
-            ) : Platform.OS === 'ios' ? (
-              /* iOS — link out to Safari */
+            ) : (
               <Card tone="warm">
-                <Text style={styles.paymentEyebrow}>Payment number</Text>
+                <Text style={styles.paymentEyebrow}>Payment details</Text>
                 <Text style={styles.paymentHeadline}>Open the payment page</Text>
                 <Text style={styles.paymentBody}>
-                  Tap below to see the UPI number in Safari. Send your donation, then
-                  return here and upload the screenshot.
+                  Tap below to see where to send your donation. It opens in your
+                  browser; pay with any UPI app, then come back here and upload the
+                  screenshot.
                 </Text>
                 <Button
                   label="View payment details"
                   onPress={handleOpenPaymentPage}
+                  disabled={!payment?.payment_url}
                   icon="open-outline"
                   iconRight
                   fullWidth
+                  accessibilityLabel="View payment details. Opens in your browser"
                   style={{ marginTop: space[3] }}
                 />
-              </Card>
-            ) : (
-              /* Android / anything else — inline number + copy */
-              <Card tone="warm">
-                <Text style={styles.paymentEyebrow}>Send your donation to</Text>
-                <View style={styles.numberRow}>
-                  <Text style={styles.numberText} selectable>
-                    {payment?.contact_number || '+91 96327 16392'}
-                  </Text>
-                  <Pressable
-                    onPress={handleCopy}
-                    style={({ pressed }) => [styles.copyBtn, pressed && styles.copyBtnPressed]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Copy payment number"
-                  >
-                    <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={14} color={colors.paper} />
-                    <Text style={styles.copyBtnText}>{copied ? 'Copied' : 'Copy'}</Text>
-                  </Pressable>
-                </View>
-                <Text style={styles.paymentHint}>
-                  Open Google Pay, PhonePe, or Paytm and paste this number as the recipient.
-                </Text>
               </Card>
             )}
           </View>
@@ -367,45 +330,10 @@ const styles = StyleSheet.create({
 
   quickRow: { flexDirection: 'row', gap: space[2], marginTop: space[3], flexWrap: 'wrap' },
 
-  // Android payment number block
+  // Payment details card
   paymentEyebrow: { ...type.micro, color: colors.gold, fontWeight: '700', marginBottom: space[1] },
   paymentHeadline:{ ...type.h2, marginBottom: space[2] },
   paymentBody:    { ...type.body },
-  paymentHint:    { ...type.meta, marginTop: space[3] },
-
-  numberRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: space[3],
-    backgroundColor: colors.paper,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.goldBorder,
-    paddingHorizontal: space[4],
-    paddingVertical: space[3],
-    marginTop: space[2],
-  },
-  numberText: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: colors.tealDark,
-    letterSpacing: 0.4,
-    fontVariant: ['tabular-nums'],
-    flexShrink: 1,
-  },
-  copyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.teal,
-    borderRadius: radius.md,
-    paddingHorizontal: space[3],
-    paddingVertical: 8,
-    minHeight: 36,
-  },
-  copyBtnPressed: { backgroundColor: colors.tealDark },
-  copyBtnText: { color: colors.paper, fontWeight: '700', fontSize: 13 },
 
   // Screenshot picker
   picker: {

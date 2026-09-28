@@ -16,7 +16,6 @@
     "@sentry/react-native": "~7.11.0",
     "axios": "^1.19.0",
     "expo": "~57.0.25",
-    "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.17",
     "expo-dev-client": "~57.0.19",
     "expo-device": "~57.0.2",
