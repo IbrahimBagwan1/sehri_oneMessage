@@ -11,13 +11,19 @@
  * profile; for local development they come from frontend/.env.
  *
  * THE BUNDLE IDENTIFIER IS FOREVER
- * The store listing is tied to it. A production build refuses to start
+ * The store listing is tied to it. A preview or production build refuses to start
  * with the development placeholder, so it cannot be shipped by accident.
  */
 
 const { withInfoPlist } = require('expo/config-plugins');
 
-const IS_PRODUCTION_BUILD = process.env.EAS_BUILD_PROFILE === 'production';
+// Preview builds are release builds installed on real phones for testing:
+// they need the same identifiers and keys as production (the iOS map
+// crashes without its key; push needs Firebase; the bundle id must match the
+// keys' restrictions). Only the development client may run on defaults.
+// EAS_BUILD_PROFILE is set only on EAS build servers, so these checks never
+// get in the way of local commands (eas credentials, eas config, expo start).
+const IS_RELEASE_BUILD = ['production', 'preview'].includes(process.env.EAS_BUILD_PROFILE);
 
 /**
  * expo-task-manager adds the iOS "fetch" background mode unconditionally.
@@ -36,11 +42,11 @@ const DEV_BUNDLE_ID = 'com.anonymous.onemessage';
 
 const bundleId = (() => {
   const id = process.env.APP_BUNDLE_ID || DEV_BUNDLE_ID;
-  if (IS_PRODUCTION_BUILD) {
+  if (IS_RELEASE_BUILD) {
     if (id === DEV_BUNDLE_ID || /REPLACE|anonymous|example/i.test(id)) {
       throw new Error(
-        'APP_BUNDLE_ID must be set to the final bundle identifier for production builds '
-        + '(e.g. in.onemessage.app). Set it in eas.json → build.production.env.'
+        'APP_BUNDLE_ID must be set to the final bundle identifier for preview and production builds '
+        + '(e.g. in.onemessage.app). Set it in eas.json → build.preview.env and build.production.env.'
       );
     }
     if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$/.test(id)) {
@@ -52,11 +58,11 @@ const bundleId = (() => {
 
 const androidMapsKey = process.env.GOOGLE_MAPS_ANDROID_API_KEY || '';
 const iosMapsKey = process.env.GOOGLE_MAPS_IOS_API_KEY || '';
-if (IS_PRODUCTION_BUILD && (!androidMapsKey || !iosMapsKey)) {
-  throw new Error('GOOGLE_MAPS_ANDROID_API_KEY and GOOGLE_MAPS_IOS_API_KEY must be set for production builds.');
+if (IS_RELEASE_BUILD && (!androidMapsKey || !iosMapsKey)) {
+  throw new Error('GOOGLE_MAPS_ANDROID_API_KEY and GOOGLE_MAPS_IOS_API_KEY must be set for preview and production builds (EAS environment variables).');
 }
-if (IS_PRODUCTION_BUILD && process.env.EAS_BUILD_PLATFORM === 'android' && !process.env.GOOGLE_SERVICES_JSON) {
-  throw new Error('GOOGLE_SERVICES_JSON (EAS file variable) must be set for Android production builds — push notifications need it.');
+if (IS_RELEASE_BUILD && process.env.EAS_BUILD_PLATFORM === 'android' && !process.env.GOOGLE_SERVICES_JSON) {
+  throw new Error('GOOGLE_SERVICES_JSON (EAS file variable) must be set for Android preview and production builds — push notifications need it.');
 }
 
 // Purpose strings. Apple rejects vague ones (guideline 5.1.1); each says what
@@ -121,6 +127,11 @@ module.exports = () => ({
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypePreciseLocation', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypePhotosorVideos', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeOtherUserContent', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
+          // Group chat. Apple's "Emails or Text Messages" covers in-app
+          // messages; declaring it is the conservative reading.
+          { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeEmailsOrTextMessages', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
+          // Gender and occupation (DATA_INVENTORY.md → "Other Data Types").
+          { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeOtherDataTypes', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeOtherFinancialInfo', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeCustomerSupport', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
           { NSPrivacyCollectedDataType: 'NSPrivacyCollectedDataTypeUserID', NSPrivacyCollectedDataTypeLinked: true, NSPrivacyCollectedDataTypeTracking: false, NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'] },
@@ -169,6 +180,10 @@ module.exports = () => ({
         'android.permission.READ_MEDIA_IMAGES',
         'android.permission.READ_MEDIA_VIDEO',
         'android.permission.READ_MEDIA_AUDIO',
+        // expo-secure-store declares these for its optional biometric
+        // unlock; the app never asks for it (see services/secureStorage.js).
+        'android.permission.USE_BIOMETRIC',
+        'android.permission.USE_FINGERPRINT',
       ],
     },
     web: {
