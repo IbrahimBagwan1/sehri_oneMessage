@@ -9,12 +9,12 @@ file whenever a model gains a column or the app gains an SDK.
 | Data | Who it's about | Where it lives | Why | Optional? |
 |---|---|---|---|---|
 | **Name** | members, staff, riders | `users.name`, `admins`/`super_admins`/`riders.name` | Account; shown in chat and to the kitchen/rider | Required |
-| **Phone number** | everyone with an account | `*.phone`, `otps.phone` (minutes), `login_throttles.phone` (transient) | Sign-in identifier; OTP verification; riders/admins call members about deliveries | Required |
+| **Phone number** | everyone with an account | `*.phone`, `otps.phone` (minutes), `login_throttles.throttle_key` (after a wrong password; see below) | Sign-in identifier; OTP verification; riders/admins call members about deliveries | Required |
 | **Password** | everyone with an account | bcrypt hash only | Sign-in | Required |
 | **Address** | members | `users.location_id` (building/PG picked from a list) + `users.address` (free text: room, landmark) | Where the Sehri is delivered | Required |
 | **Gender, occupation** | members | `users.gender`, `users.occupation` | Community admin (e.g. girls' accommodation) | Required |
 | **Precise location** | **riders only, only during a delivery round** | `riders.latitude/longitude` (latest reading only, no history), `riders.current_address` (reverse-geocoded label) | Live tracking for the members being delivered to; ETAs | Required to deliver; never collected from members |
-| **Photos** | members who donate | Cloudinary (`donations.screenshot_url`) | Payment screenshot so a super admin can verify the donation | Optional (donating is optional) |
+| **Photos** | members who donate | Cloudinary, **authenticated delivery** (`donations.screenshot_public_id`); the app is only ever given a signed link that expires after an hour. Screenshots uploaded before this release stay public until `scripts/secure-donation-screenshots.js --apply` is run | Payment screenshot so a super admin can verify the donation | Optional (donating is optional) |
 | **Other financial info** | members who donate | `donations.amount`, `note`, `status` | Donation records | Optional |
 | **Chat messages** | members, staff | `chat_messages.content`; `chat_message_reports` (snapshot + reason); `chat_user_blocks` | Group chat; moderation | Optional |
 | **Other user content** | members | `poll_responses` (nightly yes/no, special-case requests), `profile_edit_requests` | Core function (how much food, where) | Required to use the poll |
@@ -25,12 +25,20 @@ file whenever a model gains a column or the app gains an SDK.
 
 **Not collected:** advertising IDs, contacts, calendar, camera, microphone,
 health, browsing history, search history, precise or approximate location of
-members, payment credentials (UPI happens outside the app), religious
+members, payment credentials or UPI details (the app only opens a web page
+with the payment details; the donor pays in their own UPI app), religious
 affiliation (no field records it).
 
 **Server logs** record request lines (method, path, status, IP address) for
 security and diagnostics; phone numbers, tokens and JWTs are masked by the
 logger. Not a Data safety data type; mentioned here for completeness.
+
+**Sign-in protection** keeps, after a wrong password, a counter keyed by the
+phone number and by the phone number plus the network address it came from
+(IPv6 grouped by /56) — `login_throttles`. Used only to slow password
+guessing; cleared by a correct sign-in or a password reset, and deleted
+automatically after 24 hours untouched. Security use only, like the server
+logs.
 
 ## Who else receives it (service providers, not "sharing")
 
@@ -58,7 +66,7 @@ For every type below: **Linked to the user: Yes**, **Used for tracking: No**,
 |---|---|
 | Contact Info | Name · Phone Number · Physical Address |
 | Location | Precise Location *(riders)* |
-| User Content | Photos or Videos · Other User Content · Customer Support |
+| User Content | Emails or Text Messages *(chat)* · Photos or Videos · Other User Content · Customer Support |
 | Financial Info | Other Financial Info |
 | Identifiers | User ID · Device ID |
 | Diagnostics | Crash Data *(only if Sentry is enabled — otherwise leave it out)* |
@@ -96,9 +104,9 @@ provider acting on your behalf, which Play excludes from "sharing").
 ## Retention (matches the privacy policy)
 
 - Account data: until the account is deleted.
-- OTP codes: minutes. Login throttle rows: cleared on success or reset.
+- OTP codes: minutes. Login throttle rows (phone, phone + network address): cleared on a correct sign-in or reset, otherwise deleted after 24 hours untouched.
 - Sessions: ended by sign-out, password reset or deletion; rows purged 7 days after ending.
-- Poll answers, donations, feedback: kept, detached from the person on deletion (donation screenshot deleted, note cleared).
+- Poll answers, donations, feedback: kept, detached from the person on deletion (donation screenshot deleted from Cloudinary, note cleared). A pending "yes" for tonight is withdrawn and the delivery stop recounted.
 - Chat messages: kept for the group; a deleted account's messages are overwritten with `[deleted]`.
 - Moderation reports: kept as a safety record; the reported person's name is replaced with "Former member" if they delete their account.
 - Rider position: latest reading only.

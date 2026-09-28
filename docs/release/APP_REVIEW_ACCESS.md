@@ -26,7 +26,10 @@ access").
   picker, not in zone statistics or kitchen counts, not in real delivery
   runs, and with its own chat room. Registering with the demo number is
   forced into the sandbox and auto-approved, whatever location the form
-  sent.
+  sent. A sandbox account cannot be promoted to admin or super admin, linked
+  to a staff record, or made a rider (the server refuses with
+  `SANDBOX_ACCOUNT`), and there is no client-side switch that enables the
+  demo mode.
 - **Self-healing** — reviewers are asked to try account deletion. A sign-in
   with the documented password recreates the demo account (and restores
   its password, sandbox location and approval) if a previous reviewer
@@ -80,12 +83,13 @@ LOCATION: Only delivery volunteers (the rider account) share location, and
 only after they tap "Start delivery" in the app. It uses "While Using the
 App" permission; the background location mode keeps the round going with
 the screen off, with the blue location indicator shown, and stops when they
-tap "Stop delivery" (or automatically after 6 hours). Members' location is
+tap "Stop delivery" (or automatically after 10 hours). Members' location is
 never read.
 
-DONATIONS: The app never processes payments. On iOS, "View payment details"
-opens a web page in Safari with the UPI number; the donor pays in their own
-UPI app and can then upload a screenshot so a volunteer can confirm it.
+DONATIONS: The app never processes payments and does not display payment
+details. "View payment details" opens a web page in Safari with the UPI
+number; the donor pays in their own UPI app and can then upload a screenshot
+so a volunteer can confirm it.
 
 USER-GENERATED CONTENT: Long-press any chat message to Report or Block the
 sender. Objectionable language is filtered before posting. Reports go to a
@@ -109,7 +113,10 @@ forgot-password: use the same phone; the verification code is
 delivery-volunteer screen: tap "I'm delivering today", phone
 <REVIEW_DEMO_RIDER_PHONE>, same password. Deleting the demo account is
 allowed; signing in again recreates it. The Sehri poll and live tracking are
-seasonal (Ramadan) and only open 10 PM–10 AM India time.
+seasonal (Ramadan) and only open 10 PM–10 AM India time. Donations: the app
+never processes payments or shows payment details — "View payment details"
+opens a web page in the browser; the donor pays in their own UPI app and
+uploads a screenshot for a volunteer to confirm.
 ```
 
 ## After approval
