@@ -106,11 +106,8 @@ module.exports = {
   },
 
   down: async (queryInterface) => {
-    await queryInterface.removeIndex('delivery_stops', 'uq_delivery_stops_poll_rider_location');
-    await queryInterface.removeIndex('delivery_stops', 'idx_delivery_stops_poll_rider');
-    await queryInterface.removeIndex('delivery_stops', 'idx_delivery_stops_poll_location');
-    await queryInterface.removeIndex('delivery_stops', 'idx_delivery_stops_poll');
-    await queryInterface.removeIndex('delivery_stops', 'idx_delivery_stops_status');
+    // Dropping the table drops its indexes and foreign keys with it; removing
+    // the indexes first failed, because the FKs depend on them.
     await queryInterface.dropTable('delivery_stops');
   },
 };

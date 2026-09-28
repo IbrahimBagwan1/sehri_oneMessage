@@ -25,6 +25,14 @@
  *    deciding to override anything, and it is what kept voting open all day.
  */
 
+const {
+  createTableIfMissing,
+  addIndexIfMissing,
+  tableExists,
+} = require('../utils/migrationHelpers');
+
+// Every step is idempotent (see utils/migrationHelpers.js): if a deploy
+// fails part way, running the migration again completes it.
 const todayIST = () => {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -38,7 +46,7 @@ module.exports = {
     // -----------------------------------------------------------------
     // 1. auth_sessions
     // -----------------------------------------------------------------
-    await queryInterface.createTable('auth_sessions', {
+    await createTableIfMissing(queryInterface, 'auth_sessions', {
       id: { type: Sequelize.UUID, primaryKey: true, allowNull: false },
       subject_type: {
         type: Sequelize.ENUM('user', 'admin', 'super_admin', 'rider'),
@@ -57,18 +65,18 @@ module.exports = {
     });
     // "End every session this account has" — sign-out-everywhere, deletion,
     // role removal, password reset.
-    await queryInterface.addIndex('auth_sessions', ['subject_type', 'subject_id'], {
+    await addIndexIfMissing(queryInterface, 'auth_sessions', ['subject_type', 'subject_id'], {
       name: 'idx_auth_sessions_subject',
     });
     // Housekeeping sweep of expired rows.
-    await queryInterface.addIndex('auth_sessions', ['expires_at'], {
+    await addIndexIfMissing(queryInterface, 'auth_sessions', ['expires_at'], {
       name: 'idx_auth_sessions_expires',
     });
 
     // -----------------------------------------------------------------
     // 2. login_throttles
     // -----------------------------------------------------------------
-    await queryInterface.createTable('login_throttles', {
+    await createTableIfMissing(queryInterface, 'login_throttles', {
       phone: { type: Sequelize.STRING(15), primaryKey: true, allowNull: false },
       failures: { type: Sequelize.INTEGER, allowNull: false, defaultValue: 0 },
       window_started_at: { type: Sequelize.DATE, allowNull: true },
@@ -101,7 +109,7 @@ module.exports = {
       allowNull: true,
       defaultValue: false,
     });
-    await queryInterface.dropTable('login_throttles');
-    await queryInterface.dropTable('auth_sessions');
+    if (await tableExists(queryInterface, 'login_throttles')) await queryInterface.dropTable('login_throttles');
+    if (await tableExists(queryInterface, 'auth_sessions')) await queryInterface.dropTable('auth_sessions');
   },
 };
