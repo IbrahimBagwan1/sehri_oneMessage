@@ -37,6 +37,16 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+      // Cloudinary delivery — see migration 20260928000005 and
+      // cloudinaryService.screenshotViewUrl. Never serialise these rows
+      // straight to a client: screenshot_url must be replaced by a view URL.
+      screenshot_public_id: { type: DataTypes.STRING(255), allowNull: true },
+      screenshot_format:    { type: DataTypes.STRING(10), allowNull: true },
+      screenshot_access: {
+        type: DataTypes.ENUM('public', 'authenticated'),
+        allowNull: false,
+        defaultValue: 'public',
+      },
       status: {
         type: DataTypes.ENUM('pending', 'verified', 'rejected'),
         allowNull: false,

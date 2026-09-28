@@ -35,6 +35,23 @@ const { Donation, User, SuperAdmin } = db;
 const MAX_AMOUNT = 9999999.99;
 const CLOUDINARY_FOLDER = 'onemessage/donations';
 
+// Columns that exist for the server only: the asset id and delivery type are
+// how screenshots are signed and deleted; clients get a view URL instead.
+const PRIVATE_COLUMNS = ['screenshot_public_id', 'screenshot_format', 'screenshot_access'];
+
+/**
+ * A donation as the app sees it: `screenshot_url` is an expiring signed link
+ * (authenticated assets) or the legacy public URL — never the stored value
+ * of an authenticated asset, which would be a permanent link.
+ */
+const presentDonation = (row) => {
+  const plain = typeof row.get === 'function' ? row.get({ plain: true }) : { ...row };
+  const view = cloudinaryService.screenshotViewUrl(plain);
+  for (const col of PRIVATE_COLUMNS) delete plain[col];
+  plain.screenshot_url = view;
+  return plain;
+};
+
 // ---------------------------------------------------------------------------
 // POST /api/donations
 // Access: authenticated user (requireUserAccess populates req.actingUserId).
@@ -66,8 +83,11 @@ const submitDonation = async (req, res, next) => {
 
     // 3. Upload the screenshot to Cloudinary FIRST — if this fails, no
     //    DB row is created and no partial state exists.
+    // Authenticated delivery: the asset refuses unsigned requests, and the
+    // app is handed an expiring link (see presentDonation).
     uploaded = await cloudinaryService.uploadImage(req.file.buffer, {
       folder: CLOUDINARY_FOLDER,
+      type: 'authenticated',
     });
 
     // 4. Create the pending donation row.
@@ -76,7 +96,10 @@ const submitDonation = async (req, res, next) => {
       user_id: req.actingUserId,
       amount: rounded,
       note: typeof note === 'string' && note.trim() ? note.trim().slice(0, 500) : null,
-      screenshot_url: uploaded.url,
+      screenshot_url: null,
+      screenshot_public_id: uploaded.publicId,
+      screenshot_format: uploaded.format || null,
+      screenshot_access: 'authenticated',
       status: 'pending',
     });
 
@@ -87,14 +110,14 @@ const submitDonation = async (req, res, next) => {
         id: donation.id,
         amount: donation.amount,
         status: donation.status,
-        screenshot_url: donation.screenshot_url,
+        screenshot_url: cloudinaryService.screenshotViewUrl(donation),
         created_at: donation.created_at,
       },
     });
   } catch (err) {
     // If we uploaded a screenshot but never persisted the row, remove it.
     if (uploaded?.publicId) {
-      await cloudinaryService.deleteImage(uploaded.publicId);
+      await cloudinaryService.deleteImage(uploaded.publicId, { type: uploaded.type || 'authenticated' });
     }
     next(err);
   }
@@ -124,14 +147,14 @@ const getMyHistory = async (req, res, next) => {
       offset,
       attributes: [
         'id', 'amount', 'note', 'screenshot_url', 'status',
-        'rejection_reason', 'verified_at', 'created_at',
+        'rejection_reason', 'verified_at', 'created_at', ...PRIVATE_COLUMNS,
       ],
     });
 
     return success(res, {
       statusCode: 200,
       message: 'Donation history fetched.',
-      data: { total: count, page, limit, donations: rows },
+      data: { total: count, page, limit, donations: rows.map(presentDonation) },
     });
   } catch (err) {
     next(err);
@@ -173,7 +196,7 @@ const listAll = async (req, res, next) => {
     // erasure), so the association is shaped through describeMember
     // rather than handed to the client raw.
     const donations = rows.map((row) => ({
-      ...row.get({ plain: true }),
+      ...presentDonation(row),
       user: describeMember(row.user, ['id', 'name', 'phone', 'address']),
     }));
 
