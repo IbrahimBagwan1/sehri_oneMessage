@@ -18,9 +18,10 @@ const defaults = {
   JWT_REFRESH_EXPIRES_IN: '30d',
 };
 for (const [k, v] of Object.entries(defaults)) process.env[k] = v;
-// The suite never sends SMS or calls Google.
+// The suite never sends SMS, calls Google, or touches Cloudinary.
 process.env.OTP_PROVIDER = 'local';
 delete process.env.GOOGLE_MAPS_API_KEY;
+for (const k of ['CLOUDINARY_URL', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']) delete process.env[k];
 
 const http = require('http');
 const crypto = require('crypto');
@@ -53,12 +54,15 @@ const stopServer = async () => {
 };
 
 /** fetch wrapper → { status, body } */
-const api = async (method, path, { token, body } = {}) => {
+const api = async (method, path, { token, body, ip } = {}) => {
   const res = await fetch(`${baseUrl}/api${path}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      // The app trusts one proxy hop, so this sets req.ip — lets a test play
+      // "the attacker's network" and "the owner's network".
+      ...(ip ? { 'X-Forwarded-For': ip } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -161,7 +165,9 @@ const destroyWorld = async (world) => {
   const inIds = (ids) => ({ [Op.in]: ids.length ? ids : [null] });
 
   await m.AuthSession.destroy({ where: { subject_id: inIds(allIds) } });
-  await m.LoginThrottle.destroy({ where: { phone: inIds(phones) } });
+  for (const p of phones) {
+    await m.LoginThrottle.destroy({ where: { [Op.or]: [{ throttle_key: `p:${p}` }, { throttle_key: { [Op.like]: `pi:${p}:%` } }] } });
+  }
   await m.OTP.destroy({ where: { phone: inIds(phones) } });
   await m.ChatMessageReport.destroy({
     where: { [Op.or]: [{ group_id: inIds(groupIds) }, { reporter_id: inIds(allIds) }, { reported_user_id: inIds(allIds) }] },

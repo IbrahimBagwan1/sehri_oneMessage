@@ -17,11 +17,16 @@
  * signature of a token copied off a device — and the session is revoked on
  * the spot, logging out both the thief and the owner, who signs back in.
  *
- * One exception: the retired jti within a few seconds of rotation. The
- * rider app refreshes from two JavaScript contexts (the screen and the
- * background location task), and both can wake on the same expired token.
- * The loser of that race gets 401 REFRESH_SUPERSEDED — not a revocation —
- * and re-reads the token the winner already stored.
+ * One exception: the just-retired jti, presented again within
+ * REUSE_GRACE_MS of the rotation. That is not theft, it is concurrency:
+ * several requests expiring together on a phone, or the rider app's screen
+ * and its background location task waking on the same expired token, or a
+ * refresh whose response was lost to a dropped connection. The repeat gets
+ * the SAME current refresh token back (and a fresh access token) instead of
+ * an error, so every caller converges on one token and nobody is logged
+ * out. (An earlier version answered 401 REFRESH_SUPERSEDED and left the
+ * client to find the winner's token in storage; on a slow network the
+ * winner's response had not arrived yet, and the loser signed the user out.)
  *
  * CLAIMS ARE RE-READ ON EVERY REFRESH
  * The old refresh re-signed whatever the old token said. A removed admin, a
@@ -52,7 +57,10 @@ const {
 
 const { AuthSession, User, Admin, SuperAdmin, Rider } = db;
 
-const SUPERSEDED_GRACE_MS = 30 * 1000;
+// How long the just-retired refresh token keeps being honoured (idempotently)
+// after a rotation. Long enough for a slow mobile network; short enough that
+// a stolen token replayed later still trips reuse detection.
+const REUSE_GRACE_MS = (Number.parseInt(process.env.REFRESH_REUSE_GRACE_SECONDS, 10) || 60) * 1000;
 
 const refreshTtlMs = () =>
   (durationSeconds(process.env.JWT_REFRESH_EXPIRES_IN || '30d') || 30 * 86400) * 1000;
@@ -139,14 +147,14 @@ const rotateSession = async (refreshToken) => {
       throw new AppError('Your session has ended. Please sign in again.', 401, 'SESSION_ENDED');
     }
 
-    if (decoded.jti !== session.current_jti) {
-      const recentlyRotated = decoded.jti === session.previous_jti
-        && session.rotated_at
-        && now - session.rotated_at < SUPERSEDED_GRACE_MS;
-      if (recentlyRotated) {
-        await t.rollback();
-        throw new AppError('This session was just refreshed elsewhere on this device.', 401, 'REFRESH_SUPERSEDED');
-      }
+    // A repeat of the just-retired token inside the grace window: answer
+    // with the current token rather than rotating again or refusing.
+    const concurrentRepeat = decoded.jti !== session.current_jti
+      && decoded.jti === session.previous_jti
+      && session.rotated_at
+      && now - session.rotated_at < REUSE_GRACE_MS;
+
+    if (decoded.jti !== session.current_jti && !concurrentRepeat) {
       // A retired token came back after the grace window: someone else has
       // it. End the session for everyone holding it.
       await session.update({ revoked_at: now, revoked_reason: 'reuse_detected' }, { transaction: t });
@@ -162,6 +170,12 @@ const rotateSession = async (refreshToken) => {
       await session.update({ revoked_at: now, revoked_reason: reason }, { transaction: t });
       await t.commit();
       throw new AppError('This account can no longer sign in. Contact an admin if this is unexpected.', 401, 'ACCOUNT_UNAVAILABLE');
+    }
+
+    if (concurrentRepeat) {
+      await session.update({ last_used_at: now }, { transaction: t });
+      await t.commit();
+      return { ...mintPair(role, account, session), role, account };
     }
 
     await session.update({

@@ -42,15 +42,31 @@ test('refresh rotates: the new token works, the old one is retired', async () =>
   assert.equal(r2.status, 200, 'the rotated token is accepted');
 });
 
-test('replaying a retired refresh token inside the grace window is refused without killing the session', async () => {
+test('a repeat of the just-retired token inside the grace window gets the CURRENT token back (idempotent)', async () => {
   const { refreshToken } = await h.login(world.amir);
   const first = await h.api('POST', '/auth/refresh-token', { body: { refreshToken } });
   assert.equal(first.status, 200);
-  const raced = await h.api('POST', '/auth/refresh-token', { body: { refreshToken } });
-  assert.equal(raced.status, 401);
-  assert.equal(raced.body.code, 'REFRESH_SUPERSEDED');
-  const stillAlive = await h.api('POST', '/auth/refresh-token', { body: { refreshToken: first.body.data.refreshToken } });
-  assert.equal(stillAlive.status, 200, 'the winner of the race keeps its session');
+  const repeat = await h.api('POST', '/auth/refresh-token', { body: { refreshToken } });
+  assert.equal(repeat.status, 200, 'not an error, not a logout');
+  const { verifyRefreshToken } = require('../../src/utils/jwt');
+  assert.equal(verifyRefreshToken(repeat.body.data.refreshToken).jti, verifyRefreshToken(first.body.data.refreshToken).jti,
+    'both callers converge on one refresh token');
+  const next = await h.api('POST', '/auth/refresh-token', { body: { refreshToken: repeat.body.data.refreshToken } });
+  assert.equal(next.status, 200, 'the session carries on');
+});
+
+test('many requests refreshing with the same token at the same moment all succeed; nobody is logged out', async () => {
+  const { refreshToken } = await h.login(world.alice);
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () => h.api('POST', '/auth/refresh-token', { body: { refreshToken } }))
+  );
+  assert.deepEqual(results.map((r) => r.status), [200, 200, 200, 200, 200, 200]);
+  const { verifyRefreshToken } = require('../../src/utils/jwt');
+  const jtis = new Set(results.map((r) => verifyRefreshToken(r.body.data.refreshToken).jti));
+  assert.equal(jtis.size, 1, 'one rotation, one current token');
+  const { sid } = verifyRefreshToken(refreshToken);
+  const row = await h.db.AuthSession.findByPk(sid);
+  assert.equal(row.revoked_at, null, 'the session was not revoked as reuse');
 });
 
 test('replaying a retired refresh token after the grace window revokes the whole session (theft signal)', async () => {
@@ -106,22 +122,44 @@ test('refresh re-reads claims: a deactivated account cannot refresh', async () =
   assert.equal(r.body.code, 'ACCOUNT_UNAVAILABLE');
 });
 
-test('five wrong passwords lock the NUMBER, even for the right password; a reset lifts it', async () => {
+test('an attacker cannot lock the owner out: failures lock only the attacker network', async () => {
   const { User } = h.db;
   const victim = await User.create({
     name: 'Lockout target', phone: h.phone(), password: await require('bcryptjs').hash(h.PASSWORD, 4),
     gender: 'male', occupation: 'student', location_id: world.pgA1.id, address: 'x',
     status: 'approved', is_phone_verified: true,
   });
+  const ATTACKER = '203.0.113.7';
+  const OWNER = '198.51.100.20';
   for (let i = 0; i < 5; i += 1) {
-    const r = await h.api('POST', '/auth/login', { body: { phone: victim.phone, password: `wrong-${i}-xx` } });
+    const r = await h.api('POST', '/auth/login', { ip: ATTACKER, body: { phone: victim.phone, password: `wrong-${i}-xx` } });
     assert.equal(r.status, 401);
   }
-  const locked = await h.api('POST', '/auth/login', { body: { phone: victim.phone, password: h.PASSWORD } });
-  assert.equal(locked.status, 429);
-  assert.equal(locked.body.code, 'LOGIN_LOCKED');
+  const attackerAgain = await h.api('POST', '/auth/login', { ip: ATTACKER, body: { phone: victim.phone, password: h.PASSWORD } });
+  assert.equal(attackerAgain.status, 429, 'the attacking network is locked, even with the right password');
+  assert.equal(attackerAgain.body.code, 'LOGIN_LOCKED');
 
-  // Forgot-password still works for the real owner (OTP proves the phone).
+  const owner = await h.api('POST', '/auth/login', { ip: OWNER, body: { phone: victim.phone, password: h.PASSWORD } });
+  assert.equal(owner.status, 200, 'the owner on their own network signs in normally');
+});
+
+test('a distributed attack only switches the number to "reset with OTP", which the owner can always do', async () => {
+  const { User } = h.db;
+  const victim = await User.create({
+    name: 'Distributed target', phone: h.phone(), password: await require('bcryptjs').hash(h.PASSWORD, 4),
+    gender: 'female', occupation: 'student', location_id: world.pgA1.id, address: 'x',
+    status: 'approved', is_phone_verified: true,
+  });
+  const throttle = require('../../src/services/loginThrottleService');
+  for (let i = 0; i < throttle.PHONE_MAX_FAILURES; i += 1) {
+    await h.api('POST', '/auth/login', { ip: `192.0.2.${i + 1}`, body: { phone: victim.phone, password: `nope-${i}-x` } });
+  }
+  const blocked = await h.api('POST', '/auth/login', { ip: '198.51.100.99', body: { phone: victim.phone, password: h.PASSWORD } });
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.body.code, 'LOGIN_STEP_UP');
+  assert.match(blocked.body.message, /Forgot password/);
+
+  // The owner resets with an OTP (possession of the phone) and is back in.
   const { hashOtp } = require('../../src/utils/otp');
   await h.db.OTP.create({
     phone: victim.phone, purpose: 'forgot_password', provider: 'local',
@@ -131,8 +169,8 @@ test('five wrong passwords lock the NUMBER, even for the right password; a reset
     body: { phone: victim.phone, otp: '123456', newPassword: 'brand-new-pass-9' },
   });
   assert.equal(reset.status, 200);
-  const after = await h.api('POST', '/auth/login', { body: { phone: victim.phone, password: 'brand-new-pass-9' } });
-  assert.equal(after.status, 200, 'reset lifts the lockout');
+  const after = await h.api('POST', '/auth/login', { ip: '198.51.100.99', body: { phone: victim.phone, password: 'brand-new-pass-9' } });
+  assert.equal(after.status, 200, 'the reset clears the step-up');
 });
 
 test('a password reset signs out every existing session for that number', async () => {
@@ -189,4 +227,21 @@ test('a malformed or missing token is 401, not a crash', async () => {
   assert.equal(r.status, 401);
   const r2 = await h.api('POST', '/auth/refresh-token', { body: { refreshToken: 'garbage' } });
   assert.equal(r2.status, 401);
+});
+
+test('login throttle rows (phone + network address) are purged after a day untouched', async () => {
+  const { LoginThrottle, sequelize } = h.db;
+  const loginThrottle = require('../../src/services/loginThrottleService');
+  const keys = ['pi:9990000001:203.0.113.7', 'p:9990000001', 'pi:9990000002:203.0.113.8'];
+  await LoginThrottle.destroy({ where: { throttle_key: keys } });
+  await LoginThrottle.bulkCreate(keys.map((k) => ({ throttle_key: k, failures: 2, window_started_at: new Date(), lockouts: 1 })));
+  // The first two were last touched two days ago; the third is current.
+  await sequelize.query(
+    'UPDATE login_throttles SET updated_at = NOW() - INTERVAL 2 DAY WHERE throttle_key IN (?, ?)',
+    { replacements: [keys[0], keys[1]] }
+  );
+  await loginThrottle.purgeStale();
+  const left = (await LoginThrottle.findAll({ where: { throttle_key: keys } })).map((r) => r.throttle_key);
+  assert.deepEqual(left, [keys[2]], 'stale rows go, the current one stays');
+  await LoginThrottle.destroy({ where: { throttle_key: keys } });
 });
