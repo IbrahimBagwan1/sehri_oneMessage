@@ -168,7 +168,8 @@ export default function PrayerWidget({ data, loading, error, onRetry }) {
 
               <View style={styles.nameRow}>
                 <Text style={styles.name}>{current.label}</Text>
-                <Text style={styles.arabic} allowFontScaling={false}>
+                {/* The Arabic name repeats the English one; screen readers skip it. */}
+                <Text style={styles.arabic} maxFontSizeMultiplier={1.3} accessibilityElementsHidden importantForAccessibility="no">
                   {current.arabic}
                 </Text>
               </View>
@@ -185,7 +186,7 @@ export default function PrayerWidget({ data, loading, error, onRetry }) {
               <Text
                 style={[styles.countdown, isUrgent && styles.countdownUrgent]}
                 accessibilityRole="timer"
-                allowFontScaling={false}
+                maxFontSizeMultiplier={1.3}
               >
                 {formatCountdown(remainingMs)}
               </Text>
@@ -249,9 +250,19 @@ function AllPrayersSheet({ visible, onClose, timeline, current, data }) {
       transparent
       onRequestClose={onClose}
     >
-      <Pressable style={styles.overlay} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => { /* absorb */ }}>
-          <View style={styles.handle} />
+      {/* accessible={false}: an accessible wrapper would read the whole
+          sheet as one element. The handle doubles as the screen-reader
+          Close button — the sheet has no visible one. */}
+      <Pressable style={styles.overlay} onPress={onClose} accessible={false}>
+        <Pressable style={styles.sheet} onPress={() => { /* absorb */ }} accessible={false} onAccessibilityEscape={onClose}>
+          <Pressable
+            onPress={onClose}
+            hitSlop={16}
+            accessibilityRole="button"
+            accessibilityLabel="Close namaz times"
+          >
+            <View style={styles.handle} />
+          </Pressable>
 
           {/* Header — ornamented, matching the app's section treatment */}
           <View style={styles.sheetHead}>
@@ -288,6 +299,7 @@ function AllPrayersSheet({ visible, onClose, timeline, current, data }) {
               return (
                 <View
                   key={row.key}
+                  accessible
                   style={[
                     styles.row,
                     isCurrent && styles.rowCurrent,
@@ -340,7 +352,7 @@ function AllPrayersSheet({ visible, onClose, timeline, current, data }) {
                   {/* Arabic — gold, Amiri, the typographic anchor of each row */}
                   <Text
                     style={[styles.rowArabic, dim && styles.rowArabicDim]}
-                    allowFontScaling={false}
+                    maxFontSizeMultiplier={1.3}
                   >
                     {row.arabic}
                   </Text>

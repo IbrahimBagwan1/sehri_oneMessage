@@ -27,6 +27,7 @@ import {
   KeyboardAvoidingView
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Reported messages — the moderation queue.
@@ -75,7 +76,7 @@ export default function ChatReportsScreen() {
         setPending(res.data.pending_count || 0);
       }
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load reports.");
+      setError(describeError(err, "Couldn't load reports."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -284,7 +285,7 @@ function ActionSheet({ report, onClose, onResolved }) {
     } catch (err) {
       Alert.alert(
         "Couldn't resolve",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSubmitting(false);
@@ -333,7 +334,7 @@ function ActionSheet({ report, onClose, onResolved }) {
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>Review report</Text>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
+            <Pressable accessibilityRole="button" onPress={onClose} hitSlop={12} accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.inkFaint} />
             </Pressable>
           </View>
@@ -403,6 +404,7 @@ function ActionSheet({ report, onClose, onResolved }) {
               value={note}
               onChangeText={(t) => setNote(t.slice(0, 500))}
               placeholder="e.g. Repeated abusive language"
+              accessibilityLabel="Reason"
               placeholderTextColor={colors.inkGhost}
               multiline
               editable={!submitting}
@@ -410,14 +412,14 @@ function ActionSheet({ report, onClose, onResolved }) {
           </ScrollView>
 
           <View style={styles.sheetActions}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               disabled={submitting}
               style={({ pressed }) => [styles.btn, styles.btnGhost, pressed && styles.pressed]}
             >
               <Text style={styles.btnGhostText}>Cancel</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={confirm}
               disabled={submitting}
               style={({ pressed }) => [

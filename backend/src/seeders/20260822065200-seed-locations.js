@@ -1,10 +1,13 @@
 'use strict';
+
+const { assertNotProduction } = require('../utils/seedGuard');
 // Use Node's built-in randomUUID — the `uuid` npm package is ESM-only
 // in v14 and can't be `require`d from a sequelize-cli seeder (CJS).
 const { randomUUID: uuidv4 } = require('crypto');
 
 module.exports = {
   up: async (queryInterface) => {
+    assertNotProduction();
     const cityId = uuidv4();
 
     const areaNames = ['Kengeri', 'Nayandahalli', 'Nagarabhavi', 'Uttarahalli'];

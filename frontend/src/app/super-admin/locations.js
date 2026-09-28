@@ -43,6 +43,7 @@ import { colors, radius, space, type } from '../../theme';
 // config plugin at prebuild — requires a dev-client build (Expo Go
 // doesn't ship the Google Maps native SDK).
 import MapView, { PROVIDER_GOOGLE, Marker } from 'react-native-maps';
+import { describeError } from '../../api/errors';
 
 // Bangalore center — pin defaults here if the PG doesn't have coords yet.
 const BANGALORE_CENTER = { latitude: 12.9716, longitude: 77.5946 };
@@ -83,7 +84,7 @@ export default function LocationsCoordScreen() {
       const res = await locationsAdminApi.listAddresses();
       if (res.success) setAddresses(res.data || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load PG list.");
+      setError(describeError(err, "Couldn't load PG list."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -123,7 +124,7 @@ export default function LocationsCoordScreen() {
               setAddresses((prev) => prev.filter((a) => a.id !== row.id));
             } catch (err) {
               const status = err?.response?.status;
-              const msg = err?.response?.data?.message || 'Try again in a moment.';
+              const msg = describeError(err, 'Try again in a moment.');
               // 409 → users still linked. Offer force delete as a second
               // step so the admin has to explicitly acknowledge the state.
               if (status === 409) {
@@ -140,7 +141,7 @@ export default function LocationsCoordScreen() {
                           await locationsAdminApi.deleteAddress(row.id, { force: true });
                           setAddresses((prev) => prev.filter((a) => a.id !== row.id));
                         } catch (e2) {
-                          Alert.alert("Couldn't remove", e2?.response?.data?.message || 'Try again.');
+                          Alert.alert("Couldn't remove", describeError(e2, 'Try again.'));
                         }
                       },
                     },
@@ -211,7 +212,7 @@ export default function LocationsCoordScreen() {
       ));
       closePicker();
     } catch (err) {
-      Alert.alert("Couldn't save", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't save", describeError(err, 'Try again in a moment.'));
       setSaving(false);
     }
   };
@@ -249,7 +250,7 @@ export default function LocationsCoordScreen() {
             destructive/edit actions require an explicit second tap. */}
         <Pressable
           onPress={() => setRowActions(item)}
-          hitSlop={10}
+          hitSlop={12}
           style={({ pressed }) => [styles.rowMenuBtn, pressed && styles.rowMenuBtnPressed]}
           accessibilityRole="button"
           accessibilityLabel={`Actions for ${item.name}`}
@@ -268,7 +269,7 @@ export default function LocationsCoordScreen() {
         trailing={
           <Pressable
             onPress={() => setCreateOpen(true)}
-            hitSlop={8}
+            hitSlop={12}
             accessibilityRole="button"
             accessibilityLabel="Add a new PG"
           >
@@ -423,8 +424,13 @@ export default function LocationsCoordScreen() {
         transparent
         onRequestClose={() => setRowActions(null)}
       >
-        <Pressable style={styles.actionOverlay} onPress={() => setRowActions(null)}>
-          <Pressable style={styles.actionSheet} onPress={() => { /* absorb */ }}>
+        <Pressable style={styles.actionOverlay} onPress={() => setRowActions(null)} accessible={false}>
+          <Pressable
+            style={styles.actionSheet}
+            onPress={() => { /* absorb */ }}
+            accessible={false}
+            onAccessibilityEscape={() => setRowActions(null)}
+          >
             <View style={styles.modalHandle} />
             <Text style={styles.actionTitle} numberOfLines={2}>{rowActions?.name}</Text>
             <Text style={styles.actionSub}>{rowActions?.parent?.name}</Text>
@@ -557,7 +563,7 @@ function PGFormSheet({ visible, mode, initial, zones, zonesLoading, onClose, onS
     } catch (err) {
       Alert.alert(
         isEdit ? "Couldn't update PG" : "Couldn't create PG",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSaving(false);
@@ -700,7 +706,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
       android: { elevation: 6 },
     }),
   },
@@ -720,7 +726,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.ruleSoft,
     padding: space[3],
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.10, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.10, shadowRadius: 3 },
       android: { elevation: 3 },
     }),
   },

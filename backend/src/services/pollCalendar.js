@@ -26,17 +26,18 @@
 const db = require('../models');
 const { istDateString, istHour, addDays } = require('../utils/istTime');
 const { WINDOWS } = require('../utils/pollPhase');
+const clock = require('../utils/clock');
 
 const { Poll, DeliveryStop } = db;
 
 /** Date of the poll a super admin opens if they tap "create" right now. */
-const creationDateFor = (now = new Date()) => {
+const creationDateFor = (now = clock.now()) => {
   const today = istDateString(now);
   return istHour(now) >= WINDOWS.VOTING_OPEN_HOUR ? addDays(today, 1) : today;
 };
 
 /** The poll members see and vote on. */
-const getCurrentPoll = async (now = new Date(), { transaction } = {}) => {
+const getCurrentPoll = async (now = clock.now(), { transaction } = {}) => {
   const today = istDateString(now);
   if (istHour(now) >= WINDOWS.VOTING_OPEN_HOUR) {
     const next = await Poll.findOne({ where: { date: addDays(today, 1) }, transaction });
@@ -70,7 +71,7 @@ const resolveDeliveryPollId = async (now) => {
 };
 
 /** The poll whose delivery run is in progress (or next up). */
-const getDeliveryPoll = async (now = new Date()) => {
+const getDeliveryPoll = async (now = clock.now()) => {
   const key = `${istDateString(now)}:${istHour(now) < WINDOWS.VOTING_CLOSE_HOUR ? 'am' : 'day'}`;
   const fresh = deliveryCache.key === key && Date.now() - deliveryCache.at < DELIVERY_CACHE_MS;
   const pollId = fresh ? deliveryCache.pollId : await resolveDeliveryPollId(now);

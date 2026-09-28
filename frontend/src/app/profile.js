@@ -28,6 +28,7 @@ import {
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
 import { LEGAL_URLS, openLegalUrl } from '../constants/legal';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // Profile — read from GET /api/users/me. Edits are submitted as a
@@ -140,7 +141,7 @@ function ProfileScreenAuthed() {
         );
       }
     } catch (err) {
-      Alert.alert("Couldn't load profile", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't load profile", describeError(err, 'Try again in a moment.'));
     } finally {
       setLoading(false);
     }
@@ -180,7 +181,7 @@ function ProfileScreenAuthed() {
       setIsEditing(false);
       loadProfile();
     } catch (err) {
-      Alert.alert("Couldn't submit changes", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't submit changes", describeError(err, 'Try again in a moment.'));
     } finally {
       setSaving(false);
     }
@@ -223,7 +224,7 @@ function ProfileScreenAuthed() {
                       await logout();
                       router.replace('/(auth)/login');
                     } catch (err) {
-                      Alert.alert("Couldn't delete", err?.response?.data?.message || 'Try again in a moment.');
+                      Alert.alert("Couldn't delete", describeError(err, 'Try again in a moment.'));
                     } finally { setDeleting(false); }
                   },
                 },
@@ -254,11 +255,11 @@ function ProfileScreenAuthed() {
         onBack={() => router.back()}
         trailing={
           isEditing ? (
-            <Pressable onPress={() => { loadProfile(); setIsEditing(false); }} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={() => { loadProfile(); setIsEditing(false); }} hitSlop={8}>
               <Text style={styles.headerAction}>Cancel</Text>
             </Pressable>
           ) : (
-            <Pressable onPress={() => setIsEditing(true)} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={() => setIsEditing(true)} hitSlop={8}>
               <Text style={styles.headerAction}>Edit</Text>
             </Pressable>
           )
@@ -290,6 +291,10 @@ function ProfileScreenAuthed() {
             <Pressable
               onPress={() => openModal('gender')}
               disabled={!isEditing}
+              accessibilityRole="button"
+              accessibilityLabel={`Gender, ${gender || 'not set'}`}
+              accessibilityHint={isEditing ? 'Opens a list to choose from' : undefined}
+              accessibilityState={{ disabled: !isEditing }}
               style={[styles.select, !isEditing && styles.selectDisabled]}
             >
               <Text style={styles.selectText}>{gender || '—'}</Text>
@@ -300,6 +305,10 @@ function ProfileScreenAuthed() {
             <Pressable
               onPress={() => openModal('occupation')}
               disabled={!isEditing}
+              accessibilityRole="button"
+              accessibilityLabel={`Occupation, ${occupation || 'not set'}`}
+              accessibilityHint={isEditing ? 'Opens a list to choose from' : undefined}
+              accessibilityState={{ disabled: !isEditing }}
               style={[styles.select, !isEditing && styles.selectDisabled]}
             >
               <Text style={styles.selectText}>{occupation || '—'}</Text>
@@ -453,7 +462,7 @@ function ProfileScreenAuthed() {
               data={modalOptions}
               keyExtractor={(item) => item}
               renderItem={({ item }) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => {
                     if (modalType === 'gender') setGender(item);
                     if (modalType === 'occupation') setOccupation(item);

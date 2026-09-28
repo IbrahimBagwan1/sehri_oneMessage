@@ -75,6 +75,10 @@ const ETA_CACHE_MS = 3 * 60 * 1000;
 // one extra request, not a correctness problem.
 // ---------------------------------------------------------------------------
 const lastRecomputeByRider = new Map();
+// Captains with a recompute in progress. Two GPS pushes arriving close
+// together both passed the throttle before either recorded its time, and
+// both called Google; the second now returns immediately.
+const inFlightCaptains = new Set();
 
 /** Haversine distance between two coords, in meters. */
 const haversineMeters = (a, b) => {
@@ -136,8 +140,9 @@ const etaCacheKey = (captainId, locationId) => routeCache.key('eta', captainId, 
  * @param {number} lng   — the tracked device's longitude
  */
 const updateETAsForRider = async (rider, lat, lng) => {
+  if (!rider || inFlightCaptains.has(rider.id)) return;
+  inFlightCaptains.add(rider.id);
   try {
-    if (!rider) return;
 
     if (rider.status !== 'delivering') {
       // A captain whose own row says idle can still have a helper out
@@ -231,33 +236,15 @@ const updateETAsForRider = async (rider, lat, lng) => {
 
     const now = new Date();
     const idsByEta = new Map();   // etaMin → [responseId]
-    const proximityIds = [];
-    const pushes = [];
+    const proximityCandidates = [];
 
     for (const r of responses) {
       const { etaMin, route } = perLocation.get(r.user.location_id);
       if (!idsByEta.has(etaMin)) idsByEta.set(etaMin, []);
       idsByEta.get(etaMin).push(r.id);
 
-      const proximityHit = etaMin <= PROXIMITY_ETA_MINUTES && r.proximity_notified_at == null;
-      if (proximityHit) {
-        proximityIds.push(r.id);
-        if (r.user.fcm_token) {
-          pushes.push({
-            to: r.user.fcm_token,
-            title: 'Your Sehri is close',
-            body: etaMin <= 1
-              ? 'Your rider is arriving now.'
-              : `Your rider is arriving in about ${etaMin} minutes.`,
-            data: {
-              type: 'delivery_arrival',
-              poll_id: poll.id,
-              response_id: r.id,
-              eta_minutes: etaMin,
-              route: '/(user)/track',
-            },
-          });
-        }
+      if (etaMin <= PROXIMITY_ETA_MINUTES && r.proximity_notified_at == null) {
+        proximityCandidates.push({ r, etaMin });
       }
 
       try {
@@ -279,13 +266,31 @@ const updateETAsForRider = async (rider, lat, lng) => {
         { where: { id: { [Op.in]: ids } } }
       );
     }
-    if (proximityIds.length) {
-      // Conditional on still being null, so two instances racing on the
-      // same push cannot both claim it.
-      await PollResponse.update(
+    // Proximity push: claim each row FIRST with a conditional update, and
+    // notify only for rows this call actually claimed. Deciding from the
+    // earlier read (as before) let two overlapping recomputes — two server
+    // instances, or two pushes in quick succession — both send it.
+    const pushes = [];
+    for (const { r, etaMin } of proximityCandidates) {
+      const [claimed] = await PollResponse.update(
         { proximity_notified_at: now },
-        { where: { id: { [Op.in]: proximityIds }, proximity_notified_at: null } }
+        { where: { id: r.id, proximity_notified_at: null } }
       );
+      if (claimed !== 1 || !r.user.fcm_token) continue;
+      pushes.push({
+        to: r.user.fcm_token,
+        title: 'Your Sehri is close',
+        body: etaMin <= 1
+          ? 'Your rider is arriving now.'
+          : `Your rider is arriving in about ${etaMin} minutes.`,
+        data: {
+          type: 'delivery_arrival',
+          poll_id: poll.id,
+          response_id: r.id,
+          eta_minutes: etaMin,
+          route: '/(user)/track',
+        },
+      });
     }
 
     if (pushes.length > 0) {
@@ -303,6 +308,8 @@ const updateETAsForRider = async (rider, lat, lng) => {
     // Absolutely must never throw — this runs as a fire-and-forget
     // side-effect of a hot-path location push.
     logger.error(`[eta] updateETAsForRider failed: ${err.stack || err.message}`);
+  } finally {
+    inFlightCaptains.delete(rider.id);
   }
 };
 
@@ -324,7 +331,11 @@ const onTeamStopped = (captain) => {
   } catch (_) { /* noop */ }
 };
 
+/** Test hook: forget throttle state so a suite can drive recomputes. */
+const resetThrottleForTests = () => { lastRecomputeByRider.clear(); inFlightCaptains.clear(); };
+
 module.exports = {
+  resetThrottleForTests,
   // Named for the team, since a pair shares one stop list and one ETA run.
   updateETAsForTeam: updateETAsForRider,
   onTeamStopped,

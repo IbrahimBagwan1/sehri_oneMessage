@@ -271,7 +271,7 @@ export default function VerifyPhoneScreen() {
             </>
           )}
 
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => router.replace('/(auth)/login')}
             hitSlop={8}
             style={({ pressed }) => [styles.footer, pressed && { opacity: 0.6 }]}

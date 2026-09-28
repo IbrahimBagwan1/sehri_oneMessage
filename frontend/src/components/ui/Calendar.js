@@ -112,7 +112,7 @@ export default function Calendar({
         <Pressable
           onPress={goPrev}
           disabled={!!atMinMonth}
-          hitSlop={10}
+          hitSlop={12}
           style={({ pressed }) => [
             styles.navBtn,
             pressed && styles.navBtnPressed,
@@ -142,7 +142,7 @@ export default function Calendar({
         <Pressable
           onPress={goNext}
           disabled={!!atMaxMonth}
-          hitSlop={10}
+          hitSlop={12}
           style={({ pressed }) => [
             styles.navBtn,
             pressed && styles.navBtnPressed,

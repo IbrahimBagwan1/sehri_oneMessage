@@ -20,6 +20,9 @@ module.exports = {
   },
 
   async down(queryInterface, Sequelize) {
+    // Provider-verified rows have no local hash and cannot satisfy NOT NULL.
+    // OTPs are minutes-lived, so dropping them is harmless.
+    await queryInterface.sequelize.query('DELETE FROM otps WHERE otp_hash IS NULL');
     await queryInterface.changeColumn('otps', 'otp_hash', {
       type: Sequelize.STRING,
       allowNull: false,

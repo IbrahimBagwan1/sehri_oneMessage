@@ -24,44 +24,61 @@
  *    • otps (phone, created_at) matches the new per-number daily send cap.
  */
 
+const {
+  addColumnIfMissing,
+  removeColumnIfExists,
+  addIndexIfMissing,
+  removeIndexIfExists,
+} = require('../utils/migrationHelpers');
+
+// Every step is idempotent (see utils/migrationHelpers.js): if a deploy
+// fails part way, running the migration again completes it.
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.addColumn('locations', 'is_sandbox', {
+    await addColumnIfMissing(queryInterface, 'locations', 'is_sandbox', {
       type: Sequelize.BOOLEAN,
       allowNull: false,
       defaultValue: false,
     });
 
+    // A value longer than 255 characters cannot be an Expo push token
+    // (they are ~45), so it can never have delivered a notification — but it
+    // would make strict-mode MySQL refuse the narrowing below ("Data too long
+    // for column"). Clear those first. Found by replaying this migration on
+    // a copy of real data with a malformed token in it.
+    await queryInterface.sequelize.query(
+      'UPDATE users SET fcm_token = NULL WHERE CHAR_LENGTH(fcm_token) > 255'
+    );
     await queryInterface.changeColumn('users', 'fcm_token', {
       type: Sequelize.STRING(255),
       allowNull: true,
     });
-    await queryInterface.addIndex('users', ['fcm_token'], { name: 'idx_users_fcm_token' });
+    await addIndexIfMissing(queryInterface, 'users', ['fcm_token'], { name: 'idx_users_fcm_token' });
 
-    await queryInterface.addIndex('donations', ['status', 'created_at'], {
+    await addIndexIfMissing(queryInterface, 'donations', ['status', 'created_at'], {
       name: 'idx_donations_status_created',
     });
-    await queryInterface.addIndex('feedback', ['is_read', 'created_at'], {
+    await addIndexIfMissing(queryInterface, 'feedback', ['is_read', 'created_at'], {
       name: 'idx_feedback_read_created',
     });
-    await queryInterface.addIndex('delivery_stops', ['poll_id', 'status'], {
+    await addIndexIfMissing(queryInterface, 'delivery_stops', ['poll_id', 'status'], {
       name: 'idx_delivery_stops_poll_status',
     });
-    await queryInterface.addIndex('otps', ['phone', 'created_at'], {
+    await addIndexIfMissing(queryInterface, 'otps', ['phone', 'created_at'], {
       name: 'idx_otps_phone_created',
     });
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.removeIndex('otps', 'idx_otps_phone_created');
-    await queryInterface.removeIndex('delivery_stops', 'idx_delivery_stops_poll_status');
-    await queryInterface.removeIndex('feedback', 'idx_feedback_read_created');
-    await queryInterface.removeIndex('donations', 'idx_donations_status_created');
-    await queryInterface.removeIndex('users', 'idx_users_fcm_token');
+    await removeIndexIfExists(queryInterface, 'otps', 'idx_otps_phone_created');
+    await removeIndexIfExists(queryInterface, 'delivery_stops', 'idx_delivery_stops_poll_status');
+    await removeIndexIfExists(queryInterface, 'feedback', 'idx_feedback_read_created');
+    await removeIndexIfExists(queryInterface, 'donations', 'idx_donations_status_created');
+    await removeIndexIfExists(queryInterface, 'users', 'idx_users_fcm_token');
     await queryInterface.changeColumn('users', 'fcm_token', {
       type: Sequelize.TEXT,
       allowNull: true,
     });
-    await queryInterface.removeColumn('locations', 'is_sandbox');
+    await removeColumnIfExists(queryInterface, 'locations', 'is_sandbox');
   },
 };

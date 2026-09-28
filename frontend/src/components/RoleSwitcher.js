@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../store/useAuthStore';
 import { Button, RubStar } from './ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 /**
  * RoleSwitcher — one affordance for "which hat am I wearing?", shared by
@@ -96,7 +97,7 @@ export default function RoleSwitcher({ fallbackRole = 'user' }) {
     } catch (err) {
       Alert.alert(
         "Couldn't switch role",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
       return undefined;
     } finally {
@@ -108,7 +109,7 @@ export default function RoleSwitcher({ fallbackRole = 'user' }) {
 
   return (
     <>
-      <Pressable
+      <Pressable hitSlop={6}
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.btn, pressed && styles.btnPressed]}
         accessibilityRole="button"
@@ -145,8 +146,15 @@ function RoleSwitchSheet({ visible, onClose, activeRole, roles, switching, onPic
       transparent
       onRequestClose={() => (switching ? null : onClose())}
     >
-      <Pressable style={styles.overlay} onPress={() => (switching ? null : onClose())}>
-        <Pressable style={styles.sheet} onPress={() => { /* absorb */ }}>
+      {/* accessible={false}: an accessible wrapper would hide the role
+          options from VoiceOver. */}
+      <Pressable style={styles.overlay} onPress={() => (switching ? null : onClose())} accessible={false}>
+        <Pressable
+          style={styles.sheet}
+          onPress={() => { /* absorb */ }}
+          accessible={false}
+          onAccessibilityEscape={() => (switching ? null : onClose())}
+        >
           <View style={styles.handle} />
 
           <View style={styles.head}>

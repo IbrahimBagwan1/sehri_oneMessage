@@ -21,6 +21,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 const STATUS = {
   pending:  { label: 'Pending',  tone: 'warn'    },
@@ -75,7 +76,7 @@ export default function SuperAdminRequests() {
       const res = await usersApi.getProfileEditRequests({ status: filter === 'all' ? undefined : filter });
       if (res.success) setRequests(res.data || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load requests.");
+      setError(describeError(err, "Couldn't load requests."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -106,7 +107,7 @@ export default function SuperAdminRequests() {
                   : prev.filter((r) => r.id !== id)
               );
             } catch (err) {
-              Alert.alert("Couldn't save", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't save", describeError(err, 'Try again.'));
             } finally {
               setBusyId(null);
             }

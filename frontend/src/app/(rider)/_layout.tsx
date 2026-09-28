@@ -2,14 +2,14 @@
 import React, { useEffect } from 'react';
 import { Tabs, useRouter, useSegments } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRiderStore } from '../../store/useRiderStore';
 // Imported for its side effect: the background location task must be
 // DEFINED before the OS can deliver to it, including on a cold relaunch
 // where the OS starts the app specifically to hand over a location.
 import '../../services/riderLocationTask';
-import { colors } from '../../theme';
+import { colors, tabBarHeight } from '../../theme';
 
 export default function RiderLayout() {
   const router          = useRouter();
@@ -42,7 +42,8 @@ export default function RiderLayout() {
   // Safe-area-aware bottom padding — see comment in (user)/_layout.tsx.
   const insets = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
-  const barHeight = 56 + bottomPad;
+  const { fontScale } = useWindowDimensions();
+  const barHeight = tabBarHeight(fontScale, bottomPad);
 
   if (!isHydrated && !onLoginScreen) {
     return (

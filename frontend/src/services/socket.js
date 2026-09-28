@@ -1,5 +1,5 @@
 import { io } from 'socket.io-client';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure } from './secureStorage';
 import { API_BASE_URL, refreshSession } from '../api/client';
 
 /**
@@ -44,7 +44,7 @@ export const connect = async () => {
   if (connecting) return connecting;
 
   connecting = (async () => {
-    const token = await SecureStore.getItemAsync('access_token');
+    const token = await getSecure('access_token');
     if (!token) {
       // Guest mode or logged out — no socket, no crash.
       connecting = null;
@@ -64,7 +64,7 @@ export const connect = async () => {
       // token expired kept reconnecting with the dead token forever, and
       // live chat and tracking silently stopped until the app restarted.
       auth: (cb) => {
-        SecureStore.getItemAsync('access_token')
+        getSecure('access_token')
           .then((t) => cb({ token: t }))
           .catch(() => cb({ token: null }));
       },

@@ -22,7 +22,8 @@
       "distribution": "internal",
       "environment": "preview",
       "env": {
-        "EXPO_PUBLIC_APP_ENV": "preview"
+        "EXPO_PUBLIC_APP_ENV": "preview",
+        "APP_BUNDLE_ID": "REPLACE_WITH_YOUR_BUNDLE_ID"
       },
       "android": { "buildType": "apk" }
     },

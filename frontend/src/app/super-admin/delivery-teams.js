@@ -27,6 +27,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — Delivery teams.
@@ -73,7 +74,7 @@ export default function DeliveryTeamsScreen() {
       const res = await trackingApi.getTeamRoster();
       if (res.success) setRoster(res.data);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load the roster.");
+      setError(describeError(err, "Couldn't load the roster."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -308,7 +309,7 @@ function UnrosteredSection({ riders, onPromote }) {
         captain&apos;s card above.
       </Text>
       {riders.map((r) => (
-        <Pressable
+        <Pressable accessibilityRole="button"
           key={r.id}
           onPress={() => onPromote(r)}
           style={({ pressed }) => [styles.freeRow, pressed && styles.sectionPressed]}
@@ -365,7 +366,7 @@ function ZonePickerSheet({ captain, allZones, onClose, onSaved }) {
     } catch (err) {
       Alert.alert(
         "Couldn't save zones",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setSaving(false);
@@ -386,7 +387,7 @@ function ZonePickerSheet({ captain, allZones, onClose, onSaved }) {
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>Zones for {captain.name}</Text>
-            <Pressable onPress={close} hitSlop={8} accessibilityLabel="Close">
+            <Pressable accessibilityRole="button" onPress={close} hitSlop={12} accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.inkFaint} />
             </Pressable>
           </View>
@@ -407,6 +408,8 @@ function ZonePickerSheet({ captain, allZones, onClose, onSaved }) {
                   key={z.id}
                   disabled={taken}
                   onPress={() => toggle(z.id)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: on, disabled: taken }}
                   style={({ pressed }) => [
                     styles.zoneRow,
                     on && styles.zoneRowOn,
@@ -468,7 +471,7 @@ function HelperPickerSheet({ captain, available, onClose, onSaved }) {
     } catch (err) {
       Alert.alert(
         "Couldn't update the helper",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setBusyId(null);
@@ -483,7 +486,7 @@ function HelperPickerSheet({ captain, available, onClose, onSaved }) {
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>Helper for {captain.name}</Text>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
+            <Pressable accessibilityRole="button" onPress={onClose} hitSlop={12} accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.inkFaint} />
             </Pressable>
           </View>
@@ -493,7 +496,7 @@ function HelperPickerSheet({ captain, available, onClose, onSaved }) {
           </Text>
 
           <ScrollView style={{ maxHeight: 340 }}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => pick(null)}
               disabled={busyId != null}
               style={({ pressed }) => [
@@ -515,7 +518,7 @@ function HelperPickerSheet({ captain, available, onClose, onSaved }) {
             </Pressable>
 
             {currentHelper && (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 disabled
                 style={[styles.helperOption, styles.helperOptionOn]}
               >
@@ -535,7 +538,7 @@ function HelperPickerSheet({ captain, available, onClose, onSaved }) {
             )}
 
             {available.map((r) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={r.id}
                 onPress={() => pick(r.id)}
                 disabled={busyId != null}

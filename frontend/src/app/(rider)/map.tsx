@@ -509,7 +509,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
       android: { elevation: 6 },
     }),
   },
@@ -519,7 +519,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: colors.paper,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
       android: { elevation: 6 },
     }),
   },
@@ -532,7 +532,7 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: colors.teal,
     alignItems: 'center', justifyContent: 'center',
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.20, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.20, shadowRadius: 3 },
       android: { elevation: 4 },
     }),
   },
@@ -580,7 +580,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingHorizontal: space[3], paddingVertical: 6,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 3 },
       android: { elevation: 3 },
     }),
   },
@@ -594,7 +594,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.ruleSoft,
     ...Platform.select({
-      ios:     { shadowColor: '#0F172A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
+      ios:     { shadowColor: colors.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3 },
       android: { elevation: 4 },
     }),
   },

@@ -12,10 +12,10 @@
   "dependencies": {
     "@expo-google-fonts/amiri": "^0.4.1",
     "@expo/vector-icons": "^15.0.3",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@sentry/react-native": "~7.11.0",
     "axios": "^1.19.0",
     "expo": "~57.0.25",
-    "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.17",
     "expo-dev-client": "~57.0.19",
     "expo-device": "~57.0.2",

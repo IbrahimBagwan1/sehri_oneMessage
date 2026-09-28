@@ -6,6 +6,7 @@ import {
   StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { colors } from '../theme';
 
 /**
  * PasswordInput — TextInput with an inline eye toggle for show/hide.
@@ -29,6 +30,7 @@ const PasswordInput = forwardRef(function PasswordInput(
     <View style={[styles.wrapper, containerStyle]}>
       <TextInput
         ref={ref}
+        accessibilityLabel="Password"
         {...textInputProps}
         style={[styles.input, style]}
         secureTextEntry={!visible}
@@ -47,7 +49,7 @@ const PasswordInput = forwardRef(function PasswordInput(
         <Ionicons
           name={visible ? 'eye-off-outline' : 'eye-outline'}
           size={20}
-          color="#64748B"
+          color={colors.inkFaint}
         />
       </TouchableOpacity>
     </View>
@@ -60,16 +62,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   input: {
-    backgroundColor: '#FFF',
+    backgroundColor: colors.paper,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: colors.ruleStrong,
     borderRadius: 8,
     paddingLeft: 12,
     // Extra right padding so text never runs under the eye icon.
     paddingRight: 44,
     paddingVertical: 12,
     fontSize: 16,
-    color: '#0F172A',
+    color: colors.ink,
   },
   iconButton: {
     position: 'absolute',

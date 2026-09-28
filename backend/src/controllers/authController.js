@@ -215,7 +215,7 @@ const loginUser = async (req, res, next) => {
 
     // A locked number is refused before any account lookup or password
     // comparison — see services/loginThrottleService.js.
-    await loginThrottle.assertNotLocked(phone);
+    await loginThrottle.assertNotLocked(phone, req.ip);
 
     // The reviewer's account repairs itself on a sign-in with the documented
     // password, so a previous reviewer deleting it cannot lock out the next.
@@ -252,14 +252,14 @@ const loginUser = async (req, res, next) => {
     // not — a free lookup of any member's approval status.
     const isPasswordValid = await bcrypt.compare(password, account.password);
     if (!isPasswordValid) {
-      await loginThrottle.recordFailure(phone);
+      await loginThrottle.recordFailure(phone, req.ip);
       return error(res, {
         statusCode: 401,
         message: 'Invalid phone or password',
         code: 'INVALID_CREDENTIALS',
       });
     }
-    await loginThrottle.recordSuccess(phone);
+    await loginThrottle.recordSuccess(phone, req.ip);
 
     // Every role this number holds is suspended. 'Deactivated' means
     // exactly this — a super admin turned the account off and can turn it
@@ -510,7 +510,7 @@ const forgotPasswordReset = async (req, res, next) => {
     // out, and a lockout from the guessing that prompted the reset is lifted.
     const subjects = await authSessionService.subjectsForPhone(phone);
     await authSessionService.revokeSubjects(subjects, 'password_reset');
-    await loginThrottle.recordSuccess(phone);
+    await loginThrottle.clearForPhone(phone);
     logger.info(`[auth] password reset for ${logger.maskPhone(phone)} (${accounts.length} account row(s))`);
 
     return success(res, {

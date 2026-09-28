@@ -18,6 +18,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Admin chat — group list only for now (message-thread UI is a follow-up).
@@ -50,7 +51,7 @@ export default function AdminChatScreen() {
       const res = await chatApi.getMyGroups();
       if (res.success) setGroups(res.data.groups || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your groups.");
+      setError(describeError(err, "Couldn't load your groups."));
     } finally {
       setLoading(false);
       setRefreshing(false);

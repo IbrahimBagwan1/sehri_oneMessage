@@ -61,7 +61,7 @@ const isConfigured = () =>
  * @param {string=} opts.publicId  — optional deterministic id; leaves random otherwise
  * @returns {Promise<{ url: string, publicId: string, width: number, height: number, bytes: number }>}
  */
-const uploadImage = async (buffer, { folder, publicId } = {}) => {
+const uploadImage = async (buffer, { folder, publicId, type = 'upload' } = {}) => {
   if (!isConfigured()) {
     throw new AppError('Image storage is not configured on the server', 503);
   }
@@ -76,6 +76,8 @@ const uploadImage = async (buffer, { folder, publicId } = {}) => {
         folder,
         public_id: publicId,
         resource_type: 'image',
+        // 'authenticated' refuses unsigned requests; see screenshotViewUrl.
+        type,
         overwrite: false,
         // Serve a moderately-compressed variant back — screenshots are
         // typically PNGs and we don't need pixel-perfect for review.
@@ -87,8 +89,12 @@ const uploadImage = async (buffer, { folder, publicId } = {}) => {
           return reject(new AppError('Could not save the screenshot. Try again.', 502));
         }
         return resolve({
+          // For an authenticated asset this URL carries a permanent
+          // signature — never store or return it; sign per request instead.
           url:      result.secure_url,
           publicId: result.public_id,
+          format:   result.format,
+          type:     result.type,
           width:    result.width,
           height:   result.height,
           bytes:    result.bytes,
@@ -103,11 +109,11 @@ const uploadImage = async (buffer, { folder, publicId } = {}) => {
  * Delete an asset by publicId. Best-effort — logs and swallows errors.
  * Used when a controller needs to roll back an upload after a DB write fails.
  */
-const deleteImage = async (publicId) => {
+const deleteImage = async (publicId, { type = 'upload' } = {}) => {
   if (!publicId || !isConfigured()) return;
   configure();
   try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+    await cloudinary.uploader.destroy(publicId, { resource_type: 'image', type, invalidate: true });
   } catch (err) {
     logger.warn(`[cloudinary] delete failed for ${publicId}: ${err.message}`);
   }
@@ -124,4 +130,47 @@ const publicIdFromUrl = (url) => {
   return m ? m[1] : null;
 };
 
-module.exports = { uploadImage, deleteImage, publicIdFromUrl, isConfigured };
+// How long a screenshot link handed to the app stays valid. Screens refetch
+// on focus, so an hour comfortably outlasts any real viewing.
+const VIEW_LINK_TTL_SECONDS = 60 * 60;
+
+/**
+ * The URL the app should load for a donation's screenshot, or null.
+ *
+ * Authenticated assets get a signed download link that EXPIRES
+ * (VIEW_LINK_TTL_SECONDS) — a copied or leaked link stops working. Legacy
+ * public rows (not yet converted by scripts/secure-donation-screenshots.js)
+ * return their stored URL, as before.
+ */
+const screenshotViewUrl = (donation) => {
+  if (!donation) return null;
+  if (donation.screenshot_access === 'authenticated' && donation.screenshot_public_id) {
+    if (!isConfigured()) return null;
+    configure();
+    return cloudinary.utils.private_download_url(donation.screenshot_public_id, donation.screenshot_format || 'jpg', {
+      type: 'authenticated',
+      resource_type: 'image',
+      attachment: false,
+      expires_at: Math.floor(Date.now() / 1000) + VIEW_LINK_TTL_SECONDS,
+    });
+  }
+  return donation.screenshot_url || null;
+};
+
+/** Delete a donation's screenshot, whichever delivery type it has. */
+const deleteScreenshot = async (donation) => {
+  if (!donation) return;
+  const publicId = donation.screenshot_public_id || publicIdFromUrl(donation.screenshot_url);
+  if (!publicId) return;
+  await deleteImage(publicId, { type: donation.screenshot_access === 'authenticated' ? 'authenticated' : 'upload' });
+};
+
+module.exports = {
+  uploadImage,
+  deleteImage,
+  deleteScreenshot,
+  publicIdFromUrl,
+  screenshotViewUrl,
+  isConfigured,
+  VIEW_LINK_TTL_SECONDS,
+};

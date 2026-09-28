@@ -1,4 +1,6 @@
 'use strict';
+
+const { dropForeignKeysOn } = require('../utils/migrationHelpers');
 /**
  * Adds a nullable user_id FK to the admins table.
  *
@@ -31,6 +33,7 @@ module.exports = {
   },
 
   down: async (queryInterface) => {
+    await dropForeignKeysOn(queryInterface, 'admins', 'user_id');
     await queryInterface.removeIndex('admins', 'admins_user_id_idx');
     await queryInterface.removeColumn('admins', 'user_id');
   },

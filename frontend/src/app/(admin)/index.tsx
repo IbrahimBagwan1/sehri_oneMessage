@@ -31,6 +31,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 const PHASE = {
   voting:       { label: 'Voting open',           tone: 'teal'    },
@@ -124,7 +125,7 @@ export default function AdminDashboard() {
         setVoters(list);
       } catch (err) {
         if (!alive) return;
-        setVotersError(err?.response?.data?.message || "Couldn't load voters.");
+        setVotersError(describeError(err, "Couldn't load voters."));
       } finally {
         if (alive) setVotersLoading(false);
       }
@@ -156,7 +157,7 @@ export default function AdminDashboard() {
         Alert.alert('Linked', res.message);
       }
     } catch (err) {
-      Alert.alert("Couldn't link", err?.response?.data?.message || 'Try again in a moment.');
+      Alert.alert("Couldn't link", describeError(err, 'Try again in a moment.'));
     } finally {
       setLinking(false);
     }
@@ -174,8 +175,8 @@ export default function AdminDashboard() {
     try {
       const res = await adminApi.getActiveStats();
       if (res.success) setStatsData(res.data);
-    } catch {
-      setStatsError("Couldn't load today's poll stats.");
+    } catch (err) {
+      setStatsError(describeError(err, "Couldn't load today's poll stats."));
     } finally {
       setLoadingStats(false);
     }

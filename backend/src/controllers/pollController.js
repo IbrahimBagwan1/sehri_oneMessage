@@ -446,6 +446,11 @@ const getZoneVoters = async (req, res, next) => {
     if (responseFilter !== 'all') where.response = responseFilter;
     if (targetZone) {
       where.zone = targetZone;
+    } else {
+      // "All zones" means all REAL zones: the App Review sandbox is never
+      // part of the kitchen's numbers or voter lists.
+      const sandboxKeys = await require('../services/reviewDemoService').sandboxZoneKeys();
+      if (sandboxKeys.length) where.zone = { [Op.notIn]: sandboxKeys };
     }
 
     const responses = await PollResponse.findAll({

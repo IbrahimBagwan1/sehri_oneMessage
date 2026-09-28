@@ -23,6 +23,7 @@ const { testConnection, sequelize } = require('./config/database');
 const { initSocket, getIO } = require('./services/socketService');
 const chatGroupSync = require('./services/chatGroupSync');
 const authSessionService = require('./services/authSessionService');
+const loginThrottleService = require('./services/loginThrottleService');
 
 const PORT = Number.parseInt(process.env.PORT || '5000', 10);
 const SESSION_PURGE_MS = 6 * 60 * 60 * 1000;
@@ -115,8 +116,12 @@ testConnection()
 
     // Housekeeping for ended sessions. Idempotent, so every instance may
     // run it; unref'd so it never holds the process open on shutdown.
-    const purge = () => authSessionService.purgeStaleSessions()
-      .catch((err) => logger.warn(`[auth] session purge failed: ${err.message}`));
+    const purge = () => Promise.all([
+      authSessionService.purgeStaleSessions()
+        .catch((err) => logger.warn(`[auth] session purge failed: ${err.message}`)),
+      loginThrottleService.purgeStale()
+        .catch((err) => logger.warn(`[auth] login throttle purge failed: ${err.message}`)),
+    ]);
     purge();
     purgeTimer = setInterval(purge, SESSION_PURGE_MS);
     purgeTimer.unref();

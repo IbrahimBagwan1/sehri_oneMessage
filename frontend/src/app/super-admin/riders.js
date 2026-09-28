@@ -30,6 +30,7 @@ import {
 } from '../../components/ui';
 import PasswordInput from '../../components/PasswordInput';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — Riders management. Wires up all 6 backend endpoints in
@@ -68,7 +69,7 @@ export default function SuperAdminRidersScreen() {
       const res = await trackingApi.getAllRiders();
       if (res.success) setRiders(res.data || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load riders.");
+      setError(describeError(err, "Couldn't load riders."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -125,7 +126,7 @@ export default function SuperAdminRidersScreen() {
     } catch (err) {
       Alert.alert(
         "Couldn't start the run",
-        err?.response?.data?.message || 'Try again in a moment.'
+        describeError(err, 'Try again in a moment.')
       );
     } finally {
       setBusyId(null);
@@ -147,7 +148,7 @@ export default function SuperAdminRidersScreen() {
               await trackingApi.unassignTodayRider();
               await load(true);
             } catch (err) {
-              Alert.alert("Couldn't clear", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't clear", describeError(err, 'Try again.'));
             } finally { setBusyId(null); }
           },
         },
@@ -173,7 +174,7 @@ export default function SuperAdminRidersScreen() {
               await trackingApi.toggleRider(rider.id);
               await load(true);
             } catch (err) {
-              Alert.alert("Couldn't update", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't update", describeError(err, 'Try again.'));
             } finally { setBusyId(null); }
           },
         },
@@ -196,7 +197,7 @@ export default function SuperAdminRidersScreen() {
               await trackingApi.deleteRider(rider.id);
               setRiders((prev) => prev.filter((r) => r.id !== rider.id));
             } catch (err) {
-              Alert.alert("Couldn't delete", err?.response?.data?.message || 'Try again.');
+              Alert.alert("Couldn't delete", describeError(err, 'Try again.'));
             } finally { setBusyId(null); }
           },
         },
@@ -222,7 +223,7 @@ export default function SuperAdminRidersScreen() {
         title="Riders"
         onBack={() => router.back()}
         trailing={
-          <Pressable onPress={() => setCreateOpen(true)} hitSlop={8} accessibilityLabel="Add rider">
+          <Pressable accessibilityRole="button" onPress={() => setCreateOpen(true)} hitSlop={12} accessibilityLabel="Add rider">
             <Ionicons name="add" size={24} color={colors.teal} />
           </Pressable>
         }
@@ -384,7 +385,7 @@ function RiderRow({ rider, busy, onToggle, onDelete }) {
           loading={busy}
           style={{ flex: 1 }}
         />
-        <Pressable
+        <Pressable hitSlop={6}
           onPress={onDelete}
           disabled={busy}
           style={({ pressed }) => [styles.deleteBtn, pressed && { backgroundColor: colors.dangerSoft }]}
@@ -467,7 +468,7 @@ function CreateRiderSheet({ visible, onClose, onCreated }) {
         onCreated?.(res.data);
       }
     } catch (err) {
-      Alert.alert("Couldn't create rider", err?.response?.data?.message || 'Try again.');
+      Alert.alert("Couldn't create rider", describeError(err, 'Try again.'));
     } finally {
       setSubmitting(false);
     }

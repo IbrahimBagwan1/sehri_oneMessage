@@ -23,6 +23,7 @@ import {
   LoadingState,
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { describeError } from '../api/errors';
 
 // -----------------------------------------------------------------------------
 // DonationHistoryScreen — user's own donation history.
@@ -80,7 +81,7 @@ export default function DonationHistoryScreen() {
       });
       if (res.success) setDonations(res.data.donations || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your donations right now.");
+      setError(describeError(err, "Couldn't load your donations right now."));
     } finally {
       setLoading(false);
       setRefreshing(false);

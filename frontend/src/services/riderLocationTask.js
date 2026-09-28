@@ -1,7 +1,8 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure, setSecure, deleteSecure } from './secureStorage';
 import { trackingApi } from '../api/tracking';
+import { colors } from '../theme';
 
 /**
  * riderLocationTask.js — the rider's GPS feed, running in the background.
@@ -43,13 +44,13 @@ const RIDER_TOKEN_KEY = 'rider_access_token';
 const RIDER_DATA_KEY  = 'rider_data';
 const ROUND_STARTED_KEY = 'rider_round_started_at';
 
-// A round that is still "running" after this long was forgotten, not
-// ridden: no Sehri run takes six hours. The feed ends itself so a rider who
-// never tapped "Finish" does not share their location (and drain their
-// battery) for the rest of the day. It is also what Play's foreground-
-// service policy asks for — the service ends when the task it was started
-// for is over.
-const MAX_ROUND_MS = 6 * 60 * 60 * 1000;
+// A round still "running" after this long was forgotten, not ridden. The
+// feed ends itself so a rider who never tapped "Stop delivery" does not
+// share their location (and drain their battery) for the rest of the day —
+// which is also what Play's foreground-service policy asks for. Ten hours is
+// deliberately generous: a run that starts in the evening and ends before
+// dawn must never be cut off (six hours, the first choice, could have been).
+const MAX_ROUND_MS = 10 * 60 * 60 * 1000;
 
 const devWarn = (...args) => { if (__DEV__) console.warn(...args); };
 
@@ -80,8 +81,8 @@ TaskManager.defineTask(RIDER_LOCATION_TASK, async ({ data, error }) => {
 
   try {
     const [token, riderRaw] = await Promise.all([
-      SecureStore.getItemAsync(RIDER_TOKEN_KEY),
-      SecureStore.getItemAsync(RIDER_DATA_KEY),
+      getSecure(RIDER_TOKEN_KEY),
+      getSecure(RIDER_DATA_KEY),
     ]);
     // Signed out, or the session was cleared while the task was still
     // registered. Stop the feed rather than pushing as nobody.
@@ -92,7 +93,7 @@ TaskManager.defineTask(RIDER_LOCATION_TASK, async ({ data, error }) => {
     const rider = JSON.parse(riderRaw);
     const { latitude, longitude } = location.coords;
 
-    const startedAt = Number(await SecureStore.getItemAsync(ROUND_STARTED_KEY)) || 0;
+    const startedAt = Number(await getSecure(ROUND_STARTED_KEY)) || 0;
     if (startedAt && Date.now() - startedAt > MAX_ROUND_MS) {
       try {
         await trackingApi.pushLocation(rider.id, { latitude, longitude, status: 'done' }, token);
@@ -175,14 +176,14 @@ export const startRiderLocationUpdates = async () => {
     foregroundService: {
       notificationTitle: 'OneMessage — delivery in progress',
       notificationBody: 'Sharing your location so the community can track tonight’s delivery.',
-      notificationColor: '#0D9488',
+      notificationColor: colors.teal,
     },
     // iOS: show the blue status bar so location sharing is never invisible.
     showsBackgroundLocationIndicator: true,
     activityType: Location.ActivityType.AutomotiveNavigation,
   });
   fixCount = 0;
-  await SecureStore.setItemAsync(ROUND_STARTED_KEY, String(Date.now()));
+  await setSecure(ROUND_STARTED_KEY, String(Date.now()));
   return true;
 };
 
@@ -197,7 +198,7 @@ export const stopRiderLocationUpdates = async () => {
   }
   fixCount = 0;
   lastAddress = null;
-  try { await SecureStore.deleteItemAsync(ROUND_STARTED_KEY); } catch { /* noop */ }
+  try { await deleteSecure(ROUND_STARTED_KEY); } catch { /* noop */ }
 };
 
 /** One immediate fix, for the moment the rider taps Start. */

@@ -19,6 +19,7 @@ import {
   SectionHeader,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Super admin — content sync triggers.
@@ -58,7 +59,7 @@ export default function SuperAdminContentSyncScreen() {
             } catch (err) {
               Alert.alert(
                 `Couldn't start ${name} sync`,
-                err?.response?.data?.message || 'Try again in a moment.',
+                describeError(err, 'Try again in a moment.'),
               );
             } finally {
               setBusy((prev) => ({ ...prev, [key]: false }));

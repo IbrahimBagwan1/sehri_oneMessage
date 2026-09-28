@@ -4,8 +4,10 @@
  * GET /api/payment/info
  *
  * Returns the UPI/phone number to which donations should be sent, plus
- * the URL of the hosted payment page (used by iOS clients that open it
- * in Safari via Linking.openURL instead of rendering the number in-app).
+ * the URL of the hosted payment page. The app (iOS and Android) only uses
+ * payment_url, opening it in the system browser — it never renders the
+ * number itself. contact_number is read by payment.html, and kept for app
+ * builds released before that change.
  *
  * The number comes from the PAYMENT_CONTACT_NUMBER env var. The
  * payment_url is derived from the current request so it works whether

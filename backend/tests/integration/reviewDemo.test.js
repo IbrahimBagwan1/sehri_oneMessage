@@ -121,3 +121,46 @@ test('with the flag off, the demo password is just a wrong password', async () =
     process.env.REVIEW_DEMO_ENABLED = 'true';
   }
 });
+
+test('the demo member can never be given a staff role', async () => {
+  await h.api('POST', '/auth/login', { body: { phone: DEMO_PHONE, password: 'Review-Demo-2027' } });
+  const demo = await h.db.User.findOne({ where: { phone: DEMO_PHONE } });
+  const sa = await h.login(world.superAdmin);
+  const promote = await h.api('POST', `/admin/users/${demo.id}/promote`, {
+    token: sa.accessToken, body: { target_role: 'admin', zone_location_id: world.zoneA.id },
+  });
+  assert.equal(promote.status, 409);
+  assert.equal(promote.body.code, 'SANDBOX_ACCOUNT');
+  const superPromote = await h.api('POST', `/admin/users/${demo.id}/promote`, {
+    token: sa.accessToken, body: { target_role: 'super_admin' },
+  });
+  assert.equal(superPromote.status, 409);
+  const rider = await h.api('POST', '/tracking', {
+    token: sa.accessToken, body: { user_id: demo.id, password: 'rider-pass-1' },
+  });
+  assert.equal(rider.status, 409);
+});
+
+test('a reviewer\'s vote never reaches real numbers: history totals and all-zone voter lists exclude the sandbox', async () => {
+  const demo = await h.db.User.findOne({ where: { phone: DEMO_PHONE } });
+  const poll = await h.db.Poll.create({ date: '2021-05-01', is_active: null }); // past: history lists only past polls
+  world.createdPolls = [...(world.createdPolls || []), poll];
+  await h.db.PollResponse.bulkCreate([
+    { poll_id: poll.id, user_id: world.alice.id, response: 'yes', zone: world.zoneA.zone_key },
+    { poll_id: poll.id, user_id: demo.id, response: 'yes', zone: h.reviewDemo.SANDBOX.zoneKey },
+  ]);
+  h.reviewDemo.invalidate();
+  const sa = await h.login(world.superAdmin);
+  const voters = await h.api('GET', `/polls/${poll.id}/zone-voters?response=all`, { token: sa.accessToken });
+  assert.equal(voters.body.data.total, 1, 'only the real voter');
+  assert.equal(voters.body.data.voters[h.reviewDemo.SANDBOX.zoneKey], undefined);
+
+  const pollController2 = require('../../src/controllers/pollController2');
+  const history = await new Promise((resolve, reject) => {
+    const res = { status() { return this; }, json: resolve };
+    pollController2.getPollHistory({ query: { limit: 50 }, auth: { role: 'super_admin' } }, res, reject);
+  });
+  const row = history.data.polls.find((p) => p.id === poll.id);
+  assert.ok(row, 'the past poll is listed');
+  assert.equal(row.total_yes, 1, 'the sandbox vote is not counted');
+});

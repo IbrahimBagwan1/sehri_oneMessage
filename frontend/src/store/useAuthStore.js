@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure, setSecure, deleteSecure, migrateKeychainAccessibility } from '../services/secureStorage';
 import apiClient, { onAuthFailure, revokeSession } from '../api/client';
 import { registerForPushNotifications, unregisterPushNotifications } from '../services/pushService';
 import { connect as connectSocket, disconnect as disconnectSocket } from '../services/socket';
@@ -42,12 +42,15 @@ export const useAuthStore = create((set, get) => ({
       try { useAuthStore.getState().logout(); } catch (_) { /* noop */ }
     });
 
+    // Before any read: move tokens saved by older builds to the Keychain
+    // accessibility the background location task can use (secureStorage.js).
+    await migrateKeychainAccessibility();
     try {
-      const token     = await SecureStore.getItemAsync('access_token');
-      const userData  = await SecureStore.getItemAsync('user_data');
-      const roleData  = await SecureStore.getItemAsync('active_role');
-      const rolesData = await SecureStore.getItemAsync('available_roles');
-      const guestFlag = await SecureStore.getItemAsync(GUEST_KEY);
+      const token     = await getSecure('access_token');
+      const userData  = await getSecure('user_data');
+      const roleData  = await getSecure('active_role');
+      const rolesData = await getSecure('available_roles');
+      const guestFlag = await getSecure(GUEST_KEY);
 
       if (token && userData) {
         // Signed-in state takes precedence over any stale guest flag.
@@ -77,13 +80,13 @@ export const useAuthStore = create((set, get) => ({
   // Called after successful sign-in. Clears any leftover guest flag.
   // ---------------------------------------------------------------------------
   setAuth: async (user, accessToken, refreshToken, active_role, available_roles) => {
-    await SecureStore.setItemAsync('access_token', accessToken);
-    await SecureStore.setItemAsync('refresh_token', refreshToken);
-    await SecureStore.setItemAsync('user_data', JSON.stringify(user));
-    await SecureStore.setItemAsync('active_role', active_role);
-    await SecureStore.setItemAsync('available_roles', JSON.stringify(available_roles));
+    await setSecure('access_token', accessToken);
+    await setSecure('refresh_token', refreshToken);
+    await setSecure('user_data', JSON.stringify(user));
+    await setSecure('active_role', active_role);
+    await setSecure('available_roles', JSON.stringify(available_roles));
     // Signing in exits guest mode.
-    await SecureStore.deleteItemAsync(GUEST_KEY);
+    await deleteSecure(GUEST_KEY);
 
     set({
       user,
@@ -108,7 +111,7 @@ export const useAuthStore = create((set, get) => ({
   // ---------------------------------------------------------------------------
   setAvailableRoles: async (roles) => {
     const safe = Array.isArray(roles) ? roles : [];
-    await SecureStore.setItemAsync('available_roles', JSON.stringify(safe));
+    await setSecure('available_roles', JSON.stringify(safe));
     set({ available_roles: safe });
   },
 
@@ -118,7 +121,7 @@ export const useAuthStore = create((set, get) => ({
   // are public so they still work.
   // ---------------------------------------------------------------------------
   continueAsGuest: async () => {
-    await SecureStore.setItemAsync(GUEST_KEY, 'true');
+    await setSecure(GUEST_KEY, 'true');
     set({
       user: null,
       accessToken: null,
@@ -138,17 +141,17 @@ export const useAuthStore = create((set, get) => ({
       const { accessToken, refreshToken, active_role, available_roles, profile } = response.data.data;
 
       if (active_role === 'rider') {
-        await SecureStore.setItemAsync('rider_access_token',  accessToken);
-        await SecureStore.setItemAsync('rider_refresh_token', refreshToken);
-        await SecureStore.setItemAsync('rider_data',          JSON.stringify(profile));
+        await setSecure('rider_access_token',  accessToken);
+        await setSecure('rider_refresh_token', refreshToken);
+        await setSecure('rider_data',          JSON.stringify(profile));
         return { success: true, isRider: true };
       }
 
-      await SecureStore.setItemAsync('access_token',     accessToken);
-      await SecureStore.setItemAsync('refresh_token',    refreshToken);
-      await SecureStore.setItemAsync('user_data',        JSON.stringify(profile));
-      await SecureStore.setItemAsync('active_role',      active_role);
-      await SecureStore.setItemAsync('available_roles',  JSON.stringify(available_roles));
+      await setSecure('access_token',     accessToken);
+      await setSecure('refresh_token',    refreshToken);
+      await setSecure('user_data',        JSON.stringify(profile));
+      await setSecure('active_role',      active_role);
+      await setSecure('available_roles',  JSON.stringify(available_roles));
 
       set({
         accessToken,
@@ -176,12 +179,12 @@ export const useAuthStore = create((set, get) => ({
     await revokeSession('member');
     disconnectSocket();
 
-    await SecureStore.deleteItemAsync('access_token');
-    await SecureStore.deleteItemAsync('refresh_token');
-    await SecureStore.deleteItemAsync('user_data');
-    await SecureStore.deleteItemAsync('active_role');
-    await SecureStore.deleteItemAsync('available_roles');
-    await SecureStore.deleteItemAsync(GUEST_KEY);
+    await deleteSecure('access_token');
+    await deleteSecure('refresh_token');
+    await deleteSecure('user_data');
+    await deleteSecure('active_role');
+    await deleteSecure('available_roles');
+    await deleteSecure(GUEST_KEY);
 
     set({
       user: null,

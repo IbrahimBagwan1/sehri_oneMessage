@@ -42,6 +42,7 @@
  */
 
 const { istInstant, addDays } = require('./istTime');
+const clock = require('./clock');
 
 // ---------------------------------------------------------------------------
 // Phase constants — import these in controllers, never use raw strings.
@@ -66,7 +67,7 @@ const WINDOWS = Object.freeze({
 });
 
 /** Returns the current UTC Date — one "now" for controllers to share. */
-const getNow = () => new Date();
+const getNow = () => clock.now();
 
 /** Normalise the stored override into true | false | null. */
 const overrideOf = (poll) => {
@@ -82,6 +83,10 @@ const windowsFor = (dateStr) => ({
   closesAt:       istInstant(dateStr, WINDOWS.VOTING_CLOSE_HOUR),
   specialEndsAt:  istInstant(dateStr, WINDOWS.SPECIAL_CASE_CLOSE_HOUR),
   allotmentEndsAt: istInstant(dateStr, WINDOWS.ALLOTMENT_CLOSE_HOUR),
+  // The next poll's voting window opens here, so any extension of THIS
+  // poll's voting ends here too — otherwise a forgotten "extend" kept a
+  // finished poll accepting votes indefinitely.
+  extensionEndsAt: istInstant(dateStr, WINDOWS.VOTING_OPEN_HOUR),
 });
 
 /**
@@ -107,8 +112,9 @@ const getPollPhase = (poll, now = getNow()) => {
   }
 
   // Past the scheduled close. An explicit extension keeps voting going and
-  // holds the later phases back until it is lifted.
-  if (override === true) return PHASES.VOTING;
+  // holds the later phases back until it is lifted — or until 22:00 on the
+  // poll's own date, when the next poll's window opens.
+  if (override === true && t < w.extensionEndsAt.getTime()) return PHASES.VOTING;
   if (t < w.specialEndsAt.getTime()) return PHASES.SPECIAL_CASE;
   if (t < w.allotmentEndsAt.getTime()) return PHASES.ALLOTMENT;
   return PHASES.STATUS;

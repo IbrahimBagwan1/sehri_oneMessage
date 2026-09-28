@@ -23,6 +23,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // Rider deliveries — the stop queue for tonight's optimized route.
@@ -76,7 +77,7 @@ export default function DeliveriesScreen() {
             try {
               await markStopDelivered(stop.id);
             } catch (err) {
-              Alert.alert("Couldn't mark delivered", err?.response?.data?.message || 'Try again in a moment.');
+              Alert.alert("Couldn't mark delivered", describeError(err, 'Try again in a moment.'));
             } finally {
               setBusyStopId(null);
             }
@@ -99,7 +100,7 @@ export default function DeliveriesScreen() {
             try {
               await undoStopDelivered(stop.id);
             } catch (err) {
-              Alert.alert("Couldn't undo", err?.response?.data?.message || 'Try again in a moment.');
+              Alert.alert("Couldn't undo", describeError(err, 'Try again in a moment.'));
             } finally {
               setBusyStopId(null);
             }

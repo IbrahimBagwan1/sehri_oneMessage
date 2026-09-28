@@ -1,15 +1,17 @@
 'use strict';
 
 /**
- * LoginThrottle — failed sign-in attempts per phone number.
- * See services/loginThrottleService.js.
+ * LoginThrottle — failed sign-in counters, keyed by throttle_key
+ * ("pi:<phone>:<source>" or "p:<phone>"). See
+ * services/loginThrottleService.js and migration
+ * 20260928000003-login-throttle-per-source.js.
  */
 module.exports = (sequelize, DataTypes) => {
   const LoginThrottle = sequelize.define(
     'LoginThrottle',
     {
-      phone: {
-        type: DataTypes.STRING(15),
+      throttle_key: {
+        type: DataTypes.STRING(120),
         primaryKey: true,
         allowNull: false,
       },

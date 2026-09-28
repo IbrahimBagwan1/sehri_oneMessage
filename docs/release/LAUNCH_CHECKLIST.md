@@ -1,155 +1,195 @@
-# Launch checklist — everything that happens outside the codebase
+# Launch checklist — what is left, all outside the codebase
 
-Work top to bottom; later items depend on earlier ones. Nothing here is
-done until you have done it.
+Updated after the second (adversarial QA) pass, 28 Sep 2026. Everything in
+the code is done and tested; each item below needs you, a console, or a
+decision. Work top to bottom — later items depend on earlier ones.
+
+## 0. Decisions and housekeeping (do first)
+
+- [ ] **Test a preview build from `main`.** The QA pass is merged into
+      `main`. Build it with `EAS_PREVIEW_SETUP.md` and run `QA_TEST_PLAN.md`.
+- [ ] **Delete the local database dump** used for migration testing if you
+      still see one — this pass removed its copy; nothing was committed.
 
 ## 1. Rotate every credential that has been exposed
 
-These have been in chat transcripts and/or git history. Treat them as
-public. Rotate, then update the server `.env` and EAS variables.
+Treat these as public. Rotate, then update the server `.env` and EAS.
 
-- [ ] **Google Maps API keys** — `AIzaSyAWQ…8go` (current, in git history in
-      `app.json` / `AndroidManifest.xml`) and `AIzaSyCoa…phw` (older, also in
-      history). Delete both; create new, restricted keys (step 4).
-- [ ] **MySQL password** for `sehri_user` (and create a separate production user).
+- [ ] **Google Maps API keys** `AIzaSyAWQ…8go` and `AIzaSyCoa…phw` (in git
+      history). **Delete both** in Google Cloud and confirm they are dead —
+      exact check in `GIT_HISTORY_CLEANUP.md` step 1.
+- [ ] **MySQL password** for `sehri_user` (and a separate production user).
 - [ ] **JWT_SECRET** and **JWT_REFRESH_SECRET** — new, different, 48+ random
-      bytes each. Rotating signs everyone out once; that is expected.
-- [ ] **MessageCentral** auth token (and customer id if they allow it).
+      bytes. Signs everyone out once; expected.
+- [ ] **MessageCentral** auth token.
 - [ ] **Cloudinary** API secret (Settings → Access keys → regenerate).
-- [ ] Optional hygiene: git history still contains the old keys. Rewriting
-      history (git filter-repo) is only worth it if the repo will ever be
-      public; rotation is what actually protects you.
+- [ ] *Optional*: rewrite git history to remove the dead keys — only if the
+      repo will be public. Step-by-step with warnings: `GIT_HISTORY_CLEANUP.md`.
+      Rotation is what protects you; do it either way.
 
-## 2. Decide the permanent identifiers
+## 2. Permanent identifiers
 
-- [ ] **Bundle identifier / package name** — permanent once published.
-      Suggested: `in.onemessage.app` (or `com.<your-org>.onemessage`). Set
-      it in `frontend/eas.json` → `build.production.env.APP_BUNDLE_ID`
-      (the production build refuses the placeholder).
-- [ ] App name on the stores: **OneMessage** (matches the icon, website and
-      `app.config.js`).
+- [ ] **Bundle identifier / package name** (permanent once published), e.g.
+      `in.onemessage.app`. Replace both `REPLACE_WITH_YOUR_BUNDLE_ID` in
+      `frontend/eas.json` (`build.preview.env` and `build.production.env`);
+      preview and production builds refuse the placeholder.
 
 ## 3. Accounts
 
-- [ ] **Apple Developer Program** (organization if you can get a D-U-N-S
-      number — it shows the organization as seller; individual is fine).
-- [ ] **Google Play Console**. If it is a *personal* account created after
-      Nov 2023: plan a **closed test with ≥12 testers for 14 consecutive
-      days** before you can request production access.
-- [ ] **Expo / EAS**: `cd frontend && npx eas-cli login && npx eas-cli init`.
-      Copy the project id into the EAS variable `EAS_PROJECT_ID` (and your
-      `.env` for local builds).
-- [ ] **Sentry** (optional but recommended): create a React Native project,
-      copy the DSN. In Sentry settings turn on data scrubbing, turn off IP
-      address storage, set retention to 90 days.
+- [ ] **Apple Developer Program** (organization if you have a D-U-N-S number).
+- [ ] **Google Play Console**. Personal account created after Nov 2023 →
+      **closed test with ≥ 12 testers for 14 consecutive days** before
+      production access. Start this early.
+- [ ] **Expo / EAS**: project, variables and credentials — follow
+      `EAS_PREVIEW_SETUP.md` steps 1–10 in order.
+- [ ] **Sentry**: React Native project; turn on data scrubbing, turn **off**
+      IP address storage, retention ≤ 90 days. Create an auth token with
+      `project:releases` for source-map upload.
 
 ## 4. Google Cloud (Maps)
 
-- [ ] Billing account attached; **budget alert** (e.g. ₹2,000/month) and
-      per-API **daily quota caps** (Directions ~2,000/day is ample now that
-      ETAs use one route call per minute per team).
-- [ ] **Android key** — restrict to *Maps SDK for Android*, app restriction
-      = package name + SHA-1 of **both** the Play *app signing* key (Play
-      Console → App integrity) and your upload key (`eas credentials`).
-- [ ] **iOS key** — restrict to *Maps SDK for iOS*, bundle id.
-- [ ] **Server key** — *Directions, Geocoding, Distance Matrix* only; IP
-      restriction if your host has a fixed egress IP. Goes in the backend
-      `GOOGLE_MAPS_API_KEY`. Never ship it in the app.
+- [ ] Billing, a **budget alert** (e.g. ₹2,000/month), per-API **daily
+      quota caps** (Directions ~2,000/day).
+- [ ] **Android key** — Maps SDK for Android only; package name + SHA-1 of
+      both the Play app-signing key and your upload key.
+- [ ] **iOS key** — Maps SDK for iOS only; bundle id.
+- [ ] **Server key** — Directions, Geocoding, Distance Matrix only; IP
+      restriction if the host has a fixed egress IP → backend
+      `GOOGLE_MAPS_API_KEY`. Never in the app.
 
-## 5. Push notifications
+## 5. Push notifications and EAS variables
 
-- [ ] **Android (FCM)**: create a Firebase project, add the Android app
-      (your package name), download `google-services.json`, upload it as an
-      EAS *file* variable: `eas env:create --name GOOGLE_SERVICES_JSON --type file --value ./google-services.json --environment production`.
-      Upload the FCM V1 service-account key: `eas credentials` → Android →
-      Push Notifications.
-- [ ] **iOS (APNs)**: `eas credentials` → iOS → Push Notifications → let EAS
-      create the APNs key.
+- [ ] Firebase (Android push), APNs (iOS push), and every EAS variable for
+      the **preview** environment: `EAS_PREVIEW_SETUP.md` steps 4–9, with the
+      exact commands.
+- [ ] For **production**, the same variables are set with
+      `--environment production` (the guide's commands already include it
+      where the value is the same). Additionally set the production
+      `EXPO_PUBLIC_API_BASE_URL` once the production API exists.
 
-## 6. EAS environment variables (per environment: development / preview / production)
+## 6. Crash reporting in release builds
 
-```
-EXPO_PUBLIC_API_BASE_URL   https://api.<your-domain>/api      (plain text)
-EXPO_PUBLIC_SENTRY_DSN     <dsn>                              (plain text)
-GOOGLE_MAPS_ANDROID_API_KEY / GOOGLE_MAPS_IOS_API_KEY         (sensitive)
-EAS_PROJECT_ID, EXPO_OWNER                                    (plain text)
-SENTRY_ORG, SENTRY_PROJECT (plain) · SENTRY_AUTH_TOKEN (secret) — for source maps
-GOOGLE_SERVICES_JSON                                          (file, Android)
-```
+- [ ] **Sentry's source-map upload is part of every release build** (preview
+      and production). A local `bundleRelease` failed at that step without
+      `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN`. Either set all
+      three, or set `SENTRY_DISABLE_AUTO_UPLOAD=true` — and then also leave
+      `EXPO_PUBLIC_SENTRY_DSN` empty and untick Crash Data on both store
+      forms.
 
-## 7. Backend hosting
+## 7. Backend hosting and deploy
 
-- [ ] HTTPS domain for the API (e.g. `api.<domain>`), valid TLS, reverse
-      proxy that **passes WebSocket upgrades** (Socket.IO).
-- [ ] Node 20.10+; `NODE_ENV=production`; every variable in
-      `backend/.env.example`. The server refuses to boot on a bad one and
-      lists what is wrong. Key production values: `JWT_ACCESS_EXPIRES_IN=15m`,
-      `OTP_PROVIDER=messagecentral`, `CORS_ORIGIN=` (empty) or your website,
-      `DB_SSL=true` for managed MySQL, `TRUST_PROXY=1`.
-- [ ] Managed MySQL 8 with **automated daily backups + point-in-time
-      recovery**, retention ≥ 7 days; test a restore once before launch.
-- [ ] `npm ci && npm run migrate` on deploy. Never `npm run seed` on
-      production (it now refuses without an explicit override).
-- [ ] A process manager / platform that restarts on exit and sends SIGTERM
-      on deploy (graceful shutdown is implemented).
-- [ ] Uptime monitor on `/health` (liveness) and `/health/ready` (database).
-- [ ] Log retention: console logs are collected by the platform; keep them
-      ≤ 30 days (they contain IP addresses; phone numbers are masked).
-- [ ] Run the one-off cleanup from earlier work if still needed:
-      `node scripts/purge-orphaned-staff.js --apply`.
+- [ ] HTTPS API domain, valid TLS, reverse proxy that **passes WebSocket
+      upgrades** (Socket.IO).
+- [ ] Node 20.10+, `NODE_ENV=production`, every variable in
+      `backend/.env.example` (the server refuses to boot on a bad one).
+      Production: `JWT_ACCESS_EXPIRES_IN=15m`, `OTP_PROVIDER=messagecentral`,
+      `CORS_ORIGIN=` (empty) or your site, `DB_SSL=true` for managed MySQL,
+      `TRUST_PROXY=1` (**required** — sign-in protection keys on the client's
+      address; without it every user looks like the proxy).
+- [ ] Optional: `REFRESH_REUSE_GRACE_SECONDS` (default 60) — how long a
+      just-rotated refresh token is still accepted for simultaneous requests.
+- [ ] Managed MySQL 8, **daily backups + point-in-time recovery**, ≥ 7 days;
+      test one restore before launch.
+- [ ] **Deploy**: `npm ci && npm run migrate`. This release adds migrations
+      `20260928000001` … `20260928000005` (sessions + poll override, sandbox +
+      indexes, per-source login throttle, delivered-by SET NULL, screenshot
+      privacy). All are idempotent and were tested on a copy of real data and
+      on an empty database. **Take a backup right before migrating.** Never
+      `npm run seed` on production (it refuses).
+- [ ] **Secure existing payment screenshots** (after the deploy):
+      ```
+      node scripts/secure-donation-screenshots.js          # dry run: how many
+      node scripts/secure-donation-screenshots.js --apply  # convert
+      ```
+      New uploads are private already. Old public links stop working at once
+      at the origin; copies cached by Cloudinary's CDN can keep serving for up
+      to about an hour. `--revert` undoes it.
+- [ ] Process manager that restarts on exit and sends SIGTERM on deploy.
+- [ ] Uptime monitor on `/health` and `/health/ready`.
+- [ ] Log retention ≤ 30 days (logs contain IP addresses; phones are masked).
+- [ ] If still needed: `node scripts/purge-orphaned-staff.js --apply`.
+- [ ] **Test database grant** so `npm test` can run next to the app's DB:
+      `GRANT ALL PRIVILEGES ON \`sehri_connect_test\`.* TO 'sehri_user'@'localhost';`
+      (This pass ran the suite on a throwaway MySQL instead: 87/87.)
 
 ## 8. Website (`E:\onemessage\policy _website`)
 
-- [ ] **Redeploy** — canonical/sitemap domain fixes, and the privacy policy
-      and delete-account pages now describe the current deletion behaviour,
-      crash reporting and phone-number visibility.
-- [ ] **Reconcile the UPI ID** on the donation page (`onemessage@axl` vs the
-      QR / backend `9632716392@axl`), then a ₹1 test payment both ways.
+- [ ] **Redeploy** (canonical domain fixes; privacy policy and delete-account
+      pages describe current deletion, crash reporting, phone visibility).
+- [ ] **Reconcile the UPI ID** (`onemessage@axl` on the page vs
+      `9632716392@axl` in the QR/backend), then a ₹1 test payment both ways.
+- [ ] Optional wording for the privacy policy: payment screenshots are
+      stored privately and shown only to the super admins who verify them.
 
 ## 9. Builds
 
-- [ ] Local development: the native `android/` folder is no longer tracked
-      (it is generated). Regenerate before a local build:
-      `npx expo prebuild --clean` then `npx expo run:android`.
-- [ ] Development build: `eas build --profile development --platform all`.
-- [ ] Preview (internal testers): `eas build --profile preview --platform android`.
+- [ ] **Rebuild every dev client** — this release adds a native module
+      (AsyncStorage, for offline prayer times/Qur'an/duas). An old
+      development build will crash on the new JS.
+- [ ] Local Android: `npx expo prebuild --clean` wipes `android/` including
+      `local.properties` — set `ANDROID_HOME` permanently instead.
+- [ ] Preview for testers: `EAS_PREVIEW_SETUP.md` steps 11–12 (Android APK
+      and iOS ad hoc).
 - [ ] Production: `eas build --profile production --platform all`, then
       `eas submit --profile production`.
-- [ ] Before submitting, run `npm test` in `backend/` (needs
-      `GRANT ALL PRIVILEGES ON \`sehri_connect_test\`.* TO 'sehri_user'@'localhost';`)
-      and `npm run lint` in `frontend/`.
+- [ ] **iOS checks on the EAS build** (iOS cannot be built on Windows; the
+      Android release build was verified locally). Download the `.ipa` from
+      the EAS build page, rename to `.zip`, open `Payload/OneMessage.app` and
+      check:
+      - `Info.plist`: `UIBackgroundModes` = `location` only;
+        `NSLocationWhenInUseUsageDescription` and
+        `NSLocationAlwaysAndWhenInUseUsageDescription` are the texts from
+        `app.config.js`; `NSPhotoLibraryUsageDescription` present; **no**
+        camera, microphone, Face ID or motion strings;
+        `ITSAppUsesNonExemptEncryption` = false; `UIDeviceFamily` = [1]
+        (iPhone only); `CFBundleIdentifier` = your bundle id.
+      - `PrivacyInfo.xcprivacy` exists and lists the collected types.
+      - `GMSApiKey` / Maps key present (the Track map is blank without it).
+      - `embedded.mobileprovision` has `aps-environment` = `production`.
+      Then install from TestFlight and run `QA_TEST_PLAN.md` §5.10–5.12 and
+      §11.2 on the iPhone (background tracking with the phone locked is the
+      one thing no emulator can prove).
+- [ ] Android: on the first EAS production build, open Play Console → App
+      bundle explorer → the AAB → permissions, and confirm the list matches
+      `STORE_COMPLIANCE.md` (no biometric, camera, microphone, background
+      location).
+- [ ] Before submitting: `npm test` in `backend/` and `npm run lint` +
+      `npx tsc --noEmit` in `frontend/`.
 
-## 10. App Store Connect
+## 10. QA pass
 
-- [ ] App record with the bundle id; category **Lifestyle** (secondary: Reference).
-- [ ] Privacy Policy URL, Support URL, Marketing URL (see root README table).
-- [ ] App Privacy label — `docs/release/DATA_INVENTORY.md`.
-- [ ] Age rating questionnaire (UGC: yes; messaging: yes).
-- [ ] App Review information + notes — `docs/release/APP_REVIEW_ACCESS.md`
-      (turn on `REVIEW_DEMO_ENABLED` on the server first).
-- [ ] Screenshots: 6.9" and 6.5" iPhone only (the app is iPhone-only).
-      They must show the real app; include Home, Qur'an, Chat, Donate, Track.
-- [ ] Content rights: yes, it shows third-party content you are entitled to
-      use (Qur'an text/translation, duas — credited in-app).
-- [ ] Availability: India (avoids EU trader-status requirements for now).
+- [ ] Run `QA_TEST_PLAN.md` on one Android phone and one iPhone, all roles,
+      then the Sentry and log checks at its end.
 
-## 11. Google Play Console
+## 11. App Store Connect
 
-- [ ] Store listing, screenshots (phone), feature graphic (1024×500), icon
-      (512×512 — `store-assets/play-store-icon-512.png`).
-- [ ] App content: Privacy policy · **App access** (text in
-      `APP_REVIEW_ACCESS.md`) · Ads: none · Content rating (IARC): users
-      interact, **shares location** (riders), user-generated content ·
-      Target audience: 13+ · Data safety (`DATA_INVENTORY.md`) · Account
-      deletion URL · Child safety standards URL + contact · Foreground
-      service: *Location — user-initiated location sharing*, with a ≤30 s
-      video of a rider tapping Start delivery and the notification showing.
-- [ ] Internal testing track first (`eas submit` sends production builds to
-      *internal*, as a draft).
+Paste from `STORE_LISTING.md`:
+- [ ] App record (bundle id), name, subtitle, description, keywords,
+      promotional text; category **Lifestyle** / Reference.
+- [ ] Privacy Policy, Support and Marketing URLs.
+- [ ] App Privacy label (§9 there).
+- [ ] Age rating questionnaire (§7 there).
+- [ ] Screenshots 6.9" (§6 there).
+- [ ] App Review information + notes — `APP_REVIEW_ACCESS.md` (turn on
+      `REVIEW_DEMO_ENABLED` and sign in with both demo accounts first).
+- [ ] Content rights: yes (Qur'an text/translation, duas — credited in-app).
+- [ ] Availability: India.
 
-## 12. Operations during Ramadan
+## 12. Google Play Console
+
+Paste from `STORE_LISTING.md`:
+- [ ] Store listing, phone screenshots, feature graphic 1024×500, icon
+      (`store-assets/play-store-icon-512.png`).
+- [ ] App content: privacy policy · App access (`APP_REVIEW_ACCESS.md`) ·
+      Ads: none · Content rating (§7) · Target audience 13+ · Data safety
+      (§8) · Account deletion URL · Child safety URL + contact · Foreground
+      service declaration (Location, user-initiated) with a ≤ 30 s video.
+- [ ] Countries: India. Internal testing track first.
+
+## 13. Operations during Ramadan
 
 - [ ] Someone opens each night's poll at/after **10 pm IST** (Super admin →
-      Polls → "Open tomorrow's poll"). There is no scheduler; voting then
-      closes on its own at 10 am and the rest of the day follows the schedule.
+      Polls → "Open tomorrow's poll"). Voting closes on its own at 10 am.
+      "Open voting" on the current day's poll now extends it **until 10 pm at
+      the latest**; after that the app says to open tomorrow's poll instead.
 - [ ] After review is approved, set `REVIEW_DEMO_ENABLED=false`.

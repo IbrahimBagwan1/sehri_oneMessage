@@ -10,6 +10,18 @@ const {
 const logger = require('../utils/logger');
 const chatGroupSync = require('../services/chatGroupSync');
 const authSessionService = require('../services/authSessionService');
+const reviewDemo = require('../services/reviewDemoService');
+
+/** Map the sandbox guard's error onto the response envelope. */
+const refuseSandbox = async (res, user) => {
+  try {
+    await reviewDemo.assertNotSandboxUser(user);
+    return false;
+  } catch (err) {
+    if (err.code !== 'SANDBOX_ACCOUNT') throw err;
+    return error(res, { statusCode: 409, message: err.message, code: err.code }) && true;
+  }
+};
 const { User, Admin, SuperAdmin, Location } = db;
 
 /**
@@ -82,6 +94,7 @@ const createAdmin = async (req, res, next) => {
           message: 'Only approved users can be promoted to admin',
         });
       }
+      if (await refuseSandbox(res, user)) return undefined;
 
       // Check this user isn't already an admin.
       const existingAdmin = await Admin.findOne({ where: { phone: user.phone } });
@@ -195,6 +208,7 @@ const createSuperAdmin = async (req, res, next) => {
           message: 'Only approved users can be promoted to super admin',
         });
       }
+      if (await refuseSandbox(res, user)) return undefined;
 
       const existingSA = await SuperAdmin.findOne({ where: { phone: user.phone } });
       if (existingSA) {
@@ -380,6 +394,7 @@ const linkUserToAdmin = async (req, res, next) => {
       if (!user) {
         return error(res, { statusCode: 404, message: 'User not found' });
       }
+      if (await refuseSandbox(res, user)) return undefined;
       // Make sure no other admin is already linked to this user.
       const conflict = await Admin.findOne({
         where: { user_id, id: { [Op.ne]: id } },
@@ -543,6 +558,13 @@ const promoteUser = async (req, res, next) => {
         statusCode: 422,
         message: `Only approved users can be promoted. This user's status is "${user.status}".`,
       });
+    }
+    try {
+      await reviewDemo.assertNotSandboxUser(user);
+    } catch (err) {
+      await t.rollback();
+      if (err.code !== 'SANDBOX_ACCOUNT') throw err;
+      return error(res, { statusCode: 409, message: err.message, code: err.code });
     }
 
     // Check existing roles for this person (by user_id AND by phone —

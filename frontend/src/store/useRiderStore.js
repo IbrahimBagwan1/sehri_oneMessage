@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure, setSecure, deleteSecure, migrateKeychainAccessibility } from '../services/secureStorage';
 import { trackingApi } from '../api/tracking';
 import { onAuthFailure, revokeSession } from '../api/client';
 import {
@@ -9,6 +9,7 @@ import {
   isRiderLocationRunning,
   pushCurrentPositionOnce,
 } from '../services/riderLocationTask';
+import { describeError } from '../api/errors';
 
 // Keys used in SecureStore — separate from user's 'access_token' so
 // a rider who is also a user can stay logged in on both sessions.
@@ -74,9 +75,12 @@ export const useRiderStore = create((set, get) => ({
     // the rider screen then returns to its login. Set-based, so calling
     // hydrate twice registers one listener.
     onAuthFailure(riderSessionEnded, 'rider');
+    // Before any read: move tokens saved by older builds to the Keychain
+    // accessibility the background location task can use (secureStorage.js).
+    await migrateKeychainAccessibility();
     try {
-      const token      = await SecureStore.getItemAsync(RIDER_TOKEN_KEY);
-      const riderData  = await SecureStore.getItemAsync(RIDER_DATA_KEY);
+      const token      = await getSecure(RIDER_TOKEN_KEY);
+      const riderData  = await getSecure(RIDER_DATA_KEY);
       if (token && riderData) {
         set({
           accessToken:     token,
@@ -96,9 +100,9 @@ export const useRiderStore = create((set, get) => ({
   // Persists tokens and profile, then updates state.
   // -------------------------------------------------------------------------
   setRiderAuth: async (rider, accessToken, refreshToken) => {
-    await SecureStore.setItemAsync(RIDER_TOKEN_KEY,   accessToken);
-    await SecureStore.setItemAsync(RIDER_REFRESH_KEY, refreshToken);
-    await SecureStore.setItemAsync(RIDER_DATA_KEY,    JSON.stringify(rider));
+    await setSecure(RIDER_TOKEN_KEY,   accessToken);
+    await setSecure(RIDER_REFRESH_KEY, refreshToken);
+    await setSecure(RIDER_DATA_KEY,    JSON.stringify(rider));
 
     set({
       rider,
@@ -123,7 +127,7 @@ export const useRiderStore = create((set, get) => ({
     // SecureStore first: api/client.js rotates the token there on refresh
     // (and the background task may have refreshed it too), so the copy in
     // state can be one rotation behind.
-    return (await SecureStore.getItemAsync(RIDER_TOKEN_KEY)) || get().accessToken;
+    return (await getSecure(RIDER_TOKEN_KEY)) || get().accessToken;
   },
 
   // -------------------------------------------------------------------------
@@ -138,7 +142,7 @@ export const useRiderStore = create((set, get) => ({
         set({ deliveryList: result.data });
       }
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to load delivery list';
+      const msg = describeError(err, 'Failed to load delivery list');
       set({ listError: msg });
     } finally {
       set({ loadingList: false });
@@ -163,7 +167,7 @@ export const useRiderStore = create((set, get) => ({
         });
       }
     } catch (err) {
-      const msg = err?.response?.data?.message || 'Failed to load stops';
+      const msg = describeError(err, 'Failed to load stops');
       set({ stopsError: msg });
     } finally {
       set({ loadingStops: false });
@@ -354,7 +358,7 @@ export const useRiderStore = create((set, get) => ({
           // out on launch rather than by broadcasting when they should not.
           const fresh = { ...rider, ...res.data };
           set({ rider: fresh, team: res.data.team || null });
-          await SecureStore.setItemAsync(RIDER_DATA_KEY, JSON.stringify(fresh));
+          await setSecure(RIDER_DATA_KEY, JSON.stringify(fresh));
         }
       } catch {
         // Offline or the token expired. Fall back to the local signal —
@@ -401,9 +405,9 @@ export const useRiderStore = create((set, get) => ({
     // device is worthless even if something copied it.
     await revokeSession('rider');
 
-    await SecureStore.deleteItemAsync(RIDER_TOKEN_KEY);
-    await SecureStore.deleteItemAsync(RIDER_REFRESH_KEY);
-    await SecureStore.deleteItemAsync(RIDER_DATA_KEY);
+    await deleteSecure(RIDER_TOKEN_KEY);
+    await deleteSecure(RIDER_REFRESH_KEY);
+    await deleteSecure(RIDER_DATA_KEY);
 
     set({
       rider:           null,

@@ -20,6 +20,7 @@ import {
   LoadingState,
 } from '../../components/ui';
 import { colors, space, type } from '../../theme';
+import { describeError } from '../../api/errors';
 
 // -----------------------------------------------------------------------------
 // User chat tab — list of groups the signed-in user is a member of.
@@ -69,7 +70,7 @@ function UserChatScreenAuthed() {
       const res = await chatApi.getMyGroups();
       if (res.success) setGroups(res.data.groups || []);
     } catch (err) {
-      setError(err?.response?.data?.message || "Couldn't load your groups.");
+      setError(describeError(err, "Couldn't load your groups."));
     } finally {
       setLoading(false);
       setRefreshing(false);
