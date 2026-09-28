@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import apiClient from '../api/client';
+import { colors } from '../theme';
 
 /**
  * pushService.js — Expo push token lifecycle.
@@ -143,7 +144,7 @@ export const registerForPushNotifications = async () => {
           name: 'Sehri and community updates',
           importance: Notifications.AndroidImportance.HIGH,
           vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#0D9488',
+          lightColor: colors.teal,
         });
       } catch (_) { /* not fatal — some Android versions don't support */ }
     }

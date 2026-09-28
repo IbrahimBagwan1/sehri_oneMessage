@@ -44,6 +44,9 @@ const Input = forwardRef(function Input(
         ref={ref}
         placeholderTextColor={colors.inkGhost}
         selectionColor={colors.teal}
+        // The placeholder disappears once something is typed; keep it as
+        // the screen-reader name unless the screen gives a better one.
+        accessibilityLabel={textInputProps.placeholder}
         {...textInputProps}
         multiline={multiline}
         onFocus={(e) => {

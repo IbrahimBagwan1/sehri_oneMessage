@@ -2,14 +2,16 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import { useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors } from '../../theme';
+import { colors, tabBarHeight } from '../../theme';
 
 export default function AdminTabLayout() {
   // Safe-area-aware bottom padding — see comment in (user)/_layout.tsx.
   const insets = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
-  const barHeight = 56 + bottomPad;
+  const { fontScale } = useWindowDimensions();
+  const barHeight = tabBarHeight(fontScale, bottomPad);
 
   return (
     <Tabs

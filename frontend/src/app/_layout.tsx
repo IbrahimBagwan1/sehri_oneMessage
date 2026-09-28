@@ -8,6 +8,7 @@ import { useFonts, Amiri_400Regular, Amiri_700Bold } from '@expo-google-fonts/am
 import useNotificationRouting from '../hooks/useNotificationRouting';
 import AppErrorScreen from '../components/AppErrorScreen';
 import { initMonitoring, wrapRoot } from '../services/monitoring';
+import { colors } from '../theme';
 
 // Crash reporting starts before the first render so a crash during startup
 // is captured too. A no-op without a DSN and in development.
@@ -44,7 +45,7 @@ function RootLayout() {
   // anyway with the system Arabic font — a blank screen forever (what a
   // load error used to mean) is far worse than a different typeface.
   if (!fontsLoaded && !fontError) {
-    return <View style={{ flex: 1, backgroundColor: '#F8FAFC' }} />;
+    return <View style={{ flex: 1, backgroundColor: colors.paperSoft }} />;
   }
 
   return (

@@ -39,7 +39,9 @@ export default function Button({
       disabled={isDisabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
-      accessibilityState={{ disabled: isDisabled }}
+      accessibilityState={{ disabled: isDisabled, busy: !!loading }}
+      // The small size is 36pt tall; the slop brings its touch area to 44.
+      hitSlop={size === 'sm' ? 4 : undefined}
       style={({ pressed }) => [
         styles.base,
         sizeStyles.container,

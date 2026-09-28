@@ -7,9 +7,16 @@
  *
  * Palette rationale (see design plan):
  *   • ink family for text, on a paper background — never pure white
- *   • teal (#0D9488) is action / brand / live / links
- *   • gold (#B8860B) is reverent — bismillah, verse markers, "today's dua"
+ *   • teal is action / brand / live / links
+ *   • gold is reverent — bismillah, verse markers, "today's dua"
  *   • semantic colors used only for state (success / warn / danger)
+ *
+ * Contrast: every color that carries text — ink, teal, gold and the
+ * semantic colors, on paper or on their own soft fill, and white on a teal
+ * or danger button — is at least 4.5:1 (WCAG AA). The launch audit moved
+ * teal, gold, the semantic colors and the two faint inks one shade darker
+ * to get there (from #0D9488, #B8860B, #16A34A, #D97706, #DC2626, #64748B,
+ * #94A3B8). Check a new value before adding it.
  */
 
 // ---------------------------------------------------------------------------
@@ -19,8 +26,8 @@ export const colors = {
   // Ink (text) — always on paper backgrounds, never on colored fills.
   ink:       '#0F172A',
   inkMuted:  '#334155',
-  inkFaint:  '#64748B',
-  inkGhost:  '#94A3B8',
+  inkFaint:  '#4F5E73',
+  inkGhost:  '#627085',   // timestamps, counters — still 4.5:1 on paper
 
   // Paper (surfaces) — a warm-cool neutral background, never pure white body.
   paper:     '#FFFFFF',
@@ -28,26 +35,30 @@ export const colors = {
   paperWarm: '#FDFCF9',   // used for hero sections + Quran/Dua surfaces
   ruleFaint: '#F1F5F9',   // hairline dividers
   ruleSoft:  '#E2E8F0',   // 1px borders on cards + inputs
+  ruleStrong:'#CBD5E1',   // text-field outlines on standalone forms
 
   // Teal — brand / action / live / links.
-  teal:       '#0D9488',
-  tealDark:   '#0F766E',   // pressed / hover
+  teal:       '#0B8177',
+  tealDark:   '#0A6B63',   // pressed / hover
   tealSoft:   '#F0FDF9',   // fills
   tealBorder: '#CCFBF1',
 
   // Gold — reserved. Only for reverent elements (bismillah, verse markers,
   // "today's dua" eyebrow) or subtle structural ornament.
-  gold:       '#B8860B',
+  gold:       '#916909',
   goldSoft:   '#FAF4E6',
   goldBorder: '#E8D8A8',
 
   // Semantic — status only, never brand.
-  success:      '#16A34A',
+  success:      '#15803D',
   successSoft:  '#DCFCE7',
-  warn:         '#D97706',
+  successBorder:'#BBF7D0',
+  warn:         '#B45309',
   warnSoft:     '#FEF3C7',
-  danger:       '#DC2626',
+  warnBorder:   '#FDE68A',
+  danger:       '#C81E1E',
   dangerSoft:   '#FEE2E2',
+  dangerBorder: '#FECACA',
 
   // Overlay
   scrim: 'rgba(15, 23, 42, 0.55)',
@@ -145,3 +156,13 @@ export const layout = {
   sectionGap:     space[6],   // 24 — between distinct sections on a screen
   minTouchTarget: 44,          // iOS HIG / Material — everything tappable ≥ 44px
 };
+
+// ---------------------------------------------------------------------------
+// Tab bar height
+// ---------------------------------------------------------------------------
+// The tab bars have a fixed height. On Android the labels follow the
+// system font size (iOS shows the Large Content Viewer instead and keeps
+// them fixed), so at large sizes a fixed 56pt bar clips them. This adds
+// room as the font scale grows, capped at 2x.
+export const tabBarHeight = (fontScale = 1, bottomInset = 0) =>
+  56 + Math.max(0, Math.round((Math.min(fontScale, 2) - 1) * 16)) + bottomInset;
