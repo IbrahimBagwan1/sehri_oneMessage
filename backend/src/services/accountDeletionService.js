@@ -176,6 +176,36 @@ const eraseUserAccount = async (userId) => {
         transaction: t,
       });
     }
+
+    // A delivery run may already have been generated tonight, with this
+    // person counted in their PG's packets. Recount that PG's still-pending
+    // stops from the votes that remain, and drop a stop nobody at the PG
+    // wants any more — otherwise the rider carries a packet for someone who
+    // no longer exists, or rides to a door where nobody is expecting food.
+    // Delivered stops are history and are left alone.
+    let stopsAdjusted = 0;
+    if (withdrawnVotes > 0 && user.location_id) {
+      const stops = await db.DeliveryStop.findAll({
+        where: { poll_id: { [Op.in]: pendingPollIds }, location_id: user.location_id, status: 'pending' },
+        transaction: t,
+      });
+      for (const stop of stops) {
+        const remaining = await PollResponse.count({
+          where: {
+            poll_id: stop.poll_id,
+            [Op.or]: [
+              { response: 'yes', [Op.not]: { is_special_case: true, special_case_type: 'dont_want', sehri_allowed: 'approved' } },
+              { is_special_case: true, special_case_type: 'want', sehri_allowed: 'approved' },
+            ],
+          },
+          include: [{ model: User, as: 'user', where: { location_id: user.location_id, id: { [Op.ne]: userId } }, required: true }],
+          transaction: t,
+        });
+        if (remaining === 0) await stop.destroy({ transaction: t });
+        else if (remaining !== stop.packet_count) await stop.update({ packet_count: remaining }, { transaction: t });
+        stopsAdjusted += 1;
+      }
+    }
     const [keptVotes] = await PollResponse.update(
       { user_id: null },
       { where: { user_id: userId }, transaction: t }
@@ -239,16 +269,22 @@ const eraseUserAccount = async (userId) => {
     // here, deleted from Cloudinary only after the transaction commits, so a
     // rollback never leaves a donation pointing at a file that is gone.
     const donationsWithScreenshots = await Donation.findAll({
-      where: { user_id: userId, screenshot_url: { [Op.ne]: null } },
-      attributes: ['id', 'screenshot_url'],
+      where: {
+        user_id: userId,
+        [Op.or]: [{ screenshot_url: { [Op.ne]: null } }, { screenshot_public_id: { [Op.ne]: null } }],
+      },
+      attributes: ['id', 'screenshot_url', 'screenshot_public_id', 'screenshot_access'],
       transaction: t,
     });
-    const screenshotIds = donationsWithScreenshots
-      .map((d) => cloudinaryService.publicIdFromUrl(d.screenshot_url))
-      .filter(Boolean);
+    // Plain copies: the rows are detached below, but deletion needs the
+    // asset id and its delivery type after the commit.
+    const screenshotsToDelete = donationsWithScreenshots.map((d) => d.get({ plain: true }));
 
     await OTP.destroy({ where: { phone }, transaction: t });
-    await LoginThrottle.destroy({ where: { phone }, transaction: t });
+    await LoginThrottle.destroy({
+      where: { [Op.or]: [{ throttle_key: `p:${phone}` }, { throttle_key: { [Op.like]: `pi:${phone}:%` } }] },
+      transaction: t,
+    });
 
     // Every session for every identity this person held, signed out.
     await authSessionService.revokeSubjects(
@@ -270,12 +306,21 @@ const eraseUserAccount = async (userId) => {
         { where: { assigned_rider_id: rider.id }, transaction: t }
       );
     }
+    // A helper's taps are recorded on their CAPTAIN's stops, which are not
+    // cascaded with the helper. Forget the hand, keep the delivery record
+    // (the FK is also SET NULL since migration 20260928000004).
+    if (linked.riders.length) {
+      await db.DeliveryStop.update(
+        { delivered_by_rider_id: null },
+        { where: { delivered_by_rider_id: { [Op.in]: linked.riders.map((r) => r.id) } }, transaction: t }
+      );
+    }
     for (const row of [...linked.admins, ...linked.superAdmins, ...linked.riders]) {
       await row.destroy({ transaction: t });
     }
 
     await Donation.update(
-      { user_id: null, screenshot_url: null, note: null },
+      { user_id: null, screenshot_url: null, screenshot_public_id: null, screenshot_format: null, note: null },
       { where: { user_id: userId }, transaction: t }
     );
 
@@ -283,8 +328,8 @@ const eraseUserAccount = async (userId) => {
     await t.commit();
 
     // After commit: files and live connections are outside the transaction.
-    for (const publicId of screenshotIds) {
-      await cloudinaryService.deleteImage(publicId);
+    for (const donation of screenshotsToDelete) {
+      await cloudinaryService.deleteScreenshot(donation);
     }
     try {
       require('./socketService').disconnectUsers([
@@ -300,9 +345,10 @@ const eraseUserAccount = async (userId) => {
       super_admin_rows: linked.superAdmins.length,
       rider_rows:       linked.riders.length,
       votes_withdrawn:  withdrawnVotes,
+      stops_adjusted:   stopsAdjusted,
       votes_kept:       keptVotes,
       donations_kept:   keptDonations,
-      screenshots_deleted: screenshotIds.length,
+      screenshots_deleted: screenshotsToDelete.length,
       feedback_kept:    keptFeedback,
     };
     logger.info(
