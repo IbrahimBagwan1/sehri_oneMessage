@@ -71,7 +71,7 @@ export default function ForgotPasswordScreen() {
 
       <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
           <Text style={styles.intro}>
-            Enter the phone number on your account. We'll send you a one-time code to verify it.
+            Enter the phone number on your account. We’ll send you a one-time code to verify it.
           </Text>
 
           <View style={styles.field}>

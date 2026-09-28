@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
-import { colors, space } from '../../theme';
+import { colors } from '../../theme';
 
 /**
  * Divider — hairline separator.

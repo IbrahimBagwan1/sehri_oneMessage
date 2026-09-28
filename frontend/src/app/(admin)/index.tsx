@@ -260,7 +260,7 @@ export default function AdminDashboard() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.linkCardTitle}>Enable role switching</Text>
                 <Text style={styles.linkCardBody}>
-                  You don't have a linked user account yet. Link one to switch to
+                  You don’t have a linked user account yet. Link one to switch to
                   the user view and take part in polls, tracking, and chat.
                 </Text>
               </View>
@@ -455,7 +455,7 @@ export default function AdminDashboard() {
             <Text style={styles.modalTitle}>Link a user account</Text>
             <Text style={styles.modalBody}>
               This creates a user record for {user?.name || 'you'} in the zone you pick,
-              reusing your existing password. You'll be able to switch between roles
+              reusing your existing password. You’ll be able to switch between roles
               from the dashboard.
             </Text>
 

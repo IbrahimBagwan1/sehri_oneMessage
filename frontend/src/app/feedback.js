@@ -47,7 +47,9 @@ export default function UserFeedbackScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchHistory = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     try {
       const res = await feedbackApi.getMy({ page: 1, limit: 20 });
       if (res.success) setHistory(res.data.feedback || []);

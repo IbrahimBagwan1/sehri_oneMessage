@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   Alert,
-  Linking,
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,6 +14,7 @@ import LocationPicker from '../../components/LocationPicker';
 import PasswordInput from '../../components/PasswordInput';
 import { Button, Header, Input, RubStar, KeyboardAwareScroll } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
+import { LEGAL_URLS, openLegalUrl } from '../../constants/legal';
 
 // -----------------------------------------------------------------------------
 // Step 2 of registration — identity + location.
@@ -30,11 +30,6 @@ import { colors, radius, space, type } from '../../theme';
 // has rather than assuming a fixed depth.
 // -----------------------------------------------------------------------------
 
-// PLACEHOLDER — onemessage.app/privacy-policy is a stub page. Swap this
-// for the real policy URL before the store submissions go out; both
-// Play Console and App Store Connect fetch the link shown in the signup
-// flow and reject a listing whose policy page is missing or empty.
-const PRIVACY_POLICY_URL = 'https://onemessage.app/privacy-policy';
 
 const GENDERS = [
   { value: 'male',   label: 'Male'   },
@@ -141,23 +136,10 @@ export default function RegisterScreen() {
   // Render nothing while the guard redirect is in flight.
   if (!verifiedPhone || !verificationToken) return null;
 
-  /**
-   * Opens the privacy policy in the device browser rather than an in-app
-   * WebView — same approach as the payment link in (user)/donate.js, and
-   * the behaviour reviewers expect from a policy link.
-   */
-  const openPrivacyPolicy = async () => {
-    try {
-      const supported = await Linking.canOpenURL(PRIVACY_POLICY_URL);
-      if (!supported) throw new Error('unsupported');
-      await Linking.openURL(PRIVACY_POLICY_URL);
-    } catch {
-      Alert.alert(
-        "Couldn't open the privacy policy",
-        `Visit ${PRIVACY_POLICY_URL} in your browser.`
-      );
-    }
-  };
+  // Both open in the device browser rather than a WebView — see
+  // constants/legal.js for why, and for where each URL is required.
+  const openPrivacy = () => openLegalUrl(LEGAL_URLS.privacy, 'the privacy policy');
+  const openTerms   = () => openLegalUrl(LEGAL_URLS.terms, 'the terms of service');
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
@@ -236,10 +218,10 @@ export default function RegisterScreen() {
             <View style={styles.ornamentRule} />
           </View>
 
-          <SectionTitle>Where you'll receive Sehri</SectionTitle>
+          <SectionTitle>Where you’ll receive Sehri</SectionTitle>
           <Text style={styles.helper}>
             Pick your location step by step, right down to your PG. The rider
-            delivers to the PG's pin, so this needs to be exact.
+            delivers to the PG’s pin, so this needs to be exact.
           </Text>
 
           <LocationPicker
@@ -278,17 +260,33 @@ export default function RegisterScreen() {
             style={styles.submitBtn}
           />
 
-          <Pressable
-            onPress={openPrivacyPolicy}
-            hitSlop={8}
-            accessibilityRole="link"
-            accessibilityLabel="View Privacy Policy, opens in your browser"
-            style={({ pressed }) => [styles.policyRow, pressed && { opacity: 0.6 }]}
-          >
-            <Ionicons name="shield-checkmark-outline" size={14} color={colors.tealDark} />
-            <Text style={styles.policyLink}>View Privacy Policy</Text>
-            <Ionicons name="open-outline" size={13} color={colors.tealDark} />
-          </Pressable>
+          {/* The agreement a new member accepts. Apple expects an app
+              carrying user-generated content to have terms the user agrees
+              to, and both stores expect the privacy policy to be reachable
+              from the signup flow itself rather than only from the listing.
+              Stated as consent-on-submit, which is what the button above
+              actually does, rather than an unticked box that lies about it. */}
+          <Text style={styles.consent}>
+            By creating an account you agree to our{' '}
+            <Text
+              style={styles.consentLink}
+              onPress={openTerms}
+              accessibilityRole="link"
+              accessibilityLabel="Terms of Service, opens in your browser"
+            >
+              Terms of Service
+            </Text>
+            {' '}and{' '}
+            <Text
+              style={styles.consentLink}
+              onPress={openPrivacy}
+              accessibilityRole="link"
+              accessibilityLabel="Privacy Policy, opens in your browser"
+            >
+              Privacy Policy
+            </Text>
+            .
+          </Text>
 
           <Pressable
             onPress={() => router.replace('/(auth)/login')}
@@ -338,6 +336,17 @@ function ChoiceRow({ options, value, onChange }) {
 }
 
 const styles = StyleSheet.create({
+  consent: {
+    ...type.meta,
+    textAlign: 'center',
+    marginTop: space[4],
+    lineHeight: 20,
+  },
+  consentLink: {
+    color: colors.tealDark,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
   screen: { flex: 1, backgroundColor: colors.paperSoft },
   scroll: { padding: space[5], paddingBottom: space[10] },
 
@@ -435,15 +444,6 @@ const styles = StyleSheet.create({
   // open-outline instead of a chevron, because this one leaves the app.
   // tealDark clears 5.2:1 against paperSoft; paddingVertical gives the
   // row a 42px target on top of hitSlop.
-  policyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingVertical: space[3],
-    marginTop: space[2],
-  },
-  policyLink: { ...type.meta, color: colors.tealDark, fontWeight: '700' },
 
   footer:       { alignItems: 'center', paddingVertical: space[4] },
   footerText:   { ...type.body, color: colors.inkFaint },

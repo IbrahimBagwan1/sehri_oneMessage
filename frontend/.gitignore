@@ -7,3 +7,23 @@ expo-env.d.ts
 node_modules/
 .expo/
 *.log
+
+# Native projects are generated from app.config.js at build time
+# (Continuous Native Generation). A committed android/ directory silently
+# overrides the config — it is how a stale manifest (no notification or
+# foreground-service permissions, extra microphone/overlay permissions)
+# ended up in builds. Regenerate locally with `npx expo prebuild`.
+/android
+/ios
+
+# Local env and build output
+.env
+.env.*
+!.env.example
+dist/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist

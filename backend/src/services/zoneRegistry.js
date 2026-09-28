@@ -75,8 +75,10 @@ const nextAvailableKey = async (name) => {
 const listZones = async () => {
   if (cache && Date.now() - cachedAt < TTL_MS) return cache;
 
+  // The App Review sandbox zone is not a real zone: it never appears in
+  // statistics, pickers or anything else keyed on this list.
   const rows = await Location.findAll({
-    where: { type: 'zone', is_active: true },
+    where: { type: 'zone', is_active: true, is_sandbox: false },
     attributes: ['id', 'name', 'zone_key'],
     order: [['name', 'ASC']],
   });

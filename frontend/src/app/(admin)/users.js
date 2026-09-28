@@ -52,7 +52,8 @@ export default function AdminUsersScreen() {
   const [actioningId, setActioningId] = useState(null);
 
   const load = useCallback(async (tab = activeTab, isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await adminApi.getUsers(tab);
@@ -65,7 +66,7 @@ export default function AdminUsersScreen() {
     }
   }, [activeTab]);
 
-  useFocusEffect(useCallback(() => { load(activeTab); }, [activeTab]));
+  useFocusEffect(useCallback(() => { load(activeTab); }, [load, activeTab]));
 
   const handleAction = (userId, status, name) => {
     const verb = status === 'approved' ? 'approve' : 'reject';

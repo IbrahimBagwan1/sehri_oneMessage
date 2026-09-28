@@ -3,11 +3,15 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const logger = require('../utils/logger');
+const cloudinaryService = require('./cloudinaryService');
+const authSessionService = require('./authSessionService');
+const { FORMER_MEMBER_LABEL } = require('../utils/memberDisplay');
 
 const {
   User, Admin, SuperAdmin, Rider,
   PollResponse, Poll, Donation, Feedback, ProfileEditRequest,
-  ChatGroupMember, ChatMessage, OTP,
+  ChatGroupMember, ChatMessage, ChatUserBlock, ChatMessageReport,
+  OTP, LoginThrottle,
 } = db;
 
 /**
@@ -40,8 +44,13 @@ const {
  *                          super admin's own "delete rider" button
  *                          already does.
  *   poll_responses         SPLIT — see below.
- *   donations              KEEP, user_id → NULL. Financial records the
- *                          community reconciles against.
+ *   donations              KEEP amount / status / dates, user_id → NULL.
+ *                          The payment SCREENSHOT is deleted from
+ *                          Cloudinary and the free-text note cleared:
+ *                          a UPI screenshot shows the payer's name and
+ *                          handle, which is exactly the identifying data
+ *                          erasure promises to remove. The ledger row
+ *                          (what was given, when, verified or not) stays.
  *   feedback               KEEP, user_id → NULL. An open complaint must
  *                          not vanish from the admin inbox mid-review.
  *   profile_edit_requests  DELETE. Pure PII (a proposed name / address),
@@ -49,12 +58,24 @@ const {
  *                          cascades; we delete explicitly so the intent
  *                          is readable here rather than only in the DDL.
  *   chat_group_members     DELETE. They leave every group they were in.
- *   chat_messages          is_deleted = true. Their words are erased but
- *                          the row stays, so reply threads don't break —
- *                          the same mechanism the app already uses for
- *                          "This message was deleted".
- *   otps                   DELETE. Stale one-time codes tied to a number
- *                          that is about to become available again.
+ *   chat_messages          is_deleted = true AND content → '[deleted]'.
+ *                          The row stays so reply threads don't break —
+ *                          the same mechanism as "This message was
+ *                          deleted" — but the words are gone from the
+ *                          database, not just hidden. (The first version
+ *                          only set the flag, which hid the text from
+ *                          clients while keeping it in the table.)
+ *   chat_user_blocks       DELETE, both directions.
+ *   chat_message_reports   KEEP as a safety record (the privacy policy
+ *                          says moderation records are retained), but the
+ *                          reported person's NAME snapshot becomes
+ *                          "Former member", and any still-pending report
+ *                          about them is closed: there is no one left to
+ *                          act against.
+ *   auth_sessions          REVOKED — every device signed in as any of
+ *                          this person's identities is signed out.
+ *   otps, login_throttles  DELETE. State tied to a number that is about to
+ *                          become available again.
  *
  * THE POLL_RESPONSES SPLIT
  * A response to a poll dated in the PAST is history: it stays, with
@@ -71,8 +92,10 @@ const {
  * deleted, which is also what withdrawing from the poll would have done.
  */
 
+const { istDateString } = require('../utils/istTime');
+
 /** Today's date in IST as YYYY-MM-DD — the poll calendar's own key. */
-const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+const todayIST = () => istDateString();
 
 /** "9141687582" → "91*****582" for logs. Never log a number in full. */
 const maskPhone = (phone) => {
@@ -159,10 +182,9 @@ const eraseUserAccount = async (userId) => {
     );
 
     // --- records that outlive the person, detached from them -----------
-    const [keptDonations] = await Donation.update(
-      { user_id: null },
-      { where: { user_id: userId }, transaction: t }
-    );
+    // The detach happens further down, after the screenshots are collected;
+    // counting here keeps the summary line honest.
+    const keptDonations = await Donation.count({ where: { user_id: userId }, transaction: t });
     const [keptFeedback] = await Feedback.update(
       { user_id: null },
       { where: { user_id: userId }, transaction: t }
@@ -184,13 +206,59 @@ const eraseUserAccount = async (userId) => {
         where: { user_id: id, user_type: type },
         transaction: t,
       });
+      // Overwrite the text, not just flag it — see the table above.
       await ChatMessage.update(
-        { is_deleted: true },
-        { where: { sender_id: id, sender_type: type, is_deleted: false }, transaction: t }
+        { is_deleted: true, content: '[deleted]' },
+        { where: { sender_id: id, sender_type: type }, transaction: t }
+      );
+      await ChatUserBlock.destroy({
+        where: {
+          [Op.or]: [
+            { blocker_id: id, blocker_type: type },
+            { blocked_id: id, blocked_type: type },
+          ],
+        },
+        transaction: t,
+      });
+      await ChatMessageReport.update(
+        { reported_user_name_snapshot: FORMER_MEMBER_LABEL },
+        { where: { reported_user_id: id, reported_user_type: type }, transaction: t }
+      );
+      await ChatMessageReport.update(
+        {
+          status: 'reviewed',
+          action_taken: 'none',
+          reviewed_at: new Date(),
+          review_note: 'Closed automatically: the reported member deleted their account.',
+        },
+        { where: { reported_user_id: id, reported_user_type: type, status: 'pending' }, transaction: t }
       );
     }
 
+    // Payment screenshots are identifying (payer name, UPI handle). Collected
+    // here, deleted from Cloudinary only after the transaction commits, so a
+    // rollback never leaves a donation pointing at a file that is gone.
+    const donationsWithScreenshots = await Donation.findAll({
+      where: { user_id: userId, screenshot_url: { [Op.ne]: null } },
+      attributes: ['id', 'screenshot_url'],
+      transaction: t,
+    });
+    const screenshotIds = donationsWithScreenshots
+      .map((d) => cloudinaryService.publicIdFromUrl(d.screenshot_url))
+      .filter(Boolean);
+
     await OTP.destroy({ where: { phone }, transaction: t });
+    await LoginThrottle.destroy({ where: { phone }, transaction: t });
+
+    // Every session for every identity this person held, signed out.
+    await authSessionService.revokeSubjects(
+      [
+        ...identities,
+        ...linked.riders.map((r) => ({ id: r.id, type: 'rider' })),
+      ],
+      'account_deleted',
+      { transaction: t }
+    );
 
     // --- the account rows themselves ------------------------------------
     // A rider assigned to a poll is referenced by polls.assigned_rider_id,
@@ -206,8 +274,26 @@ const eraseUserAccount = async (userId) => {
       await row.destroy({ transaction: t });
     }
 
+    await Donation.update(
+      { user_id: null, screenshot_url: null, note: null },
+      { where: { user_id: userId }, transaction: t }
+    );
+
     await user.destroy({ transaction: t });
     await t.commit();
+
+    // After commit: files and live connections are outside the transaction.
+    for (const publicId of screenshotIds) {
+      await cloudinaryService.deleteImage(publicId);
+    }
+    try {
+      require('./socketService').disconnectUsers([
+        userId,
+        ...linked.admins.map((a) => a.id),
+        ...linked.superAdmins.map((sa) => sa.id),
+        ...linked.riders.map((r) => r.id),
+      ]);
+    } catch (_) { /* socket layer not running (scripts, tests) */ }
 
     const removed = {
       admin_rows:       linked.admins.length,
@@ -216,6 +302,7 @@ const eraseUserAccount = async (userId) => {
       votes_withdrawn:  withdrawnVotes,
       votes_kept:       keptVotes,
       donations_kept:   keptDonations,
+      screenshots_deleted: screenshotIds.length,
       feedback_kept:    keptFeedback,
     };
     logger.info(

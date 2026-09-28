@@ -1,18 +1,19 @@
 {
-  "name": "myfolder",
+  "name": "onemessage-backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "migrate": "npx sequelize-cli db:migrate",
-    "seed": "npx sequelize-cli db:seed:all"
+    "migrate:undo": "npx sequelize-cli db:migrate:undo",
+    "seed": "node scripts/guard-seed.js && npx sequelize-cli db:seed:all",
+    "test": "node tests/run.js",
+    "test:rollback": "node tests/run.js --rollback",
+    "test:unit": "node --test \"tests/unit/*.test.js\""
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "OneMessage API \u2014 Express 5, Sequelize (MySQL), Socket.IO",
   "dependencies": {
     "adhan": "^4.4.3",
     "axios": "^1.7.9",
@@ -31,11 +32,15 @@
     "mysql2": "^3.23.4",
     "sequelize": "^6.37.8",
     "socket.io": "4.8.1",
-    "uuid": "^14.0.2",
     "winston": "^3.19.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14",
-    "sequelize-cli": "^6.6.5"
+    "sequelize-cli": "^6.6.5",
+    "socket.io-client": "4.8.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20.10"
   }
 }

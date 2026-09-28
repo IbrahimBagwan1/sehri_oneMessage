@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -87,7 +87,7 @@ function DonateScreenAuthed() {
     try {
       const res = await donationsApi.getPaymentInfo();
       if (res.success) setPayment(res.data);
-    } catch (err) {
+    } catch {
       setPayError("Couldn't load payment details right now.");
     } finally {
       setLoadingPay(false);
@@ -124,14 +124,11 @@ function DonateScreenAuthed() {
     }
   };
 
+  // No permission request: the system picker (PHPicker on iOS, the Photo
+  // Picker on Android) runs outside the app and returns only the image the
+  // member chooses, so the app never needs access to the whole library —
+  // and never shows a "allow access to all your photos" prompt.
   const handlePickScreenshot = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      return Alert.alert(
-        'Photos permission needed',
-        'To upload your payment screenshot, allow photo access in Settings.'
-      );
-    }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'images',
       allowsEditing: false,

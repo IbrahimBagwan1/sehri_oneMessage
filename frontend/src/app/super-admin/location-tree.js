@@ -68,7 +68,9 @@ export default function LocationTreeScreen() {
   const [busyId,     setBusyId]     = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       // One request per level rather than a tree endpoint: the list endpoint

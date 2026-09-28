@@ -1,1 +1,13 @@
-API test command: curl -X POST http://127.0.0.1:5000/api/auth/register -H "Content-Type: application/json" -d '{"name":"Test User","phone":"9876000000","password":"test123","otp":"123456"}'
+# OneMessage API
+
+Express 5 + Sequelize (MySQL) + Socket.IO. See the [root README](../README.md)
+for endpoints, setup, the security model and tests, and
+[`docs/release/`](../docs/release/) for store submission.
+
+```bash
+npm install
+cp .env.example .env   # validated on boot
+npm run migrate
+npm run dev
+npm test               # needs a <DB_NAME>_test database — see tests/run.js
+```

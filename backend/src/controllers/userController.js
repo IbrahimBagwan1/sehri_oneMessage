@@ -2,11 +2,24 @@
 
 const db = require('../models');
 const { success, error } = require('../utils/response');
-const { buildLocationInclude, resolveZoneFromLoaded } = require('../utils/zoneScope');
+const { Op } = require('sequelize');
+const { buildLocationInclude, resolveZoneFromLoaded, locationIdsInZone } = require('../utils/zoneScope');
 const { eraseUserAccount } = require('../services/accountDeletionService');
 const chatGroupSync = require('../services/chatGroupSync');
+const logger = require('../utils/logger');
 
 const { User, Location, ProfileEditRequest } = db;
+
+// What an admin list shows about a member. Deliberately excludes the push
+// token and password hash that a bare findAll returned before.
+const LIST_ATTRIBUTES = [
+  'id', 'name', 'phone', 'gender', 'occupation', 'city', 'location_id',
+  'address', 'status', 'is_phone_verified', 'last_login_at', 'created_at', 'updated_at',
+];
+
+// Without ?page, the list is still capped — no endpoint returns an
+// unbounded table. Screens that need more pass page/limit (or q).
+const UNPAGED_CAP = 1000;
 
 // ---------------------------------------------------------------------------
 // Fields the user is allowed to change via the profile-edit-request flow.
@@ -32,32 +45,52 @@ const listUsers = async (req, res, next) => {
     // No exclusion clause needed: a deleted account has no users row at
     // all, so every row here belongs to a member who actually exists.
     const where = {};
-    if (status) where.status = status;
+    if (['pending', 'approved', 'rejected'].includes(status)) where.status = status;
 
-    const users = await User.findAll({
-      where,
-      include: [buildLocationInclude()],
-      order: [['createdAt', 'DESC']],
-    });
-
-    if (role === 'super_admin') {
-      return success(res, {
-        statusCode: 200,
-        message: 'Users fetched successfully',
-        data: users,
-      });
+    // Admins are scoped IN THE QUERY to their own zone's locations, rather
+    // than loading every member in the community and filtering in memory.
+    if (role === 'admin') {
+      const ids = await locationIdsInZone(zone_location_id);
+      if (ids.length === 0) {
+        return success(res, { statusCode: 200, message: 'Users fetched successfully', data: [] });
+      }
+      where.location_id = { [Op.in]: ids };
     }
 
-    // role === 'admin' → keep only users whose resolved zone matches.
-    const filtered = users.filter((user) => {
-      const zone = resolveZoneFromLoaded(user.location);
-      return zone && zone.id === zone_location_id;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length >= 2) {
+      const digits = q.replace(/\D/g, '');
+      where[Op.or] = [
+        { name: { [Op.like]: `%${q}%` } },
+        ...(digits.length >= 3 ? [{ phone: { [Op.like]: `%${digits}%` } }] : []),
+      ];
+    }
+
+    const paged = req.query.page !== undefined;
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = paged
+      ? Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 50))
+      : UNPAGED_CAP;
+
+    const { count, rows } = await User.findAndCountAll({
+      where,
+      attributes: LIST_ATTRIBUTES,
+      include: [buildLocationInclude()],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset: paged ? (page - 1) * limit : 0,
+      distinct: true,
     });
+
+    if (!paged && count > UNPAGED_CAP) {
+      logger.warn(`[users] list truncated to ${UNPAGED_CAP} of ${count} — the client should paginate`);
+    }
 
     return success(res, {
       statusCode: 200,
       message: 'Users fetched successfully',
-      data: filtered,
+      // The unpaged shape (a bare array) is what existing screens read.
+      data: paged ? { total: count, page, limit, users: rows } : rows,
     });
   } catch (err) {
     next(err);
@@ -194,7 +227,7 @@ const requestProfileEdit = async (req, res, next) => {
     // Validate location_id if the user is trying to change it.
     if (cleaned.location_id) {
       const loc = await Location.findByPk(cleaned.location_id);
-      if (!loc || !['zone', 'address'].includes(loc.type)) {
+      if (!loc || loc.is_sandbox || !['zone', 'address'].includes(loc.type)) {
         return error(res, {
           statusCode: 400,
           message: 'location_id must reference a zone or address location',
@@ -251,26 +284,27 @@ const getProfileEditRequests = async (req, res, next) => {
       where.status = status;
     }
 
-    const requests = await ProfileEditRequest.findAll({
+    const userWhere = {};
+    if (role === 'admin') {
+      const ids = await locationIdsInZone(zone_location_id);
+      userWhere.location_id = { [Op.in]: ids.length ? ids : [null] };
+    }
+
+    const visible = await ProfileEditRequest.findAll({
       where,
       include: [
         {
           model: User,
           as: 'user',
           attributes: ['id', 'name', 'phone', 'status'],
+          where: userWhere,
+          required: role === 'admin',
           include: [buildLocationInclude()],
         },
       ],
       order: [['created_at', 'DESC']],
+      limit: 500,
     });
-
-    let visible = requests;
-    if (role === 'admin') {
-      visible = requests.filter((r) => {
-        const zone = resolveZoneFromLoaded(r.user?.location);
-        return zone && zone.id === zone_location_id;
-      });
-    }
 
     return success(res, {
       statusCode: 200,
@@ -471,6 +505,16 @@ const setPushToken = async (req, res, next) => {
       return error(res, { statusCode: 404, message: 'User not found' });
     }
 
+    // One phone, one account. A shared or handed-down device registers the
+    // same token under the new account; if the old account still held it,
+    // the new user would receive the old user's notifications ("Your Sehri
+    // is close", zone broadcasts). Detach it everywhere else first.
+    if (token) {
+      await User.update(
+        { fcm_token: null },
+        { where: { fcm_token: token, id: { [Op.ne]: user.id } }, hooks: false }
+      );
+    }
     user.fcm_token = token || null;
     await user.save({ hooks: false });
 

@@ -7,6 +7,17 @@ const logger = require('../utils/logger');
 
 const zoneRegistry = require('../services/zoneRegistry');
 const chatGroupSync = require('../services/chatGroupSync');
+const locationIndex = require('../services/locationIndex');
+
+/**
+ * Every write to the tree drops the in-memory location index (used for
+ * zone and coordinate lookups across the app — see services/locationIndex)
+ * so the next read sees the change immediately on this instance.
+ */
+const treeChanged = () => {
+  locationIndex.invalidate();
+  zoneRegistry.invalidate();
+};
 
 const { Location, User } = db;
 
@@ -79,7 +90,9 @@ const getLocations = async (req, res, next) => {
   try {
     const { type, parent_id } = req.query;
 
-    const where = { is_active: true };
+    // The App Review sandbox (services/reviewDemoService) is never offered
+    // in the picker, so a real member can never register into it.
+    const where = { is_active: true, is_sandbox: false };
     if (type) where.type = type;
     if (parent_id) where.parent_id = parent_id;
 
@@ -112,6 +125,7 @@ const getLocationsNeedingCoordinates = async (req, res, next) => {
       where: {
         type: 'address',
         is_active: true,
+        is_sandbox: false,
         [Op.or]: [{ latitude: null }, { longitude: null }],
       },
       include: [{ model: Location, as: 'parent', attributes: ['id', 'name', 'type'] }],
@@ -140,7 +154,7 @@ const getLocationsNeedingCoordinates = async (req, res, next) => {
 const listAllAddresses = async (req, res, next) => {
   try {
     const rows = await Location.findAll({
-      where: { type: 'address', is_active: true },
+      where: { type: 'address', is_active: true, is_sandbox: false },
       include: [{ model: Location, as: 'parent', attributes: ['id', 'name'] }],
       attributes: ['id', 'name', 'type', 'parent_id', 'latitude', 'longitude', 'geocoded_at'],
       order: [['name', 'ASC']],
@@ -184,6 +198,7 @@ const setCoordinates = async (req, res, next) => {
     loc.longitude = lng;
     loc.geocoded_at = new Date();
     await loc.save();
+    treeChanged();
 
     logger.info(`[locations] Coordinates set for ${loc.type} "${loc.name}" (${id}): ${lat},${lng}`);
 
@@ -281,6 +296,7 @@ const createAddress = async (req, res, next) => {
       longitude:   coords.provided ? coords.lng : null,
       geocoded_at: coords.provided ? new Date() : null,
     });
+    treeChanged();
 
     logger.info(
       `[locations] super_admin=${req.auth.id} created PG "${row.name}" (${row.id}) under zone "${parent.name}"` +
@@ -411,6 +427,7 @@ const createLocation = async (req, res, next) => {
       longitude:   coords.provided ? coords.lng : null,
       geocoded_at: coords.provided ? new Date() : null,
     });
+    treeChanged();
 
     logger.info(
       `[locations] super_admin=${req.auth.id} created ${type} "${row.name}" (${row.id})`
@@ -550,6 +567,7 @@ const updateAddress = async (req, res, next) => {
     // zone_key is deliberately NOT touched on rename. It is the identity every
     // past vote was filed under; rewriting it would orphan that history.
     await row.save();
+    treeChanged();
 
     if (row.type === 'zone') {
       zoneRegistry.invalidate();
@@ -661,6 +679,7 @@ const deleteAddress = async (req, res, next) => {
 
     row.is_active = false;
     await row.save();
+    treeChanged();
 
     logger.info(
       `[locations] super_admin=${req.auth.id} soft-deleted ${row.type} "${row.name}" (${row.id})` +

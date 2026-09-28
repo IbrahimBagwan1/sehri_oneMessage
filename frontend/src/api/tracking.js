@@ -18,14 +18,14 @@ export const trackingApi = {
   // PATCH /api/tracking/:id/push-location
   // payload: { latitude, longitude, current_address, eta_minutes, status }
   pushLocation: async (riderId, payload, authToken) => {
-    const response = await apiClient.patch(`/tracking/${riderId}/push-location`, payload, { authToken });
+    const response = await apiClient.patch(`/tracking/${riderId}/push-location`, payload, { authToken, authScope: 'rider' });
     return response.data;
   },
 
   // GET /api/tracking/delivery-list
   // Rider token required — only works if rider is assigned for today
   getDeliveryList: async (authToken) => {
-    const response = await apiClient.get('/tracking/delivery-list', { authToken });
+    const response = await apiClient.get('/tracking/delivery-list', { authToken, authScope: 'rider' });
     return response.data; // { success, data: { poll_date, total, by_zone } }
   },
 
@@ -160,26 +160,26 @@ export const trackingApi = {
   // GET /api/tracking/me — the calling rider's own live row.
   // The profile stored at login is a snapshot; this is the current truth.
   getMyRiderProfile: async (authToken) => {
-    const response = await apiClient.get('/tracking/me', { authToken });
+    const response = await apiClient.get('/tracking/me', { authToken, authScope: 'rider' });
     return response.data;
   },
 
   // GET /api/tracking/my-stops — rider only.
   // The rider's own stops in optimized visit order.
   getMyStops: async (authToken) => {
-    const response = await apiClient.get('/tracking/my-stops', { authToken });
+    const response = await apiClient.get('/tracking/my-stops', { authToken, authScope: 'rider' });
     return response.data; // { success, data: { poll, stops: [...] } }
   },
 
   // POST /api/tracking/my-route/recompute — rider only.
   recomputeMyRoute: async (authToken) => {
-    const response = await apiClient.post('/tracking/my-route/recompute', {}, { authToken });
+    const response = await apiClient.post('/tracking/my-route/recompute', {}, { authToken, authScope: 'rider' });
     return response.data;
   },
 
   // PATCH /api/tracking/stops/:id/mark-delivered — rider only.
   markStopDelivered: async (stopId, authToken) => {
-    const response = await apiClient.patch(`/tracking/stops/${stopId}/mark-delivered`, {}, { authToken });
+    const response = await apiClient.patch(`/tracking/stops/${stopId}/mark-delivered`, {}, { authToken, authScope: 'rider' });
     return response.data;
   },
 
@@ -188,7 +188,7 @@ export const trackingApi = {
   // without this a mistap is permanent and that PG's residents have
   // already been told their food arrived.
   undoStopDelivered: async (stopId, authToken) => {
-    const response = await apiClient.patch(`/tracking/stops/${stopId}/undo-delivered`, {}, { authToken });
+    const response = await apiClient.patch(`/tracking/stops/${stopId}/undo-delivered`, {}, { authToken, authScope: 'rider' });
     return response.data;
   },
 };

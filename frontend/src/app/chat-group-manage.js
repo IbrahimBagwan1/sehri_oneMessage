@@ -94,7 +94,8 @@ export default function ChatGroupManageScreen() {
   }, [loadZoneOptions]);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await chatApi.getGroup(groupId);

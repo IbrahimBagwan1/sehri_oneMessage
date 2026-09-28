@@ -178,10 +178,10 @@ export default function VerifyPhoneScreen() {
 
           {step === STEP.PHONE ? (
             <>
-              <Text style={styles.title}>What's your number?</Text>
+              <Text style={styles.title}>What’s your number?</Text>
               <Text style={styles.subtitle}>
-                We'll text you a code to confirm it's really you. This is the
-                number you'll sign in with.
+                We’ll text you a code to confirm it’s really you. This is the
+                number you’ll sign in with.
               </Text>
 
               <View style={styles.field}>

@@ -4,8 +4,13 @@ const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
-const { signAccessToken, signRefreshToken } = require('../utils/jwt');
 const { resolveZone } = require('../utils/resolveZone');
+const authSessionService = require('../services/authSessionService');
+const loginThrottle = require('../services/loginThrottleService');
+const reviewDemo = require('../services/reviewDemoService');
+const locationIndex = require('../services/locationIndex');
+const pollCalendar = require('../services/pollCalendar');
+const routeCache = require('../services/routeCache');
 const googleMapsService = require('../services/googleMapsService');
 const etaComputationService = require('../services/etaComputationService');
 const notificationService = require('../services/notificationService');
@@ -59,9 +64,11 @@ const computeDeliverablePGs = async (pollId) => {
   // location_id so it appears in the stop list (rider knows to go
   // there, ETA/polyline just degrade).
   const byPg = new Map(); // location_id → { count, coord_location_id (may be null) }
+  // The App Review sandbox never enters a real run — see reviewDemoService.
+  const sandbox = await reviewDemo.sandboxLocationIds();
   for (const r of responses) {
     const rootId = r.user?.location_id;
-    if (!rootId) continue;
+    if (!rootId || sandbox.has(rootId)) continue;
     const dest = await resolveDeliveryDestination(rootId);
     // Key by the PG the user actually belongs to (rootId), so two users
     // at the same PG never split into two stops even if their PG has
@@ -122,14 +129,11 @@ const teamOwningStop = async (riderId, stop) => {
 };
 
 // ---------------------------------------------------------------------------
-// Internal helper — fetch today's poll (same pattern as pollController).
+// Internal helper — the poll whose delivery run is current. Usually today's;
+// yesterday's in the small hours while a run that started before midnight
+// still has stops left. See services/pollCalendar.js.
 // ---------------------------------------------------------------------------
-const getTodaysPoll = async () => {
-  const istDateStr = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'Asia/Kolkata',
-  });
-  return Poll.findOne({ where: { date: istDateStr } });
-};
+const getTodaysPoll = () => pollCalendar.getDeliveryPoll();
 
 // ---------------------------------------------------------------------------
 // Internal helper — resolve the SHARED delivery coordinate for a user.
@@ -149,24 +153,9 @@ const getTodaysPoll = async () => {
 // ---------------------------------------------------------------------------
 const resolveDeliveryDestination = async (locationId) => {
   if (!locationId) return null;
-  let current = await Location.findByPk(locationId);
-  let hops = 0;
-  const MAX_HOPS = 10; // safety guard against accidental cycles
-  while (current && hops < MAX_HOPS) {
-    if (current.latitude != null && current.longitude != null) {
-      return {
-        lat: Number(current.latitude),
-        lng: Number(current.longitude),
-        source_location_id: current.id,
-        source_location_type: current.type,
-        source_location_name: current.name,
-      };
-    }
-    if (!current.parent_id) return null;
-    current = await Location.findByPk(current.parent_id);
-    hops += 1;
-  }
-  return null;
+  // In-memory walk of the cached location tree — one query per minute
+  // instead of one per hop per call. See services/locationIndex.js.
+  return locationIndex.destinationOf(locationId);
 };
 
 // ---------------------------------------------------------------------------
@@ -180,19 +169,30 @@ const resolveDeliveryDestination = async (locationId) => {
 // ---------------------------------------------------------------------------
 const riderLogin = async (req, res, next) => {
   try {
-    const { phone, password } = req.body;
+    const { phone, password } = req.body || {};
 
-    if (!phone || !password) {
+    if (typeof phone !== 'string' || typeof password !== 'string' || !phone || !password) {
       return error(res, {
         statusCode: 400,
         message: 'Phone and password are required',
       });
     }
 
+    // Same per-phone lockout as the member sign-in — one counter per number,
+    // whichever screen the guesses come through.
+    await loginThrottle.assertNotLocked(phone);
+
+    // The App Review demo rider repairs itself on a sign-in with the
+    // documented password. See services/reviewDemoService.js.
+    if (reviewDemo.isDemoRiderPhone(phone) && reviewDemo.isDemoPassword(password)) {
+      await reviewDemo.ensureDemoRider();
+    }
+
     const rider = await Rider.scope('withPassword').findOne({ where: { phone } });
 
     // Same three-way split as the member login (see authController):
-    // no account / suspended / wrong password are different answers.
+    // no account / wrong password / suspended are different answers — and
+    // the password is checked before the suspension is revealed.
     if (!rider) {
       return error(res, {
         statusCode: 404,
@@ -201,25 +201,22 @@ const riderLogin = async (req, res, next) => {
       });
     }
 
+    const isPasswordValid = await bcrypt.compare(password, rider.password);
+    if (!isPasswordValid) {
+      await loginThrottle.recordFailure(phone);
+      return error(res, { statusCode: 401, message: 'Invalid phone or password', code: 'INVALID_CREDENTIALS' });
+    }
+    await loginThrottle.recordSuccess(phone);
+
     if (!rider.is_active) {
       return error(res, {
         statusCode: 403,
         message: 'Your rider account has been deactivated. Contact a super admin to restore it.',
+        code: 'ACCOUNT_DEACTIVATED',
       });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, rider.password);
-    if (!isPasswordValid) {
-      return error(res, { statusCode: 401, message: 'Invalid phone or password' });
-    }
-
-    // Build token payload — same shape as admin/super_admin but with role 'rider'.
-    const payload = { id: rider.id, role: 'rider' };
-    if (rider.zone_location_id) payload.zone_location_id = rider.zone_location_id;
-    if (rider.user_id) payload.user_id = rider.user_id;
-
-    const accessToken = signAccessToken(payload);
-    const refreshToken = signRefreshToken(payload);
+    const { accessToken, refreshToken } = await authSessionService.issueSession('rider', rider);
 
     return success(res, {
       statusCode: 200,
@@ -609,13 +606,16 @@ const toggleRider = async (req, res, next) => {
     rider.is_active = !rider.is_active;
     await rider.save();
 
-    // If the rider was just deactivated, clear today's assignment if it's them.
+    // If the rider was just deactivated, clear today's assignment if it's them,
+    // and sign them out everywhere — a deactivated rider must not keep
+    // pushing GPS or reading resident addresses on a still-valid session.
     if (!rider.is_active) {
       const poll = await getTodaysPoll();
       if (poll && poll.assigned_rider_id === rider.id) {
         poll.assigned_rider_id = null;
         await poll.save();
       }
+      await authSessionService.revokeSubjects([{ type: 'rider', id: rider.id }], 'deactivated');
     }
 
     return success(res, {
@@ -1060,11 +1060,57 @@ const getEta = async (req, res, next) => {
     // back to distanceMatrix only if directions failed or is degraded, so
     // the user still sees an ETA even when the polyline isn't available.
     const origin = { lat: Number(rider.latitude), lng: Number(rider.longitude) };
-    const route  = await googleMapsService.directions({
-      origin,
-      destination,
-      mode: 'driving',
-    });
+
+    // The ETA service computes this PG's answer along the rider's actual
+    // route on every recompute and keeps it for a few minutes. Serving that
+    // means every resident opening the tracking screen costs nothing, and
+    // they see the same number the proximity push was based on.
+    const computed = user.location_id
+      ? routeCache.peek(etaComputationService.etaCacheKey(captainId, user.location_id))
+      : undefined;
+    if (computed && Array.isArray(computed.route)) {
+      return success(res, {
+        statusCode: 200,
+        message: 'ETA computed',
+        data: {
+          rider: {
+            id: rider.id,
+            name: rider.name,
+            latitude: Number(rider.latitude),
+            longitude: Number(rider.longitude),
+            status: teamStat,
+          },
+          team: {
+            captain: deliveryTeamService.publicRider(teamForEta.captain),
+            helper:  deliveryTeamService.publicRider(teamForEta.helper),
+            tracked_rider_id: rider.id,
+          },
+          destination: {
+            latitude:  destination.lat,
+            longitude: destination.lng,
+            source:    destination_source,
+          },
+          route: computed.route,
+          eta: {
+            distance_meters: null,
+            distance_text: null,
+            duration_seconds: computed.eta_minutes * 60,
+            duration_text: `${computed.eta_minutes} min`,
+            eta_minutes: computed.eta_minutes,
+            computed_at: computed.at,
+          },
+        },
+      });
+    }
+
+    // No recent computation (the run has not moved yet, or this PG is past
+    // the first 25 stops): one direct route, shared by every resident of
+    // the PG for a short while instead of one paid call per screen open.
+    const route = await routeCache.remember(
+      routeCache.key('eta-direct', rider.id, origin, destination),
+      45 * 1000,
+      () => googleMapsService.directions({ origin, destination, mode: 'driving' })
+    );
 
     let distanceMeters = route?.distanceMeters ?? null;
     let durationSeconds = route?.durationSeconds ?? null;
@@ -1469,6 +1515,7 @@ const deleteRider = async (req, res, next) => {
     });
 
     await rider.destroy();
+    await authSessionService.revokeSubjects([{ type: 'rider', id }], 'account_deleted');
 
     const notes = [];
     if (zonesReleased > 0) {
@@ -1809,9 +1856,13 @@ const assignDeliveryRun = async (req, res, next) => {
     const skippedNotWorking = new Set();
     const working = requested ? new Set(requested) : null;
 
+    // The App Review sandbox has its own captain and is never part of a real
+    // run; its demo stop is created on demand in getMyStops.
+    const sandboxZones = await reviewDemo.sandboxZoneIds();
+
     for (const a of assignments) {
       const captain = a.captain;
-      if (!captain) continue;
+      if (!captain || sandboxZones.has(a.zone_location_id)) continue;
       if (!captain.is_active) { skippedInactive.add(captain.name); continue; }
       if (working && !working.has(captain.id)) { skippedNotWorking.add(captain.name); continue; }
       captainByZone.set(a.zone_location_id, captain);
@@ -1892,6 +1943,7 @@ const assignDeliveryRun = async (req, res, next) => {
     await poll.save({ transaction: t });
 
     await t.commit();
+    pollCalendar.invalidateDeliveryPoll();
 
     // Route optimisation per captain — fire-and-forget so the response is
     // fast. Each call catches its own errors and never throws. One captain
@@ -2153,6 +2205,13 @@ const getMyStops = async (req, res, next) => {
       });
     }
 
+    // The App Review demo rider is never in a real run, so its single
+    // sandbox stop is created here, on first look. Real captains are
+    // untouched: isSandboxCaptain is false for anyone holding a real zone.
+    if (reviewDemo.isEnabled() && await reviewDemo.isSandboxCaptain(team.captain.id)) {
+      await reviewDemo.ensureDemoStop(poll, team.captain.id);
+    }
+
     const stops = await DeliveryStop.findAll({
       where: { poll_id: poll.id, rider_id: team.captain.id },
       include: [
@@ -2225,15 +2284,22 @@ const getMyStops = async (req, res, next) => {
         // pass optimizeWaypoints=false to preserve that visit order —
         // don't want Google to reshuffle the queue behind the rider's
         // back after they've started following it.
-        const dir = await googleMapsService.directions({
-          origin,
-          destination,
-          waypoints: middle,
-          optimizeWaypoints: false,
+        // Cached per captain for a short while, keyed on the pending stop
+        // order and a coarse origin: the rider screen refetches after every
+        // tap, and each refetch used to be a paid Directions call even when
+        // nothing about the route had changed.
+        const cacheKey = routeCache.key('stops', team.captain.id, pending.map((p) => p.id).join(','), origin);
+        routePolyline = await routeCache.remember(cacheKey, 60 * 1000, async () => {
+          const dir = await googleMapsService.directions({
+            origin,
+            destination,
+            waypoints: middle,
+            optimizeWaypoints: false,
+          });
+          return dir && Array.isArray(dir.path) && dir.path.length >= 2
+            ? dir.path.map(([lat, lng]) => ({ latitude: lat, longitude: lng }))
+            : null;
         });
-        if (dir && Array.isArray(dir.path) && dir.path.length >= 2) {
-          routePolyline = dir.path.map(([lat, lng]) => ({ latitude: lat, longitude: lng }));
-        }
       }
     } catch (dirErr) {
       logger.warn(`[tracking] my-stops polyline compute failed: ${dirErr.message}`);
@@ -2301,12 +2367,30 @@ const markStopDelivered = async (req, res, next) => {
       });
     }
 
-    stop.status                = 'delivered';
-    stop.delivered_at          = new Date();
-    // Who physically ticked it — the helper, when they are the one at the
-    // door. The stop stays owned by the captain; this records the hand.
+    // Conditional on still being pending, so a captain and helper tapping
+    // the same stop at once record one delivery and notify residents once.
+    const deliveredAt = new Date();
+    const [changed] = await DeliveryStop.update(
+      {
+        status: 'delivered',
+        delivered_at: deliveredAt,
+        // Who physically ticked it — the helper, when they are the one at the
+        // door. The stop stays owned by the captain; this records the hand.
+        delivered_by_rider_id: req.auth.id,
+      },
+      { where: { id: stop.id, status: 'pending' } }
+    );
+    if (changed === 0) {
+      const current = await DeliveryStop.findByPk(stop.id);
+      return success(res, {
+        statusCode: 200,
+        message: 'Stop was already marked delivered.',
+        data: { id: stop.id, status: current?.status || 'delivered', delivered_at: current?.delivered_at || null },
+      });
+    }
+    stop.status = 'delivered';
+    stop.delivered_at = deliveredAt;
     stop.delivered_by_rider_id = req.auth.id;
-    await stop.save();
 
     // Notify every user at this PG. We include the poll_id so stale
     // events from a different day don't confuse a client that
@@ -2405,3 +2489,6 @@ module.exports = {
   markStopDelivered,
   recomputeMyRoute,
 };
+
+// Internals exercised directly by the test suite (tests/integration).
+module.exports.__test = { computeDeliverablePGs };

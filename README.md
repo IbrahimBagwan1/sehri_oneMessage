@@ -52,7 +52,7 @@ Paths are relative to each domain's mount: `/api/auth`, `/api/users`,
 
 | Domain | Endpoints |
 |---|---|
-| Auth | `POST /send-otp`, `POST /verify-otp`, `POST /register`, `POST /login`, `POST /switch-role`, `POST /forgot-password/verify-otp`, `POST /refresh-token` |
+| Auth | `POST /send-otp`, `POST /verify-otp`, `POST /register`, `POST /login`, `POST /switch-role`, `POST /forgot-password/verify-otp`, `POST /refresh-token`, `POST /logout` |
 | Users | `GET /me`, `DELETE /me`, `PATCH /me/push-token`, `POST /request-profile-edit`, `GET /profile-edit-requests`, `PATCH /profile-edit-requests/:id/review`, `GET /`, `PATCH /:id/status`, `DELETE /:id` |
 | Polls | `GET /active`, `GET /active/stats`, `PATCH /active/toggle`, `POST /create-today`, `POST /:id/respond`, `GET /my-responses`, `GET /:id/zone-voters`, `POST /:id/special-case`, `POST /:id/special-case/undo`, `GET /special-cases`, `POST /special-cases/allot`, `GET /history`, `GET /date/:date/stats` |
 | Tracking — riders | `POST /rider-login`, `POST /`, `GET /all`, `GET /me`, `PATCH /:id/toggle`, `PATCH /:id/location`, `PATCH /:id/push-location`, `DELETE /:id` |
@@ -71,7 +71,7 @@ Paths are relative to each domain's mount: `/api/auth`, `/api/users`,
 | Prayers | `GET /`, `POST /refresh` |
 | Admin management | `POST /create-admin`, `POST /create-super-admin`, `GET /list-admins`, `GET /users/search`, `POST /users/:id/promote`, `POST /link-user-account`, `DELETE /admins/:id`, `PATCH /admins/:id/link-user` |
 | Payment | `GET /info` |
-| Ops | `GET /health` (mounted at the root, not under `/api`) |
+| Ops | `GET /health` (liveness), `GET /health/ready` (database) — at the root, not under `/api` |
 
 ### Real-time
 
@@ -130,21 +130,28 @@ Required by both stores for any app carrying user messaging.
 
 Expo Push via `expo-server-sdk` (not Firebase Admin — Expo handles both
 APNs and FCM behind one token). One token per user, stored on
-`users.fcm_token`; signing in on a new device replaces it.
+`users.fcm_token`; signing in on a new device replaces it, and a token is
+detached from any other account that held it (a shared phone never gets the
+previous user's notifications).
 
-Triggers: poll opening, delivery started, proximity (~5 min ETA, once
-per person per night), and admin broadcasts. Receipts are checked ~15
+Triggers: poll opening, delivery started, proximity (~5 min ETA along the
+rider's route, once per person per night), and admin broadcasts. Receipts are checked ~15
 minutes after send and `DeviceNotRegistered` tokens are cleared.
 
 ### Google Maps integration
 
-`GET /api/tracking/eta` returns the driving ETA and a road-following
-polyline from the team's tracked device to the caller's PG. The
-destination is the PG's *pinned coordinate*, so every resident at one
-address sees the identical route and number. Server-side reverse-geocode
-backfills `current_address` when the device could not resolve one.
+While a team is out, the ETA service makes **one** Directions request per
+recompute (at most once a minute) through the pending stops in visit order,
+so each PG's ETA is the time until the rider reaches *that* stop along the
+real route — not a straight drive from wherever the rider is. Results are
+cached per PG, and `GET /api/tracking/eta` serves them instead of calling
+Google on every screen open. The destination is the PG's *pinned
+coordinate*, so every resident at one address sees the identical route and
+number.
 
-Set `GOOGLE_MAPS_API_KEY` in `.env` — see `.env.example`.
+Set the **server** key `GOOGLE_MAPS_API_KEY` in `backend/.env` (Directions,
+Geocoding, Distance Matrix). The app's Android/iOS SDK keys are separate and
+are supplied at build time — see `frontend/.env.example`.
 
 ### Quran + Dua content sync
 
@@ -173,11 +180,52 @@ Sequelize migrations under `src/migrations/`. Run:
 ```bash
 cd backend
 npm install
-cp .env.example .env       # fill in secrets
+cp .env.example .env       # fill in secrets — the server validates them on boot
 npm run migrate
-npm run seed
+npm run seed               # development only; refuses when NODE_ENV=production
 npm run dev                # nodemon
 ```
+
+### Tests
+
+```bash
+cd backend
+npm run test:unit          # no database needed (poll phases, IST time, filter, security utils)
+npm test                   # recreates <DB_NAME>_test, runs every migration from empty, then all suites
+npm run test:rollback      # as above, plus undo-all + re-apply of every migration
+```
+
+`npm test` needs the app's MySQL user to own the test database:
+`GRANT ALL PRIVILEGES ON \`sehri_connect_test\`.* TO 'sehri_user'@'localhost';`
+On a machine where that grant isn't possible,
+`TEST_DB_NAME=<db> node tests/run.js --existing-db` runs the suites against an
+existing database; every suite deletes exactly the fixtures it created.
+
+Covered: sign-in, refresh rotation and reuse detection, logout, lockout,
+password reset, OTP attempt/consumption races, account deletion across every
+table, report / block / ban / socket room authorization / content filter /
+phone privacy, poll lifecycle, duplicate votes, the delivery list, and the
+App Review sandbox.
+
+### Security model
+
+- **Sessions** (`src/services/authSessionService.js`): a refresh token names a
+  server-side session and rotates on every use; a replayed old token revokes
+  the session. Claims are re-read from the database on refresh, so removing
+  an admin, deactivating a rider or deleting an account ends their access.
+  Sign-out, password reset and deletion revoke sessions.
+- **Brute force**: per-phone lockout in MySQL plus per-IP backstops
+  (`src/middleware/rateLimits.js`); OTP attempts are counted atomically, with
+  a daily send cap per number.
+- **Sockets**: joining a group room requires membership; removed members are
+  evicted live; deleted accounts are disconnected.
+- **Logs** mask phone numbers, push tokens and JWTs; OTP codes are never logged
+  in production.
+
+### App Review sandbox
+
+`REVIEW_DEMO_ENABLED=true` turns on sandboxed reviewer accounts that can never
+see real data — see [`docs/release/APP_REVIEW_ACCESS.md`](docs/release/APP_REVIEW_ACCESS.md).
 
 ## Frontend — what ships
 
@@ -209,15 +257,21 @@ npm install
 npm start                  # then press a / i / w
 ```
 
-Set the API base URL in `src/api/client.js` to your backend/ngrok URL.
+Copy `.env.example` to `.env` and set `EXPO_PUBLIC_API_BASE_URL` to your
+backend (release builds require https).
 
-**Expo Go will not exercise everything.** Background location, push
-notifications and native Google Maps all need a dev build:
+Native configuration lives in `app.config.js` (not `app.json`). The
+`android/` and `ios/` folders are **generated** and not committed — regenerate
+them whenever native config changes:
 
 ```bash
 npx expo prebuild --clean
-eas build --profile development --platform android
+npx expo run:android              # local dev build
+eas build --profile development   # or on EAS (eas.json has development / preview / production)
 ```
+
+**Expo Go will not exercise everything.** Push notifications, the rider's
+location feed and native Google Maps need a development build.
 
 ## Play Store / App Store readiness
 
@@ -238,24 +292,33 @@ eas build --profile development --platform android
 - **Push notifications** — built on Expo Push with receipt handling and
   dead-token cleanup.
 
-### Before you ship
+### Public website
 
-- **Decide the app ID.** Still `com.anonymous.onemessage`, and
-  `ios.bundleIdentifier` is unset. This is permanent after the first
-  Play release.
-- **Run `eas init`** to write `extra.eas.projectId`. Without it
-  `getExpoPushTokenAsync` fails and push cannot work in a real build.
-  Then add an APNs key and an FCM v1 service-account JSON via
-  `eas credentials`.
-- **Issue a separate, IP-restricted server Maps key.** `backend/.env`
-  currently holds the same key that ships inside the APK. Restrict the
-  client key to your Android package name + iOS bundle id in the Google
-  Cloud console.
-- **JWT secrets** — generate long random strings for `JWT_SECRET` and
-  `JWT_REFRESH_SECRET`.
-- **CORS** — set `CORS_ORIGIN` to your exact frontend origin(s);
-  development defaults to `*`.
-- **Never commit `.env`** (covered by the root and `backend/.gitignore`).
-- **Store listing copy** — both stores expect a stated moderation policy
-  and a contact method alongside the in-app mechanism. That is console
-  metadata, not code.
+The donation page and every policy page the stores require are live at
+**<https://onemessage-official.vercel.app>** (source in `../policy _website`).
+The app links to them through `frontend/src/constants/legal.js`, which is the
+single place any of these URLs is written down.
+
+| Console field | URL |
+|---|---|
+| Play — Privacy policy · App Store Connect — Privacy Policy URL | `/privacy-policy` |
+| Play — Data safety → account deletion | `/delete-account` |
+| Play — Child safety standards | `/child-safety` |
+| App Store Connect — Support URL | `/support` |
+| App Store Connect — Marketing URL (optional) | `/` |
+| Referenced by the in-app terms | `/terms`, `/community-guidelines` |
+
+In-app the links appear on the login screen (reachable before registering),
+in the registration consent line, in Profile → Legal & support, and from the
+message-reporting sheet.
+
+### Release documents
+
+Everything needed for submission is in [`docs/release/`](docs/release/):
+
+| Document | What it is |
+|---|---|
+| [`STORE_COMPLIANCE.md`](docs/release/STORE_COMPLIANCE.md) | Every store rule that applies, and its status |
+| [`DATA_INVENTORY.md`](docs/release/DATA_INVENTORY.md) | What is collected — answers for Apple's privacy label and Play's Data safety form |
+| [`APP_REVIEW_ACCESS.md`](docs/release/APP_REVIEW_ACCESS.md) | Reviewer sandbox, and the exact text for App Review notes and Play "App access" |
+| [`LAUNCH_CHECKLIST.md`](docs/release/LAUNCH_CHECKLIST.md) | Credentials to rotate, consoles, keys, hosting, builds |

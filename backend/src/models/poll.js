@@ -21,12 +21,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'Will you be having Sehri food?',
       },
-      // Master on/off switch. The phase utility reads the current IST hour
-      // to determine the phase, but this flag lets the super admin override
-      // and force-close (or force-open) the poll outside the normal schedule.
+      // Three-state manual override — see utils/pollPhase.js:
+      //   null = follow the schedule, true = forced open, false = forced closed.
       is_active: {
         type: DataTypes.BOOLEAN,
-        defaultValue: false,
+        allowNull: true,
+        defaultValue: null,
       },
       // Only set when the super admin uses PATCH /active/toggle to manually
       // override the schedule. When set, the phase utility respects this

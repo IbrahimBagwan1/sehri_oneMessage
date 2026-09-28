@@ -90,11 +90,13 @@ const cleanTime = (timeStr) => {
  */
 const dateToISTString = (date) => {
   if (!date || isNaN(date)) return null;
+  // hourCycle h23: a Tahajjud after midnight must read "00:30", never
+  // "24:30" (which some ICU builds produce for hour12:false).
   return date.toLocaleTimeString('en-GB', {
     timeZone: TIMEZONE,
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   }); // returns "HH:MM"
 };
 

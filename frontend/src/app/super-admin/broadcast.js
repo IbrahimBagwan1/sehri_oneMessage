@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -70,12 +69,11 @@ export default function SuperAdminBroadcastScreen() {
 
   // --- Loaders ------------------------------------------------------------
   const loadZones = useCallback(async () => {
-    setZonesLoading(true);
     try {
       // Zone-level rows (Bangalore has zone as the addressable level).
       const res = await locationsApi.getLocations({ type: 'zone' });
       setZones(res.data || []);
-    } catch (err) {
+    } catch {
       // Non-fatal — the "All zones" default still works.
       setZones([]);
     } finally {
@@ -96,7 +94,7 @@ export default function SuperAdminBroadcastScreen() {
     }
   }, []);
 
-  useEffect(() => { loadZones(); }, [loadZones]);
+  useFocusEffect(useCallback(() => { loadZones(); }, [loadZones]));
 
   useFocusEffect(useCallback(() => { loadHistory(); }, [loadHistory]));
 

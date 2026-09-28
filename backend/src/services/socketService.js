@@ -20,11 +20,18 @@ let io = null;
  * @param {import('http').Server} httpServer
  */
 const initSocket = (httpServer) => {
+  // Same origin policy as the REST API (see app.js): any origin in
+  // development, only the listed ones in production. Native clients send
+  // no Origin header and are unaffected either way.
+  const { isProduction, list } = require('../config/env');
+  const allowed = list(process.env.CORS_ORIGIN);
   io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN || '*',
+      origin: isProduction() ? (allowed.length ? allowed : false) : (allowed.length ? allowed : '*'),
       methods: ['GET', 'POST'],
     },
+    // Chat payloads are small; anything near a megabyte is not a message.
+    maxHttpBufferSize: 100 * 1024,
     // Ping every 25 s, disconnect if no pong within 60 s.
     // Keeps connections alive on mobile networks without leaking sockets.
     pingInterval: 25000,
@@ -61,12 +68,43 @@ const initSocket = (httpServer) => {
     // (eta_update, direct notifications) can target them.
     socket.join(`user:${effectiveUserId}`);
 
+    // The chat identity this socket speaks as — the same (id, role) pair
+    // chatController.getActor uses. Stored so membership changes can find
+    // and evict exactly this identity's sockets later.
+    socket.data.chatIdentity = { id: accountId, type: role };
+
     // -----------------------------------------------------------------------
-    // Chat rooms — existing pattern, unchanged.
+    // Chat rooms.
+    //
+    // A group room carries every new message in that group, so joining it
+    // is reading the group. This used to join whatever id the client sent,
+    // which let any signed-in account — including one removed from the
+    // group, or with no relationship to it at all — receive its messages
+    // live. REST already required membership; the socket now does too.
+    // A banned member stays a member (they keep reading, by design), so
+    // they may still join.
     // -----------------------------------------------------------------------
-    socket.on('join_group', ({ group_id } = {}) => {
-      if (!group_id) return;
-      socket.join(`group:${group_id}`);
+    socket.on('join_group', async (payload, ack) => {
+      const groupId = payload?.group_id;
+      const reply = typeof ack === 'function' ? ack : () => {};
+      if (typeof groupId !== 'string' || !groupId) return reply({ ok: false });
+      try {
+        const dbm = require('../models');
+        const membership = await dbm.ChatGroupMember.findOne({
+          where: { group_id: groupId, user_id: accountId, user_type: role },
+          attributes: ['id'],
+          include: [{ model: dbm.ChatGroup, as: 'group', where: { is_active: true }, attributes: ['id'] }],
+        });
+        if (!membership) {
+          logger.warn(`[socket] ${role}:${accountId} refused group:${groupId} (not a member)`);
+          return reply({ ok: false, error: 'not_a_member' });
+        }
+        socket.join(`group:${groupId}`);
+        return reply({ ok: true });
+      } catch (err) {
+        logger.warn(`[socket] join_group failed: ${err.message}`);
+        return reply({ ok: false });
+      }
     });
 
     socket.on('leave_group', ({ group_id } = {}) => {
@@ -183,10 +221,7 @@ const initSocket = (httpServer) => {
       const user = await dbm.User.findByPk(effectiveUserId, { attributes: ['location_id'] });
       if (!user?.location_id) return [];
 
-      const poll = await dbm.Poll.findOne({
-        where: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) },
-        attributes: ['id'],
-      });
+      const poll = await require('./pollCalendar').getDeliveryPoll();
       if (poll) {
         const stop = await dbm.DeliveryStop.findOne({
           where: { poll_id: poll.id, location_id: user.location_id },
@@ -288,6 +323,46 @@ const emitMemberUpdate = (groupId, event, payload) => {
   io.to(`group:${groupId}`).emit(event, payload);
 };
 
+/**
+ * Take these identities' live sockets out of a group room — called when a
+ * membership row is deleted, so a removed member stops receiving the
+ * group's messages immediately rather than until their next reconnect.
+ *
+ * @param {string} groupId
+ * @param {Array<{ user_id: string, user_type: string }>} members
+ */
+const evictFromGroup = async (groupId, members) => {
+  if (!io || !groupId || !members?.length) return 0;
+  const doomed = new Set(members.map((m) => `${m.user_type}:${m.user_id}`));
+  const sockets = await io.in(`group:${groupId}`).fetchSockets();
+  let n = 0;
+  for (const sock of sockets) {
+    const who = sock.data?.chatIdentity;
+    if (who && doomed.has(`${who.type}:${who.id}`)) {
+      sock.leave(`group:${groupId}`);
+      n += 1;
+    }
+  }
+  return n;
+};
+
+/** Empty a whole group room (the group itself was closed). */
+const closeGroupRoom = (groupId) => {
+  if (!io || !groupId) return;
+  io.in(`group:${groupId}`).socketsLeave(`group:${groupId}`);
+};
+
+/**
+ * Drop every live socket belonging to an account that no longer exists.
+ * `userIds` are the effective user ids sockets joined `user:{id}` with.
+ */
+const disconnectUsers = (userIds) => {
+  if (!io) return;
+  for (const id of userIds || []) {
+    if (id) io.in(`user:${id}`).disconnectSockets(true);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Tracking emitters
 // ---------------------------------------------------------------------------
@@ -349,6 +424,9 @@ module.exports = {
   emitNewMessage,
   emitMessageDeleted,
   emitMemberUpdate,
+  evictFromGroup,
+  closeGroupRoom,
+  disconnectUsers,
   // tracking
   emitTeamPosition,
   emitEtaUpdate,

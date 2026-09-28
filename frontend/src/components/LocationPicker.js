@@ -80,7 +80,6 @@ export default function LocationPicker({
           let opts = cities;
           for (const node of initialChain) {
             seeded.push({ type: node.type, options: opts, selected: node });
-            // eslint-disable-next-line no-await-in-loop
             const childRes = await locationsApi.getLocations({ parent_id: node.id });
             const children = childRes.data || [];
             if (children.length === 0) { opts = []; break; }

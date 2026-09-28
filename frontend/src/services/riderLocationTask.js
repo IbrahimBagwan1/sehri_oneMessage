@@ -41,6 +41,17 @@ export const RIDER_LOCATION_TASK = 'onemessage-rider-location';
 
 const RIDER_TOKEN_KEY = 'rider_access_token';
 const RIDER_DATA_KEY  = 'rider_data';
+const ROUND_STARTED_KEY = 'rider_round_started_at';
+
+// A round that is still "running" after this long was forgotten, not
+// ridden: no Sehri run takes six hours. The feed ends itself so a rider who
+// never tapped "Finish" does not share their location (and drain their
+// battery) for the rest of the day. It is also what Play's foreground-
+// service policy asks for — the service ends when the task it was started
+// for is over.
+const MAX_ROUND_MS = 6 * 60 * 60 * 1000;
+
+const devWarn = (...args) => { if (__DEV__) console.warn(...args); };
 
 // How often the OS should deliver a position. See the note above on why
 // this is 30s. distanceInterval works alongside it: whichever triggers
@@ -61,7 +72,7 @@ let lastAddress = null;
  */
 TaskManager.defineTask(RIDER_LOCATION_TASK, async ({ data, error }) => {
   if (error) {
-    console.warn('[riderTask] location error:', error.message);
+    devWarn('[riderTask] location error:', error.message);
     return;
   }
   const location = data?.locations?.[data.locations.length - 1];
@@ -80,6 +91,15 @@ TaskManager.defineTask(RIDER_LOCATION_TASK, async ({ data, error }) => {
     }
     const rider = JSON.parse(riderRaw);
     const { latitude, longitude } = location.coords;
+
+    const startedAt = Number(await SecureStore.getItemAsync(ROUND_STARTED_KEY)) || 0;
+    if (startedAt && Date.now() - startedAt > MAX_ROUND_MS) {
+      try {
+        await trackingApi.pushLocation(rider.id, { latitude, longitude, status: 'done' }, token);
+      } catch { /* the stop matters more than the final status */ }
+      await stopRiderLocationUpdates();
+      return;
+    }
 
     fixCount += 1;
     if (fixCount % GEOCODE_EVERY_N_FIXES === 1) {
@@ -101,7 +121,8 @@ TaskManager.defineTask(RIDER_LOCATION_TASK, async ({ data, error }) => {
   } catch (err) {
     // Never throw out of a background task — the OS treats a thrown task as
     // misbehaving and may stop scheduling it for the rest of the run.
-    console.warn('[riderTask] push failed:', err?.message);
+    // (An expired token is refreshed by api/client.js before we get here.)
+    devWarn('[riderTask] push failed:', err?.message);
   }
 });
 
@@ -115,27 +136,23 @@ export const isRiderLocationRunning = async () => {
 };
 
 /**
- * Ask for the permissions the task needs, in the order the platforms expect.
+ * Ask for location permission — "While Using the App", never "Always".
  *
- * Foreground must be granted before background can even be requested — iOS
- * shows "Allow Once / While Using" first and only offers "Always" afterwards.
- * Returns { granted, background } so the caller can explain what is missing.
+ * The feed is started by the rider tapping "Start delivery", i.e. while the
+ * app is open. On Android that starts a foreground service (with its
+ * persistent notification), and on iOS a location session with the blue
+ * status-bar indicator; both keep delivering fixes with the screen off,
+ * WITHOUT background ("Always") permission. Asking for "Always" was never
+ * needed, and it is what triggers Play's background-location declaration and
+ * App Review's hardest location questions.
+ *
+ * Returns { granted, background } — `background` is true whenever the
+ * foreground grant is, because the foreground service covers it.
  */
 export const requestRiderLocationPermission = async () => {
   const fg = await Location.requestForegroundPermissionsAsync();
-  if (fg.status !== 'granted') return { granted: false, background: false };
-
-  // Background is requested but NOT required: a rider who declines still
-  // gets tracking while the app is open, which is better than refusing to
-  // let them start their round.
-  let background = false;
-  try {
-    const bg = await Location.requestBackgroundPermissionsAsync();
-    background = bg.status === 'granted';
-  } catch {
-    background = false;
-  }
-  return { granted: true, background };
+  const granted = fg.status === 'granted';
+  return { granted, background: granted };
 };
 
 /**
@@ -165,6 +182,7 @@ export const startRiderLocationUpdates = async () => {
     activityType: Location.ActivityType.AutomotiveNavigation,
   });
   fixCount = 0;
+  await SecureStore.setItemAsync(ROUND_STARTED_KEY, String(Date.now()));
   return true;
 };
 
@@ -175,10 +193,11 @@ export const stopRiderLocationUpdates = async () => {
       await Location.stopLocationUpdatesAsync(RIDER_LOCATION_TASK);
     }
   } catch (err) {
-    console.warn('[riderTask] stop failed:', err?.message);
+    devWarn('[riderTask] stop failed:', err?.message);
   }
   fixCount = 0;
   lastAddress = null;
+  try { await SecureStore.deleteItemAsync(ROUND_STARTED_KEY); } catch { /* noop */ }
 };
 
 /** One immediate fix, for the moment the rider taps Start. */

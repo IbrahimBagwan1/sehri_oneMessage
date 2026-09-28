@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { colors, space, type } from '../../theme';
+import { space, type } from '../../theme';
 import RubStar from './RubStar';
 
 /**

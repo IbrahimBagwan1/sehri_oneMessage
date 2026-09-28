@@ -13,13 +13,12 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { chatApi } from '../../api/chat';
 import {
-  Button,
   EmptyState,
   ErrorState,
   Header,
   LoadingState,
 } from '../../components/ui';
-import { colors, radius, space, type } from '../../theme';
+import { colors, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
 // Super admin — group list. Backed by the real /api/chat/groups endpoint.
@@ -46,7 +45,8 @@ export default function SuperAdminChatScreen() {
   const [deleting, setDeleting]     = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await chatApi.getMyGroups();

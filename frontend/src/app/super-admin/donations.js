@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -80,7 +80,9 @@ export default function AdminDonationsScreen() {
   const [rejectReason,setRejectReason]= useState('');
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       const [listRes, summaryRes] = await Promise.all([

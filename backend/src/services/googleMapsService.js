@@ -82,7 +82,7 @@ const geocode = async (address) => {
     });
 
     if (data.status !== 'OK' || !Array.isArray(data.results) || data.results.length === 0) {
-      logger.warn(`[googleMaps] geocode returned status=${data.status} for address="${address}"`);
+      logger.warn(`[googleMaps] geocode returned status=${data.status}`);
       return null;
     }
 
@@ -210,6 +210,7 @@ const directions = async ({
   waypoints = [],
   optimizeWaypoints = false,
   mode = 'driving',
+  withLegPaths = false,
 }) => {
   const apiKey = getApiKey();
   if (!apiKey || !origin || !destination) return null;
@@ -265,6 +266,12 @@ const directions = async ({
         durationSeconds: l.duration?.value ?? null,
         distanceText:    l.distance?.text ?? null,
         durationText:    l.duration?.text ?? null,
+        // Road-following path of this leg alone, from its step polylines.
+        // Only decoded on request: the ETA service needs it to hand each
+        // resident the route up to THEIR stop; nobody else does.
+        ...(withLegPaths
+          ? { path: (l.steps || []).flatMap((st) => decodePolyline5(st.polyline?.points || '')) }
+          : {}),
       })),
     };
   } catch (err) {

@@ -65,6 +65,7 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['phone'] },
         { fields: ['phone', 'purpose'] },
         { fields: ['expires_at'] },
+        { fields: ['phone', 'created_at'], name: 'idx_otps_phone_created' },
       ],
     }
   );

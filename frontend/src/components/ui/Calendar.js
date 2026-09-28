@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, radius, space, type } from '../../theme';
+import { colors, space, type } from '../../theme';
 import RubStar from './RubStar';
 
 /**

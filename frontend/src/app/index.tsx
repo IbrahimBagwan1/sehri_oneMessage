@@ -19,7 +19,7 @@ export default function Index() {
   const active_role     = useAuthStore((s) => s.active_role);
   const hydrate         = useAuthStore((s) => s.hydrate);
 
-  useEffect(() => { hydrate(); }, []);
+  useEffect(() => { hydrate(); }, [hydrate]);
 
   if (!isHydrated) {
     return (

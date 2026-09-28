@@ -12,7 +12,12 @@ import { Ionicons } from '@expo/vector-icons';
 import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import { trackingApi } from '../../api/tracking';
 import {
-  Card, Chip, EmptyState, ErrorState, GuestGate, Header, LoadingState,
+  Chip,
+  EmptyState,
+  ErrorState,
+  GuestGate,
+  Header,
+  LoadingState,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -229,6 +234,11 @@ function TrackScreenAuthed() {
   useEffect(() => {
     let mounted = true;
     let currentSocket = null;
+    // Named handlers, so cleanup removes exactly these — `off(event)` with
+    // no handler strips every listener for that event from the shared
+    // socket, including other screens'.
+    const handlers = {};
+    const onReconnect = () => { if (mounted) subscribeTracking(); };
 
     (async () => {
       const s = await connectSocket();
@@ -236,7 +246,7 @@ function TrackScreenAuthed() {
       currentSocket = s;
       subscribeTracking(); // backend uses the JWT's zone if none passed
 
-      s.on('rider_position', (payload) => {
+      handlers.rider_position = (payload) => {
         if (!mounted) return;
         // `done` events mean the rider wrapped up — hide the marker.
         if (payload?.status === 'done') {
@@ -252,9 +262,9 @@ function TrackScreenAuthed() {
           status:    payload.status || 'delivering',
           eta_minutes: payload.eta_minutes ?? prev?.eta_minutes,
         }));
-      });
+      };
 
-      s.on('eta_update', (payload) => {
+      handlers.eta_update = (payload) => {
         if (!mounted) return;
         if (payload?.eta_minutes != null) {
           setEta(payload.eta_minutes);
@@ -270,36 +280,39 @@ function TrackScreenAuthed() {
             longitude: Number(p.longitude),
           })));
         }
-      });
+      };
 
       // Rider marked our stop delivered → flip into the "delivered"
       // state instantly. The empty-state branch below handles the
       // final render (message + rider attribution).
-      s.on('stop_delivered', (payload) => {
+      handlers.stop_delivered = () => {
         if (!mounted) return;
         setStopStatus('delivered');
         // Mirror on rider so the empty state uses the "delivery complete"
         // copy — matches the existing done-status pattern.
         setRider((prev) => (prev ? { ...prev, status: 'done' } : prev));
-      });
+      };
 
       // The rider undid a mistap. Without this the resident is left on a
       // "delivered" screen for food that is still coming — the worse of
       // the two wrong states, and the reason undo exists at all.
-      s.on('stop_reopened', () => {
+      handlers.stop_reopened = () => {
         if (!mounted) return;
         setStopStatus('pending');
         setRider((prev) => (prev ? { ...prev, status: 'delivering' } : prev));
-      });
+      };
+
+      for (const [event, fn] of Object.entries(handlers)) s.on(event, fn);
+      // Subscriptions are per connection on the server; re-subscribe after
+      // any reconnect, or the map freezes after the first network blip.
+      s.io.on('reconnect', onReconnect);
     })();
 
     return () => {
       mounted = false;
       if (currentSocket) {
-        currentSocket.off('rider_position');
-        currentSocket.off('eta_update');
-        currentSocket.off('stop_delivered');
-        currentSocket.off('stop_reopened');
+        for (const [event, fn] of Object.entries(handlers)) currentSocket.off(event, fn);
+        currentSocket.io.off('reconnect', onReconnect);
       }
       unsubscribeTracking();
     };

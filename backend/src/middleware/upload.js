@@ -40,12 +40,35 @@ const upload = multer({
 });
 
 /**
+ * Does the buffer actually start like an image? The MIME type above is
+ * whatever the client claimed; the first bytes are what the file is.
+ * JPEG, PNG, WebP, GIF and HEIC/HEIF (iPhone photos) are accepted.
+ */
+const looksLikeImage = (buf) => {
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return false;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true;                  // JPEG
+  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true; // PNG
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return true;      // WebP
+  if (buf.toString('ascii', 0, 4) === 'GIF8') return true;                                 // GIF
+  if (buf.toString('ascii', 4, 8) === 'ftyp') {                                            // HEIC/HEIF
+    const brand = buf.toString('ascii', 8, 12);
+    return ['heic', 'heix', 'hevc', 'heim', 'heis', 'mif1', 'msf1', 'avif'].includes(brand);
+  }
+  return false;
+};
+
+/**
  * Wraps upload.single() so a MulterError becomes a clean AppError that
  * the global error handler already knows how to respond to.
  */
 const singleImage = (fieldName) => (req, res, next) => {
   upload.single(fieldName)(req, res, (err) => {
-    if (!err) return next();
+    if (!err) {
+      if (req.file && !looksLikeImage(req.file.buffer)) {
+        return next(new AppError('That file is not a supported image. Upload a JPG, PNG or HEIC screenshot.', 415));
+      }
+      return next();
+    }
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return next(new AppError(`Image is too large. Max ${MAX_BYTES / (1024 * 1024)} MB.`, 413));
@@ -56,4 +79,4 @@ const singleImage = (fieldName) => (req, res, next) => {
   });
 };
 
-module.exports = { upload, singleImage, MAX_BYTES };
+module.exports = { upload, singleImage, MAX_BYTES, looksLikeImage };

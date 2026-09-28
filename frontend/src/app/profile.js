@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,7 @@ import {
   KeyboardAwareScroll
 } from '../components/ui';
 import { colors, radius, space, type } from '../theme';
+import { LEGAL_URLS, openLegalUrl } from '../constants/legal';
 
 // -----------------------------------------------------------------------------
 // Profile — read from GET /api/users/me. Edits are submitted as a
@@ -65,7 +66,6 @@ export default function ProfileScreen() {
 
 function ProfileScreenAuthed() {
   const router      = useRouter();
-  const user        = useAuthStore((s) => s.user);
   const logout      = useAuthStore((s) => s.logout);
   const activeRole  = useAuthStore((s) => s.active_role);
 
@@ -382,6 +382,67 @@ function ProfileScreenAuthed() {
             </Card>
           </View>
         )}
+
+        {/* Legal and support.
+            Apple requires the privacy policy to be reachable from inside the
+            app, not only from the store listing, and requires published
+            contact information for an app that carries user-generated
+            content. The community guidelines are here because the terms
+            above refer to them. All open in the device browser — see
+            constants/legal.js. */}
+        {!isEditing && (
+          <View style={styles.section}>
+            <SectionHeader title="Legal & support" />
+            <Card padding={false}>
+              <ActionRow
+                icon="help-buoy-outline"
+                label="Help & contact us"
+                color={colors.teal}
+                external
+                onPress={() => openLegalUrl(LEGAL_URLS.support, 'the support page')}
+              />
+              <View style={styles.rowRule} />
+              <ActionRow
+                icon="shield-checkmark-outline"
+                label="Privacy Policy"
+                color={colors.tealDark}
+                external
+                onPress={() => openLegalUrl(LEGAL_URLS.privacy, 'the privacy policy')}
+              />
+              <View style={styles.rowRule} />
+              <ActionRow
+                icon="document-text-outline"
+                label="Terms of Service"
+                color={colors.inkMuted}
+                external
+                onPress={() => openLegalUrl(LEGAL_URLS.terms, 'the terms of service')}
+              />
+              <View style={styles.rowRule} />
+              <ActionRow
+                icon="people-outline"
+                label="Community Guidelines"
+                color={colors.inkMuted}
+                external
+                onPress={() => openLegalUrl(LEGAL_URLS.guidelines, 'the community guidelines')}
+              />
+              <View style={styles.rowRule} />
+              <ActionRow
+                icon="library-outline"
+                label="Sources & credits"
+                color={colors.inkMuted}
+                onPress={() => router.push('/credits')}
+              />
+              <View style={styles.rowRule} />
+              <ActionRow
+                icon="heart-outline"
+                label="Support the kitchen"
+                color={colors.gold}
+                external
+                onPress={() => openLegalUrl(LEGAL_URLS.home, 'the donation page')}
+              />
+            </Card>
+          </View>
+        )}
       </KeyboardAwareScroll>
 
       <Modal visible={modalVisible} animationType="slide" transparent>
@@ -421,18 +482,25 @@ function Field({ label, value, onChangeText, editable, multiline }) {
   );
 }
 
-function ActionRow({ icon, label, color, onPress, loading, destructive }) {
+function ActionRow({ icon, label, color, onPress, loading, destructive, external }) {
   return (
     <Pressable
       onPress={onPress}
       disabled={loading}
       style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed, destructive && styles.actionRowDestructive]}
-      accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityRole={external ? 'link' : 'button'}
+      accessibilityLabel={external ? `${label}, opens in your browser` : label}
     >
       <Ionicons name={icon} size={20} color={color} />
       <Text style={[styles.actionText, { color }]}>{loading ? 'Working…' : label}</Text>
-      <Ionicons name="chevron-forward" size={18} color={colors.inkGhost} style={{ marginLeft: 'auto' }} />
+      {/* An outward arrow rather than a chevron, so it is obvious before
+          tapping that this leaves the app for the browser. */}
+      <Ionicons
+        name={external ? 'open-outline' : 'chevron-forward'}
+        size={external ? 16 : 18}
+        color={colors.inkGhost}
+        style={{ marginLeft: 'auto' }}
+      />
     </Pressable>
   );
 }

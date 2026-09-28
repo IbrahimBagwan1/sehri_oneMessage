@@ -59,6 +59,13 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      // The App Review sandbox (services/reviewDemoService.js). Hidden from
+      // the public picker, kitchen counts and delivery runs.
+      is_sandbox: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
     },
     {
       tableName: 'locations',

@@ -7,11 +7,35 @@ const { FORMER_MEMBER_LABEL } = require('../utils/memberDisplay');
 const chatGroupSync = require('../services/chatGroupSync');
 const moderation = require('../services/chatModerationService');
 const logger = require('../utils/logger');
+const contentFilter = require('../services/contentFilter');
 const {
   emitNewMessage,
   emitMessageDeleted,
   emitMemberUpdate,
+  evictFromGroup,
+  closeGroupRoom,
 } = require('../services/socketService');
+
+// Long enough for any real message; short enough that one message cannot be
+// used to flood a room or a push notification.
+const MAX_MESSAGE_LENGTH = 2000;
+
+/**
+ * Phone numbers in chat are for the people who run the community.
+ *
+ * Every profile in a room — message senders, the member list — used to
+ * carry the person's phone number to every other member. In a zone room of
+ * a few hundred residents, including a girls' accommodation zone, that
+ * handed each member everyone else's number. Staff keep seeing numbers
+ * (an admin coordinating a delivery needs to call people); members see
+ * names only.
+ */
+const canSeePhones = (auth) => auth?.role === 'admin' || auth?.role === 'super_admin';
+const withoutPhone = (profile) => {
+  if (!profile) return profile;
+  const { phone, ...rest } = profile;
+  return rest;
+};
 
 const {
   ChatGroup, ChatGroupMember, ChatGroupZone, ChatMessage,
@@ -215,7 +239,7 @@ const getMyGroups = async (req, res, next) => {
           );
           latestPreview = {
             id: latestMessage.id,
-            sender: senderProfile,
+            sender: withoutPhone(senderProfile),
             content: latestMessage.is_deleted ? null : latestMessage.content,
             is_deleted: latestMessage.is_deleted,
             created_at: latestMessage.created_at,
@@ -360,7 +384,8 @@ const getGroupDetails = async (req, res, next) => {
     }
 
     const allMembers = await ChatGroupMember.findAll({ where: { group_id: groupId } });
-    const enrichedMembers = await resolveMemberProfiles(allMembers);
+    const resolvedMembers = await resolveMemberProfiles(allMembers);
+    const enrichedMembers = canSeePhones(req.auth) ? resolvedMembers : resolvedMembers.map(withoutPhone);
 
     // The zones whose members are pulled in automatically. Ordered by name so
     // the chips render in a stable order between reloads.
@@ -474,10 +499,11 @@ const getMessages = async (req, res, next) => {
         : [],
     ]);
 
+    // A chat bubble needs a name and a role, never a phone number.
     const profileMap = {};
-    for (const u of userProfiles) profileMap[u.id] = { ...u.dataValues, role: 'user' };
-    for (const a of adminProfiles) profileMap[a.id] = { ...a.dataValues, role: 'admin' };
-    for (const sa of superAdminProfiles) profileMap[sa.id] = { ...sa.dataValues, role: 'super_admin' };
+    for (const u of userProfiles) profileMap[u.id] = { ...withoutPhone(u.dataValues), role: 'user' };
+    for (const a of adminProfiles) profileMap[a.id] = { ...withoutPhone(a.dataValues), role: 'admin' };
+    for (const sa of superAdminProfiles) profileMap[sa.id] = { ...withoutPhone(sa.dataValues), role: 'super_admin' };
 
     // Batch fetch replied-to messages
     const repliedToMap = {};
@@ -533,8 +559,25 @@ const sendMessage = async (req, res, next) => {
     const { content, reply_to_id } = req.body;
     const { actorId, actorType } = getActor(req.auth);
 
-    if (!content || !content.trim()) {
+    if (typeof content !== 'string' || !content.trim()) {
       return error(res, { statusCode: 400, message: 'Message content is required' });
+    }
+    if (content.trim().length > MAX_MESSAGE_LENGTH) {
+      return error(res, {
+        statusCode: 422,
+        message: `Messages can be at most ${MAX_MESSAGE_LENGTH} characters.`,
+        code: 'MESSAGE_TOO_LONG',
+      });
+    }
+    // Refused before anything is stored or broadcast — see
+    // services/contentFilter.js. The member is told plainly so they can
+    // rephrase; nothing is logged about what they typed.
+    if (contentFilter.isObjectionable(content)) {
+      return error(res, {
+        statusCode: 422,
+        message: "Your message contains language that isn't allowed in community chat. Please rephrase it.",
+        code: 'CONTENT_BLOCKED',
+      });
     }
 
     const group = await ChatGroup.findOne({ where: { id: groupId, is_active: true } });
@@ -580,7 +623,7 @@ const sendMessage = async (req, res, next) => {
       const parentSender = await resolveProfile(parent.sender_id, parent.sender_type);
       repliedToPreview = {
         id: parent.id,
-        sender: parentSender,
+        sender: withoutPhone(parentSender),
         content: parent.is_deleted ? null : parent.content,
         is_deleted: parent.is_deleted,
       };
@@ -597,7 +640,7 @@ const sendMessage = async (req, res, next) => {
     // Touch the group's updated_at so it floats to top of sorted list
     await group.update({ updated_at: new Date() });
 
-    const senderProfile = await resolveProfile(actorId, actorType);
+    const senderProfile = withoutPhone(await resolveProfile(actorId, actorType));
     const payload = shapeMessage(message, senderProfile, repliedToPreview);
 
     // Broadcast to all connected members in real-time
@@ -738,7 +781,7 @@ const addMembers = async (req, res, next) => {
 
     // Notify existing members in the room
     for (const m of members) {
-      const profile = await resolveProfile(m.user_id, m.user_type);
+      const profile = withoutPhone(await resolveProfile(m.user_id, m.user_type));
       emitMemberUpdate(groupId, 'member_added', { group_id: groupId, member: profile });
     }
 
@@ -809,6 +852,7 @@ const removeMember = async (req, res, next) => {
     }
 
     await membership.destroy();
+    await evictFromGroup(groupId, [{ user_id: userId, user_type }]);
 
     // Notify room members
     emitMemberUpdate(groupId, 'member_removed', {
@@ -863,6 +907,7 @@ const deleteGroup = async (req, res, next) => {
     const { getIO } = require('../services/socketService');
     try {
       getIO().to(`group:${groupId}`).emit('group_deleted', { group_id: groupId });
+      closeGroupRoom(groupId);
     } catch {
       // Socket.IO may not be running in test environments — safe to ignore
     }

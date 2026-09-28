@@ -70,7 +70,6 @@ const loadNotifications = () => {
   if (_notifications) return _notifications;
   if (_notificationsLoadFailed) return null;
   try {
-    // eslint-disable-next-line global-require
     _notifications = require('expo-notifications');
     return _notifications;
   } catch (err) {
@@ -133,26 +132,31 @@ export const registerForPushNotifications = async () => {
 
     ensureForegroundHandler(Notifications);
 
-    // Ask for permission (or read the previous answer).
-    const { status: existing } = await Notifications.getPermissionsAsync();
-    let status = existing;
-    if (status !== 'granted') {
-      const { status: asked } = await Notifications.requestPermissionsAsync();
-      status = asked;
-    }
-    if (status !== 'granted') return null;
-
-    // Android needs a channel before any push shows up.
+    // Android: the channel must exist BEFORE permission is requested. On
+    // Android 13+ the system shows the notification prompt only once the
+    // app has a channel — requesting first (as this used to) could return
+    // "denied" without the member ever seeing a prompt. The channel id
+    // matches the backend's pushes (expoPushService: channelId 'default').
     if (Platform.OS === 'android') {
       try {
         await Notifications.setNotificationChannelAsync('default', {
-          name: 'Default',
+          name: 'Sehri and community updates',
           importance: Notifications.AndroidImportance.HIGH,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: '#0D9488',
         });
       } catch (_) { /* not fatal — some Android versions don't support */ }
     }
+
+    // Ask for permission (or read the previous answer). A member who said
+    // no is not asked again here; they can turn it on in Settings.
+    const { status: existing, canAskAgain } = await Notifications.getPermissionsAsync();
+    let status = existing;
+    if (status !== 'granted' && canAskAgain !== false) {
+      const { status: asked } = await Notifications.requestPermissionsAsync();
+      status = asked;
+    }
+    if (status !== 'granted') return null;
 
     // Get an Expo push token (needs the EAS projectId in modern SDKs).
     const projectId =

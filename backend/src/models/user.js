@@ -65,7 +65,7 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: false,
       },
       fcm_token: {
-        type: DataTypes.TEXT,
+        type: DataTypes.STRING(255),
         allowNull: true,
       },
       profile_picture: {
@@ -83,6 +83,7 @@ module.exports = (sequelize, DataTypes) => {
         { unique: true, fields: ['phone'] },
         { fields: ['location_id'] },
         { fields: ['status'] },
+        { fields: ['fcm_token'], name: 'idx_users_fcm_token' },
       ],
       defaultScope: {
         // password is never returned unless explicitly requested via .scope('withPassword')

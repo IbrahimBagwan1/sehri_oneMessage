@@ -249,15 +249,26 @@ const teamStatus = (captain, helper) => {
  *                    can be picked as a helper
  */
 const getRoster = async () => {
-  const [riders, zones, assignments] = await Promise.all([
+  const [allRiders, zones, allAssignments, sandboxZones] = await Promise.all([
     Rider.findAll({ order: [['created_at', 'ASC']] }),
     Location.findAll({
-      where: { type: 'zone', is_active: true },
+      where: { type: 'zone', is_active: true, is_sandbox: false },
       attributes: ['id', 'name', 'zone_key'],
       order: [['name', 'ASC']],
     }),
     CaptainZoneAssignment.findAll(),
+    Location.findAll({ where: { type: 'zone', is_sandbox: true }, attributes: ['id'], raw: true }),
   ]);
+
+  // The App Review sandbox (services/reviewDemoService) has its own demo
+  // captain. Neither the zone nor that rider belongs on the real roster, and
+  // the zone must never be offered to a real captain.
+  const sandboxZoneIds = new Set(sandboxZones.map((z) => z.id));
+  const sandboxRiderIds = new Set(
+    allAssignments.filter((a) => sandboxZoneIds.has(a.zone_location_id)).map((a) => a.captain_rider_id)
+  );
+  const assignments = allAssignments.filter((a) => !sandboxZoneIds.has(a.zone_location_id));
+  const riders = allRiders.filter((r) => !sandboxRiderIds.has(r.id));
 
   const byId = new Map(riders.map((r) => [r.id, r]));
   const zoneById = new Map(zones.map((z) => [z.id, z]));
@@ -364,7 +375,7 @@ const setCaptainZones = async (captainId, zoneIds) => {
 
     if (wanted.length > 0) {
       const zones = await Location.findAll({
-        where: { id: { [Op.in]: wanted }, type: 'zone' },
+        where: { id: { [Op.in]: wanted }, type: 'zone', is_sandbox: false },
         attributes: ['id', 'name', 'is_active'],
         transaction: t,
       });

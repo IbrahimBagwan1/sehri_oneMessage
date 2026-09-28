@@ -82,7 +82,11 @@ export const readIST = () => {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: IST_TZ,
     year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
+    // hourCycle h23, not hour12:false. An engine that picks the h24 cycle
+    // formats 00:05 as "24:05" on the PREVIOUS date — the %24 below fixes
+    // the hour but not the day, which would put every prayer a day behind
+    // between midnight and 1 am. h23 makes both parts correct.
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date());
   const map = {};
   for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value;

@@ -1,28 +1,21 @@
 'use strict';
 
 /**
- * Given any location_id (which may be a 'zone' row itself, e.g. Masjid,
- * or an 'address' row under Stanza, e.g. "Target PG"), walk up the
- * parent chain and return the nearest ancestor of type='zone'.
+ * Given any location_id (a zone itself, or a PG under one), return the
+ * nearest ancestor-or-self of type 'zone', or null if there is none.
  *
- * Returns the Location instance for the zone, or null if none found
- * (shouldn't happen for valid data, but we don't want to throw here).
+ * Kept as a thin wrapper so existing call sites keep their signature; the
+ * walk itself now happens in memory — see services/locationIndex.js for why
+ * it no longer issues a query per hop. The second argument is accepted and
+ * ignored for the same reason.
+ *
+ * Returns a plain object ({ id, name, type, parent_id, zone_key, ... }).
  */
-const resolveZone = async (locationId, db) => {
-  const { Location } = db;
-
-  let current = await Location.findByPk(locationId);
-  let hops = 0;
-  const MAX_HOPS = 10; // safety guard against any accidental cycle
-
-  while (current && current.type !== 'zone' && hops < MAX_HOPS) {
-    if (!current.parent_id) return null;
-    current = await Location.findByPk(current.parent_id);
-    hops += 1;
-  }
-
-  if (!current || current.type !== 'zone') return null;
-  return current;
+const resolveZone = async (locationId /* , db */) => {
+  if (!locationId) return null;
+  // Required lazily: this util is loaded by models-adjacent code at boot.
+  const locationIndex = require('../services/locationIndex');
+  return locationIndex.zoneOf(locationId);
 };
 
 module.exports = { resolveZone };

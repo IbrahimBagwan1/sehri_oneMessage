@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 import * as SecureStore from 'expo-secure-store';
-import { API_BASE_URL } from '../api/client';
+import { API_BASE_URL, refreshSession } from '../api/client';
 
 /**
  * socket.js — one shared Socket.IO connection for the whole app.
@@ -59,12 +59,32 @@ export const connect = async () => {
     }
 
     socket = io(socketBaseUrl(), {
-      auth: { token },
+      // A function, not a value: it is re-read on EVERY reconnect. With a
+      // fixed { token }, a socket that dropped after the 15-minute access
+      // token expired kept reconnecting with the dead token forever, and
+      // live chat and tracking silently stopped until the app restarted.
+      auth: (cb) => {
+        SecureStore.getItemAsync('access_token')
+          .then((t) => cb({ token: t }))
+          .catch(() => cb({ token: null }));
+      },
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1500,
       reconnectionDelayMax: 10000,
+    });
+
+    // The server refused the handshake because the token expired: refresh
+    // the session, then reconnect with the new token. A refresh that fails
+    // because the session was ended signs the member out (api/client.js);
+    // one that fails because the phone is offline is simply retried on the
+    // next reconnect attempt.
+    socket.on('connect_error', (err) => {
+      if (!/token/i.test(err?.message || '')) return;
+      refreshSession('member')
+        .then(() => { if (socket && !socket.connected) socket.connect(); })
+        .catch(() => { /* handled by api/client.js */ });
     });
 
     // Log connection state transitions to console (dev) — silent in prod.

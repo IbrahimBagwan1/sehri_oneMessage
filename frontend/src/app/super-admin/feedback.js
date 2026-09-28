@@ -61,7 +61,8 @@ export default function SuperAdminFeedback() {
   const [error,      setError]      = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const params = {};

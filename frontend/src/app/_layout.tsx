@@ -2,10 +2,24 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
-import { useColorScheme, View } from 'react-native';
+import { View } from 'react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { useFonts, Amiri_400Regular, Amiri_700Bold } from '@expo-google-fonts/amiri';
 import useNotificationRouting from '../hooks/useNotificationRouting';
+import AppErrorScreen from '../components/AppErrorScreen';
+import { initMonitoring, wrapRoot } from '../services/monitoring';
+
+// Crash reporting starts before the first render so a crash during startup
+// is captured too. A no-op without a DSN and in development.
+initMonitoring();
+
+/**
+ * expo-router renders this in place of any route that throws while
+ * rendering — a recoverable screen instead of a blank one.
+ */
+export function ErrorBoundary(props) {
+  return <AppErrorScreen {...props} />;
+}
 
 /**
  * Amiri is a classical Arabic Naskh typeface designed to be a modern
@@ -13,22 +27,23 @@ import useNotificationRouting from '../hooks/useNotificationRouting';
  * to a proper muṣḥaf typeface. Loaded here so Quran + Dua screens can
  * reference the family names directly without individual useFonts calls.
  */
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
+function RootLayout() {
 
   // Tapping a notification has to land somewhere. Mounted at the root so it
   // survives navigation, and so a tap that cold-starts the app is caught
   // before any screen has rendered.
   useNotificationRouting();
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Amiri_400Regular,
     Amiri_700Bold,
   });
 
   // Hold rendering until Arabic fonts are available. Without this, the
   // Quran reader would flash the OS Arabic font (usually Noto Naskh)
-  // for a beat before swapping to Amiri.
-  if (!fontsLoaded) {
+  // for a beat before swapping to Amiri. If the font fails to load, render
+  // anyway with the system Arabic font — a blank screen forever (what a
+  // load error used to mean) is far worse than a different typeface.
+  if (!fontsLoaded && !fontError) {
     return <View style={{ flex: 1, backgroundColor: '#F8FAFC' }} />;
   }
 
@@ -59,7 +74,6 @@ export default function RootLayout() {
         <Stack.Screen name="(admin)" />
         <Stack.Screen name="(rider)" />
         <Stack.Screen name="super-admin" />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
         <Stack.Screen name="profile" options={{ headerShown: false }} />
         <Stack.Screen name="feedback" options={{ headerShown: false }} />
         <Stack.Screen name="quran-reader" options={{ headerShown: false }} />
@@ -70,8 +84,14 @@ export default function RootLayout() {
         <Stack.Screen name="chat-group-manage" options={{ headerShown: false }} />
         <Stack.Screen name="vote-history" options={{ headerShown: false }} />
         <Stack.Screen name="blocked-users" options={{ headerShown: false }} />
+        <Stack.Screen name="credits" options={{ headerShown: false }} />
       </Stack>
-      <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+      {/* Always dark icons: the app has one light theme (see
+          userInterfaceStyle in app.config.js), so following the system's
+          dark mode put white icons on a light background. */}
+      <StatusBar style="dark" />
     </KeyboardProvider>
   );
 }
+
+export default wrapRoot(RootLayout);

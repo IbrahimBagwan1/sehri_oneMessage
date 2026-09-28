@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 import { trackingApi } from '../api/tracking';
+import { onAuthFailure, revokeSession } from '../api/client';
 import {
   requestRiderLocationPermission,
   startRiderLocationUpdates,
@@ -14,6 +15,8 @@ import {
 const RIDER_TOKEN_KEY   = 'rider_access_token';
 const RIDER_REFRESH_KEY = 'rider_refresh_token';
 const RIDER_DATA_KEY    = 'rider_data';
+
+const devWarn = (...args) => { if (__DEV__) console.warn(...args); };
 
 export const useRiderStore = create((set, get) => ({
   // -------------------------------------------------------------------------
@@ -66,6 +69,11 @@ export const useRiderStore = create((set, get) => ({
   // Reads persisted token + profile from SecureStore.
   // -------------------------------------------------------------------------
   hydrate: async () => {
+    // When the server ends the rider session (signed out elsewhere,
+    // deactivated, deleted), api/client.js clears the tokens and fires this;
+    // the rider screen then returns to its login. Set-based, so calling
+    // hydrate twice registers one listener.
+    onAuthFailure(riderSessionEnded, 'rider');
     try {
       const token      = await SecureStore.getItemAsync(RIDER_TOKEN_KEY);
       const riderData  = await SecureStore.getItemAsync(RIDER_DATA_KEY);
@@ -112,9 +120,10 @@ export const useRiderStore = create((set, get) => ({
   // path where the store may not be hydrated.
   // -------------------------------------------------------------------------
   riderToken: async () => {
-    const inState = get().accessToken;
-    if (inState) return inState;
-    return SecureStore.getItemAsync(RIDER_TOKEN_KEY);
+    // SecureStore first: api/client.js rotates the token there on refresh
+    // (and the background task may have refreshed it too), so the copy in
+    // state can be one rotation behind.
+    return (await SecureStore.getItemAsync(RIDER_TOKEN_KEY)) || get().accessToken;
   },
 
   // -------------------------------------------------------------------------
@@ -252,7 +261,7 @@ export const useRiderStore = create((set, get) => ({
         await trackingApi.recomputeMyRoute(token);
         await get().fetchMyStops();
       } catch (err) {
-        console.warn('[rider] route recompute at start failed:', err?.message);
+        devWarn('[rider] route recompute at start failed:', err?.message);
       }
       return { tracking: false, helperName: team?.helper?.name || null };
     }
@@ -270,7 +279,7 @@ export const useRiderStore = create((set, get) => ({
     try {
       await pushCurrentPositionOnce(rider, token, 'delivering');
     } catch (err) {
-      console.warn('[rider] initial position push failed:', err?.message);
+      devWarn('[rider] initial position push failed:', err?.message);
     }
 
     await startRiderLocationUpdates();
@@ -285,7 +294,7 @@ export const useRiderStore = create((set, get) => ({
     } catch (err) {
       // Non-fatal — the existing order is still a usable route, and
       // Directions being down must not stop someone starting their round.
-      console.warn('[rider] route recompute at start failed:', err?.message);
+      devWarn('[rider] route recompute at start failed:', err?.message);
     }
     return { tracking: true, helperName: null };
   },
@@ -305,7 +314,7 @@ export const useRiderStore = create((set, get) => ({
       // The feed is already stopped, so the worst case is the backend
       // showing this rider as delivering until their next sign-in, which
       // syncDeliveryState below reconciles.
-      console.warn('[rider] final status push failed:', err?.message);
+      devWarn('[rider] final status push failed:', err?.message);
     }
   },
 
@@ -365,7 +374,7 @@ export const useRiderStore = create((set, get) => ({
         try {
           await startRiderLocationUpdates();
         } catch (err) {
-          console.warn('[rider] could not resume the location feed:', err?.message);
+          devWarn('[rider] could not resume the location feed:', err?.message);
         }
       }
 
@@ -375,7 +384,7 @@ export const useRiderStore = create((set, get) => ({
         await stopRiderLocationUpdates();
       }
     } catch (err) {
-      console.warn('[rider] delivery state sync failed:', err?.message);
+      devWarn('[rider] delivery state sync failed:', err?.message);
     }
   },
 
@@ -388,6 +397,9 @@ export const useRiderStore = create((set, get) => ({
     // the 'done' push the backend would keep showing this rider as
     // mid-delivery to every member in the zone, forever.
     try { await get().stopDelivery(); } catch { /* best effort */ }
+    // End the session on the server too, so the refresh token left on this
+    // device is worthless even if something copied it.
+    await revokeSession('rider');
 
     await SecureStore.deleteItemAsync(RIDER_TOKEN_KEY);
     await SecureStore.deleteItemAsync(RIDER_REFRESH_KEY);
@@ -406,3 +418,10 @@ export const useRiderStore = create((set, get) => ({
     });
   },
 }));
+
+// The server ended the rider session: stop the feed and clear local state.
+// Declared after the store so it can reach it; the tokens are already gone.
+function riderSessionEnded() {
+  const { logout } = useRiderStore.getState();
+  logout().catch(() => {});
+}

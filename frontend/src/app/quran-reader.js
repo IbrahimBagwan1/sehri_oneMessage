@@ -62,7 +62,7 @@ export default function QuranReaderScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const chapter = data?.chapter;
-  const verses  = data?.verses || [];
+  const verses  = useMemo(() => data?.verses || [], [data]);
 
   const translationSource = useMemo(
     () => verses.find((v) => v.translation_source)?.translation_source,

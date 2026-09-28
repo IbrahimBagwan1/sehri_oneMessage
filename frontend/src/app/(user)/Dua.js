@@ -48,7 +48,8 @@ export default function DuaCategoryList() {
   const [error,      setError]      = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await duaApi.getCategories();
@@ -56,7 +57,7 @@ export default function DuaCategoryList() {
         setCategories(res.data.categories || []);
         setFeatured(res.data.featured_today || null);
       }
-    } catch (err) {
+    } catch {
       setError("Couldn't load duas right now — check your connection and pull to refresh.");
     } finally {
       setLoading(false);
@@ -124,7 +125,14 @@ export default function DuaCategoryList() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Duas &amp; Adhkar</Text>
-        <Text style={styles.headerSubtitle}>Daily supplications for every moment</Text>
+        <Text
+          style={styles.headerSubtitle}
+          onPress={() => router.push('/credits')}
+          accessibilityRole="link"
+          accessibilityLabel="Daily supplications from Hisn al-Muslim. Opens sources and credits"
+        >
+          Daily supplications from Hisn al-Muslim · Sources
+        </Text>
       </View>
 
       {loading ? (

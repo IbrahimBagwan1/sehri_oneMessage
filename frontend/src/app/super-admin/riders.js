@@ -60,7 +60,9 @@ export default function SuperAdminRidersScreen() {
   const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       const res = await trackingApi.getAllRiders();
@@ -421,11 +423,15 @@ function CreateRiderSheet({ visible, onClose, onCreated }) {
   const [zonesLoading, setZonesLoading] = useState(false);
   const [submitting,   setSubmitting]   = useState(false);
 
-  // Reset fields whenever the sheet is opened afresh
-  useEffect(() => {
-    if (!visible) return;
-    setName(''); setPhone(''); setPassword(''); setZoneId(null); setSubmitting(false);
-  }, [visible]);
+  // Reset fields whenever the sheet is opened afresh — during render, not in
+  // an effect (React's "adjust state when a prop changes" pattern).
+  const [wasVisible, setWasVisible] = useState(visible);
+  if (visible !== wasVisible) {
+    setWasVisible(visible);
+    if (visible) {
+      setName(''); setPhone(''); setPassword(''); setZoneId(null); setSubmitting(false);
+    }
+  }
 
   // Lazy-load zones on first open
   useEffect(() => {

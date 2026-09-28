@@ -32,12 +32,14 @@ export default function QuranChapterList() {
   const [query,      setQuery]      = useState('');
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       const res = await quranApi.getChapters();
       if (res.success) setChapters(res.data.chapters || []);
-    } catch (err) {
+    } catch {
       setError("Couldn't load the chapter list — check your connection and pull to refresh.");
     } finally {
       setLoading(false);
@@ -99,7 +101,14 @@ export default function QuranChapterList() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Al-Qur&apos;an</Text>
-        <Text style={styles.headerSubtitle}>114 surahs · Sahih International</Text>
+        <Text
+          style={styles.headerSubtitle}
+          onPress={() => router.push('/credits')}
+          accessibilityRole="link"
+          accessibilityLabel="114 surahs, Saheeh International translation. Opens sources and credits"
+        >
+          114 surahs · Saheeh International · Sources
+        </Text>
       </View>
 
       <View style={styles.searchBar}>

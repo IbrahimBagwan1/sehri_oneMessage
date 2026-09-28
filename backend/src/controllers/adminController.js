@@ -9,29 +9,24 @@ const {
 } = require('../utils/zoneScope');
 const logger = require('../utils/logger');
 const chatGroupSync = require('../services/chatGroupSync');
+const authSessionService = require('../services/authSessionService');
 const { User, Admin, SuperAdmin, Location } = db;
+
+/**
+ * A standalone staff account may not reuse a MEMBER's phone number. Sign-in
+ * resolves a number across every account table and authenticates against
+ * the highest role, so a standalone admin row with its own password would
+ * silently replace the member's password for that number. Promotion (Mode
+ * A) is the path for an existing member — it links the rows and keeps one
+ * password.
+ */
+const memberHoldsPhone = async (phone) => !!(await User.findOne({ where: { phone }, attributes: ['id'] }));
 
 // ---------------------------------------------------------------------------
 // Valid promote-to roles. Extended from here if we ever add rider or other
 // promotable roles through this flow.
 // ---------------------------------------------------------------------------
 const PROMOTABLE_ROLES = ['admin', 'super_admin'];
-
-// ---------------------------------------------------------------------------
-// Internal helper — resolves a zone-type location from any location_id.
-// Walks up the parent chain until it finds a type='zone' row.
-// ---------------------------------------------------------------------------
-const resolveZoneLocation = async (locationId) => {
-  let current = await Location.findByPk(locationId);
-  let hops = 0;
-  const MAX_HOPS = 10;
-  while (current && current.type !== 'zone' && hops < MAX_HOPS) {
-    if (!current.parent_id) return null;
-    current = await Location.findByPk(current.parent_id);
-    hops += 1;
-  }
-  return current && current.type === 'zone' ? current : null;
-};
 
 // ---------------------------------------------------------------------------
 // POST /api/admin/create-admin
@@ -121,6 +116,14 @@ const createAdmin = async (req, res, next) => {
         return error(res, {
           statusCode: 400,
           message: 'Password must be at least 6 characters',
+        });
+      }
+
+      if (await memberHoldsPhone(phone)) {
+        return error(res, {
+          statusCode: 409,
+          message: 'This number belongs to a member. Promote them from the user search instead, so they keep one sign-in.',
+          code: 'PHONE_ALREADY_REGISTERED',
         });
       }
 
@@ -228,6 +231,14 @@ const createSuperAdmin = async (req, res, next) => {
         });
       }
 
+      if (await memberHoldsPhone(phone)) {
+        return error(res, {
+          statusCode: 409,
+          message: 'This number belongs to a member. Promote them from the user search instead, so they keep one sign-in.',
+          code: 'PHONE_ALREADY_REGISTERED',
+        });
+      }
+
       const existingSA = await SuperAdmin.findOne({ where: { phone } });
       if (existingSA) {
         return error(res, {
@@ -324,6 +335,9 @@ const deleteAdmin = async (req, res, next) => {
 
     const zoneId = admin.zone_location_id;
     await admin.destroy();
+    // Their admin sessions end now rather than at the next refresh: a
+    // removed admin must not keep moderating or reading zone data.
+    await authSessionService.revokeSubjects([{ type: 'admin', id }], 'role_removed');
 
     // Their admin identity leaves the zone chat. If they also hold a member
     // account they stay in as a member — a different chat identity, and the
@@ -677,7 +691,7 @@ const linkUserAccount = async (req, res, next) => {
     }
 
     const loc = await Location.findByPk(location_id, { transaction: t });
-    if (!loc || !['zone', 'address'].includes(loc.type)) {
+    if (!loc || loc.is_sandbox || !['zone', 'address'].includes(loc.type)) {
       await t.rollback();
       return error(res, {
         statusCode: 400,

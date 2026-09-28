@@ -90,8 +90,26 @@ const filterRowsToZone = (rows, zoneLocationId) => {
   });
 };
 
+/**
+ * Every location id inside a zone (the zone itself and all descendants),
+ * for filtering IN THE QUERY: `where: { location_id: ids }`.
+ *
+ * Filtering in memory after a paginated query — what the feedback list used
+ * to do — returns short or empty pages and a `total` that counts every
+ * zone's rows, which is both a wrong UI and a small cross-zone leak.
+ * Retired PGs are included on purpose: a member attached to one still
+ * belongs to this admin's zone.
+ */
+const locationIdsInZone = async (zoneLocationId) => {
+  if (!zoneLocationId) return [];
+  // Lazily required: models load zoneScope indirectly at boot.
+  const locationIndex = require('../services/locationIndex');
+  return [...(await locationIndex.descendantIds(zoneLocationId, { activeOnly: false }))];
+};
+
 module.exports = {
   buildLocationInclude,
   resolveZoneFromLoaded,
   filterRowsToZone,
+  locationIdsInZone,
 };

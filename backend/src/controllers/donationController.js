@@ -208,11 +208,20 @@ const verifyDonation = async (req, res, next) => {
       });
     }
 
+    // Conditional on still being pending: two super admins reviewing the
+    // same donation at once must not both "verify" it (or one verify and
+    // the other reject). The loser gets the same 409 as a late click.
+    const verifiedAt = new Date();
+    const [changed] = await Donation.update(
+      { status: 'verified', verified_by: req.auth.id, verified_at: verifiedAt, rejection_reason: null },
+      { where: { id, status: 'pending' } }
+    );
+    if (changed === 0) {
+      const current = await Donation.findByPk(id, { attributes: ['status'] });
+      return error(res, { statusCode: 409, message: `This donation was already ${current?.status || 'reviewed'}.` });
+    }
     donation.status = 'verified';
-    donation.verified_by = req.auth.id; // super_admin.id
-    donation.verified_at = new Date();
-    donation.rejection_reason = null; // clear any leftover, defensive
-    await donation.save();
+    donation.verified_at = verifiedAt;
 
     return success(res, {
       statusCode: 200,
@@ -258,11 +267,17 @@ const rejectDonation = async (req, res, next) => {
       });
     }
 
+    const rejectionReason = (typeof reason === 'string' && reason.trim()) ? reason.trim() : null;
+    const [changed] = await Donation.update(
+      { status: 'rejected', rejection_reason: rejectionReason, verified_by: req.auth.id, verified_at: new Date() },
+      { where: { id, status: 'pending' } }
+    );
+    if (changed === 0) {
+      const current = await Donation.findByPk(id, { attributes: ['status'] });
+      return error(res, { statusCode: 409, message: `This donation was already ${current?.status || 'reviewed'}.` });
+    }
     donation.status = 'rejected';
-    donation.rejection_reason = (typeof reason === 'string' && reason.trim()) ? reason.trim() : null;
-    donation.verified_by = req.auth.id;
-    donation.verified_at = new Date();
-    await donation.save();
+    donation.rejection_reason = rejectionReason;
 
     return success(res, {
       statusCode: 200,
@@ -294,9 +309,16 @@ const getSummary = async (req, res, next) => {
       if (to)   where.created_at[Op.lte] = new Date(`${to}T23:59:59.999Z`);
     }
 
+    // Aggregated by the database: three rows back instead of every
+    // donation ever made.
     const rows = await Donation.findAll({
       where,
-      attributes: ['status', 'amount'],
+      attributes: [
+        'status',
+        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+        [db.sequelize.fn('SUM', db.sequelize.col('amount')), 'total'],
+      ],
+      group: ['status'],
       raw: true,
     });
 
@@ -305,15 +327,17 @@ const getSummary = async (req, res, next) => {
       pending_amount:  0,
       rejected_amount: 0,
       counts: { pending: 0, verified: 0, rejected: 0 },
-      total_count: rows.length,
+      total_count: 0,
     };
 
     for (const r of rows) {
-      const amt = Number.parseFloat(r.amount) || 0;
-      if (summary.counts[r.status] !== undefined) summary.counts[r.status] += 1;
-      if (r.status === 'verified')      summary.total_amount    += amt;
-      else if (r.status === 'pending')  summary.pending_amount  += amt;
-      else if (r.status === 'rejected') summary.rejected_amount += amt;
+      const amt = Number.parseFloat(r.total) || 0;
+      const n = Number.parseInt(r.count, 10) || 0;
+      if (summary.counts[r.status] !== undefined) summary.counts[r.status] = n;
+      summary.total_count += n;
+      if (r.status === 'verified')      summary.total_amount    = amt;
+      else if (r.status === 'pending')  summary.pending_amount  = amt;
+      else if (r.status === 'rejected') summary.rejected_amount = amt;
     }
 
     // Clean 2-decimal rounding for the response.

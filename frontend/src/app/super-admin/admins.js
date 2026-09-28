@@ -77,10 +77,16 @@ export default function SuperAdminAdminsScreen() {
   // --- Search state -----------------------------------------------------
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch               = useDebounced(searchInput.trim());
-  const [searchResults, setSearchResults] = useState([]);
-  const [searching, setSearching]         = useState(false);
-  const [searchError, setSearchError]     = useState(null);
+  // The last COMPLETED search, tagged with the query it answered. Whether a
+  // search is in flight, and whether the results on screen are current,
+  // are derived from that tag rather than stored — so the effect below
+  // never has to set state synchronously.
+  const [search, setSearch] = useState({ q: '', results: [], error: null });
   const searchReqId                       = useRef(0);
+  const queryIsLong  = debouncedSearch.length >= MIN_QUERY_LEN;
+  const searching    = queryIsLong && search.q !== debouncedSearch;
+  const searchResults = queryIsLong && search.q === debouncedSearch ? search.results : [];
+  const searchError  = queryIsLong && search.q === debouncedSearch ? search.error : null;
 
   // --- Promote sheet state ---------------------------------------------
   const [promoteTarget, setPromoteTarget] = useState(null); // user row
@@ -93,7 +99,9 @@ export default function SuperAdminAdminsScreen() {
 
   // --- Load admins list -------------------------------------------------
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       const res = await apiClient.get('/admin/list-admins');
@@ -110,35 +118,24 @@ export default function SuperAdminAdminsScreen() {
   // --- Debounced search — runs whenever debouncedSearch changes --------
   useEffect(() => {
     const q = debouncedSearch;
-    if (q.length < MIN_QUERY_LEN) {
-      setSearchResults([]);
-      setSearching(false);
-      setSearchError(null);
-      return;
-    }
+    if (q.length < MIN_QUERY_LEN) return;
     const reqId = ++searchReqId.current;
-    setSearching(true);
-    setSearchError(null);
     (async () => {
       try {
         const res = await adminApi.searchUsers({ q, limit: 20 });
         // Drop stale responses — user has kept typing.
         if (searchReqId.current !== reqId) return;
-        setSearchResults(res?.data?.users || []);
+        setSearch({ q, results: res?.data?.users || [], error: null });
       } catch (err) {
         if (searchReqId.current !== reqId) return;
-        setSearchError(err?.response?.data?.message || "Couldn't run the search.");
-        setSearchResults([]);
-      } finally {
-        if (searchReqId.current === reqId) setSearching(false);
+        setSearch({ q, results: [], error: err?.response?.data?.message || "Couldn't run the search." });
       }
     })();
   }, [debouncedSearch]);
 
   const clearSearch = () => {
     setSearchInput('');
-    setSearchResults([]);
-    setSearchError(null);
+    setSearch({ q: '', results: [], error: null });
   };
 
   // --- Zones for the promote sheet — load lazily -----------------------
@@ -356,7 +353,7 @@ export default function SuperAdminAdminsScreen() {
 
       {!searching && !searchError && debouncedSearch.length >= MIN_QUERY_LEN && searchResults.length === 0 && (
         <Text style={styles.searchEmpty}>
-          No users match "{debouncedSearch}". Check the spelling, or ask them to register first.
+          No users match “{debouncedSearch}”. Check the spelling, or ask them to register first.
         </Text>
       )}
 
@@ -522,7 +519,7 @@ export default function SuperAdminAdminsScreen() {
               <View style={styles.confirmStrip}>
                 <Ionicons name="alert-circle" size={16} color={colors.gold} />
                 <Text style={styles.confirmStripText}>
-                  Tap "Confirm promotion" to complete. This grants privileged access.
+                  Tap “Confirm promotion” to complete. This grants privileged access.
                 </Text>
               </View>
             )}

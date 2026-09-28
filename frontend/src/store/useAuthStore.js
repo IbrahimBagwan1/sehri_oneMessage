@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import apiClient, { onAuthFailure } from '../api/client';
+import apiClient, { onAuthFailure, revokeSession } from '../api/client';
 import { registerForPushNotifications, unregisterPushNotifications } from '../services/pushService';
 import { connect as connectSocket, disconnect as disconnectSocket } from '../services/socket';
 
@@ -171,6 +171,9 @@ export const useAuthStore = create((set, get) => ({
     // valid — otherwise the /users/me/push-token PATCH would 401 after
     // we drop the token below.
     try { await unregisterPushNotifications(); } catch (_) { /* noop */ }
+    // End this device's session on the server, so the refresh token is
+    // worthless even if a copy of it survives somewhere.
+    await revokeSession('member');
     disconnectSocket();
 
     await SecureStore.deleteItemAsync('access_token');

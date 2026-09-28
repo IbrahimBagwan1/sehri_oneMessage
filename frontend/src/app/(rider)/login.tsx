@@ -81,7 +81,7 @@ export default function RiderLoginScreen() {
         </View>
 
         <Text style={styles.title}>Rider sign-in</Text>
-        <Text style={styles.subtitle}>Sign in to see today's delivery route</Text>
+        <Text style={styles.subtitle}>Sign in to see today’s delivery route</Text>
 
         {/* Phone */}
         <Text style={styles.label}>Phone Number</Text>

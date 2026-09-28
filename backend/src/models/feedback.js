@@ -51,6 +51,7 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['category'] },
         { fields: ['is_read'] },
         { fields: ['created_at'] },
+        { fields: ['is_read', 'created_at'], name: 'idx_feedback_read_created' },
       ],
     }
   );

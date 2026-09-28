@@ -17,6 +17,7 @@ import { colors, radius, space, type } from '../../theme';
 // layer over ../../theme), which is where every Arabic run in this app
 // gets its font from.
 import { fonts } from '../../components/islamicTheme';
+import { LEGAL_URLS, openLegalUrl } from '../../constants/legal';
 
 export default function LoginScreen() {
   const router          = useRouter();
@@ -221,6 +222,38 @@ export default function LoginScreen() {
               fullWidth
               style={styles.riderBtn}
             />
+
+            {/* Reachable before anyone has an account. Someone browsing as a
+                guest still has data handled by this app, and a reviewer
+                checking the policy link should not have to register first. */}
+            <View style={styles.legalRow}>
+              <Text
+                style={styles.legalLink}
+                onPress={() => openLegalUrl(LEGAL_URLS.privacy, 'the privacy policy')}
+                accessibilityRole="link"
+                accessibilityLabel="Privacy Policy, opens in your browser"
+              >
+                Privacy Policy
+              </Text>
+              <Text style={styles.legalDot}>·</Text>
+              <Text
+                style={styles.legalLink}
+                onPress={() => openLegalUrl(LEGAL_URLS.terms, 'the terms of service')}
+                accessibilityRole="link"
+                accessibilityLabel="Terms of Service, opens in your browser"
+              >
+                Terms
+              </Text>
+              <Text style={styles.legalDot}>·</Text>
+              <Text
+                style={styles.legalLink}
+                onPress={() => openLegalUrl(LEGAL_URLS.support, 'the support page')}
+                accessibilityRole="link"
+                accessibilityLabel="Help and contact, opens in your browser"
+              >
+                Help
+              </Text>
+            </View>
           </View>
       </KeyboardAwareScroll>
     </SafeAreaView>
@@ -228,6 +261,21 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
+  legalRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: space[2],
+    marginTop: space[6],
+  },
+  legalLink: {
+    ...type.meta,
+    color: colors.inkFaint,
+    fontWeight: '600',
+    // A 44pt row even though the text is small.
+    paddingVertical: space[3],
+  },
+  legalDot: { ...type.meta, color: colors.inkGhost },
   screen: { flex: 1, backgroundColor: colors.paperSoft },
   scroll: { flexGrow: 1, paddingHorizontal: space[5], paddingBottom: space[6] },
 

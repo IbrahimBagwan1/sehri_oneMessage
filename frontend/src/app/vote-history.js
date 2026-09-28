@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -16,7 +15,6 @@ import {
   Calendar,
   todayISO,
   Card,
-  Chip,
   EmptyState,
   ErrorState,
   GuestGate,
@@ -87,7 +85,8 @@ function VoteHistoryAuthed() {
   const MAX_PAGES = 40; // hard stop — 2000 rows is far beyond any real history
 
   const load = useCallback(async ({ isRefresh = false } = {}) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       // Page through to the end so every day that has a vote gets a dot.

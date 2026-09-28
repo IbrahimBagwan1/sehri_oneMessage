@@ -33,13 +33,14 @@ const {
   getPollPhase,
   isSpecialCaseWindowOpen,
   isAllotmentWindowOpen,
+  overrideForDesiredState,
   getNow,
 } = require('../utils/pollPhase');
+const { istDateString } = require('../utils/istTime');
 
-// Import the shared helper exported by Person 1.
-// getTodaysPoll() returns the Poll row whose `date` equals today's IST date,
-// or null if no poll has been created yet.
-const { getTodaysPoll } = require('./pollController');
+// getTodaysPoll() returns the poll members are currently looking at — see
+// services/pollCalendar.js for why that is tomorrow's from 22:00 IST.
+const { getTodaysPoll, shapePoll } = require('./pollController');
 
 const { Poll, PollResponse, User } = db;
 
@@ -422,14 +423,18 @@ const allotSpecialCases = async (req, res, next) => {
 // Access: super_admin
 // Body: { is_active: true | false }
 //
-// Manually opens or closes today's voting window. This is the ONLY place
-// that writes to polls.is_active (outside of the cron job).
-// deadline_time is set as an audit timestamp so we know when the toggle
-// happened, but getPollPhase() does not read it — only is_active matters.
+// Manually opens or closes voting on the current poll. The only place that
+// writes a non-NULL polls.is_active (creation writes NULL). deadline_time
+// is an audit timestamp; getPollPhase() never reads it.
 // ---------------------------------------------------------------------------
 const togglePoll = async (req, res, next) => {
   try {
-    const { is_active } = req.body;
+    // The body says what the super admin WANTS: voting open (true) or
+    // closed (false). What gets stored is the smallest override that
+    // achieves it — NULL when the schedule already agrees — so an early
+    // close does not linger as a standing override, and reopening inside
+    // the window never turns into an accidental extension at 10:00.
+    const { is_active: wantOpen } = req.body;
 
     const poll = await getTodaysPoll();
     if (!poll) {
@@ -439,20 +444,21 @@ const togglePoll = async (req, res, next) => {
       });
     }
 
+    const now = getNow();
     await poll.update({
-      is_active,
-      deadline_time: getNow(), // audit timestamp only
+      is_active: overrideForDesiredState(poll, wantOpen, now),
+      deadline_time: now, // audit timestamp only
     });
 
+    const phase = getPollPhase(poll, now);
+    const shaped = shapePoll(poll, phase);
     return success(res, {
       statusCode: 200,
-      message: `Poll voting ${is_active ? 'opened' : 'closed'}`,
+      message: `Poll voting ${shaped.is_active ? 'opened' : 'closed'}`,
       data: {
-        id: poll.id,
-        date: poll.date,
-        is_active: poll.is_active,
+        ...shaped,
         deadline_time: poll.deadline_time,
-        phase: getPollPhase(poll),
+        phase,
       },
     });
   } catch (err) {
@@ -460,14 +466,6 @@ const togglePoll = async (req, res, next) => {
   }
 };
 
-// ---------------------------------------------------------------------------
-// GET /api/polls/history
-// Access: admin, super_admin
-// Query: ?page=1&limit=20
-//
-// Returns past polls (dates strictly before today in IST) with vote counts,
-// newest first. Each poll includes total yes/no/total across all zones.
-// ---------------------------------------------------------------------------
 const getPollHistory = async (req, res, next) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page,  10) || 1);
@@ -475,9 +473,7 @@ const getPollHistory = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     // Today's IST date string — we exclude it so only past polls appear.
-    const istTodayStr = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'Asia/Kolkata',
-    });
+    const istTodayStr = istDateString();
 
     const { sequelize } = db;
 

@@ -9,6 +9,7 @@ const express = require('express');
 const router = express.Router();
 const { verifyToken, requireUserAccess } = require('../middleware/auth');
 const { singleImage } = require('../middleware/upload');
+const limits = require('../middleware/rateLimits');
 const {
   submitDonation,
   getMyHistory,
@@ -17,7 +18,7 @@ const {
 // Route order — literal /my before any :id routes.
 
 // POST /api/donations — multipart: field 'screenshot' + text field 'amount'.
-router.post('/', verifyToken, requireUserAccess, singleImage('screenshot'), submitDonation);
+router.post('/', verifyToken, requireUserAccess, limits.donationSubmit, singleImage('screenshot'), submitDonation);
 
 // GET /api/donations/my — caller's own donations, newest first.
 router.get('/my', verifyToken, requireUserAccess, getMyHistory);

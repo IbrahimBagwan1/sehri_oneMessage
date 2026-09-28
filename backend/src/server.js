@@ -1,168 +1,125 @@
-require('dotenv').config();
+'use strict';
+
+// quiet: dotenv 17 otherwise prints a banner to stdout on every boot.
+require('dotenv').config({ quiet: true });
+
 const http = require('http');
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-
-const authRoutes = require('./routes/authRoutes');   // registration / login / forgot-password / switch-role
-const sendOtpRoutes = require('./routes/auth');        // send-otp
-const { testConnection } = require('./config/database');
-const userRoutes = require('./routes/users');
-const pollRoutes = require('./routes/polls');
-const locationRoutes = require('./routes/locations');
-const prayerRoutes = require('./routes/prayers');
-const adminRoutes = require('./routes/admins');        // create/manage admins + super admins
-const trackingRoutes = require('./routes/tracking');   // rider management + live tracking
-const chatRoutes = require('./routes/chat');           // group chat + Socket.IO backed messaging
-const adminChatRoutes = require('./routes/adminChat'); // chat moderation queue (reports + bans)
-const donationsRoutes = require('./routes/donations'); // user-facing donation submit + history
-const adminDonationsRoutes = require('./routes/adminDonations'); // super-admin donation review
-const feedbackRoutes = require('./routes/feedback');   // user feedback + admin review
-const quranRoutes = require('./routes/quran');         // Quran chapters + verses (served from our DB)
-const duaRoutes = require('./routes/dua');             // Dua categories + entries (served from our DB)
-const paymentRoutes = require('./routes/payment');     // payment contact + hosted page URL
-const broadcastRoutes = require('./routes/broadcasts'); // super-admin push broadcasts
-const path = require('path');
-const { initSocket } = require('./services/socketService');
-const chatGroupSync = require('./services/chatGroupSync');
 const logger = require('./utils/logger');
-const { error } = require('./utils/response');
+const { validateEnv } = require('./config/env');
 
-const app = express();
+// Validate before anything else is required: models and services read the
+// environment at load time, and a bad value should stop the process with a
+// clear list, not surface later as a confusing downstream failure.
+try {
+  const { warnings } = validateEnv();
+  for (const w of warnings) logger.warn(`[env] ${w}`);
+} catch (err) {
+  logger.error(err.message);
+  process.exit(1);
+}
 
-// Trust the first reverse proxy (ngrok / nginx / cloud load balancer) so
-// req.protocol reflects the original https instead of http-behind-lb. This
-// makes payment.js return correct https:// URLs.
-app.set('trust proxy', 1);
+const { createApp } = require('./app');
+const { testConnection, sequelize } = require('./config/database');
+const { initSocket, getIO } = require('./services/socketService');
+const chatGroupSync = require('./services/chatGroupSync');
+const authSessionService = require('./services/authSessionService');
 
-// ---------------------------------------------------------------------------
-// Security & observability middleware — must come first
-// ---------------------------------------------------------------------------
-app.use(helmet()); // Sets secure HTTP headers (XSS, clickjacking, MIME sniffing, etc.)
+const PORT = Number.parseInt(process.env.PORT || '5000', 10);
+const SESSION_PURGE_MS = 6 * 60 * 60 * 1000;
+const SHUTDOWN_GRACE_MS = 10 * 1000;
 
-// Route morgan output through winston so we get one unified log stream
-app.use(
-  morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', {
-    stream: { write: (msg) => logger.info(msg.trim()) },
-  })
-);
+const app = createApp();
 
-// Allow all origins in development; lock down via CORS_ORIGIN env var in production
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-
-app.use(express.json({ limit: '1mb' }));
-
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-app.get('/', (req, res) => {
-  res.send('Sehri backend is running');
-});
-
-// Health check for uptime monitors / container orchestrators
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', uptime: process.uptime() });
-});
-
-app.use('/api/auth', authRoutes);
-app.use('/api/auth', sendOtpRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/polls', pollRoutes);
-app.use('/api/locations', locationRoutes);   // public — used by registration screen
-app.use('/api/prayers', prayerRoutes);
-app.use('/api/admin', adminRoutes);          // super_admin — manage zone admins
-app.use('/api/tracking', trackingRoutes);    // rider login, live tracking, rider management
-app.use('/api/chat', chatRoutes);            // group chat rooms + REST message history
-app.use('/api/admin/chat', adminChatRoutes); // moderation queue - reported messages + bans
-app.use('/api/donations', donationsRoutes);         // user donation submit + own history
-app.use('/api/admin/donations', adminDonationsRoutes); // super-admin donation review
-app.use('/api/feedback', feedbackRoutes);           // user feedback submission + admin review
-app.use('/api/quran', quranRoutes);                 // 114 surahs, verses + translation (from our DB)
-app.use('/api/dua', duaRoutes);                     // dua categories + entries + featured-today
-app.use('/api/payment', paymentRoutes);             // payment contact + hosted page URL (public)
-app.use('/api/broadcasts', broadcastRoutes);        // super-admin — send push to a zone or all users
-
-// Static public/ folder — hosts /payment.html (opened by iOS Safari from
-// the Donate screen) plus any future static assets. Kept AFTER the /api
-// routes and BEFORE the 404 handler so it can't shadow an API route.
-app.use(express.static(path.join(__dirname, '..', 'public'), {
-  maxAge: '1h',
-  extensions: ['html'],
-}));
-
-// ---------------------------------------------------------------------------
-// 404 for unmatched API routes — hit before the error handler
-// ---------------------------------------------------------------------------
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    return error(res, { statusCode: 404, message: `Route not found: ${req.method} ${req.path}` });
-  }
-  next();
-});
-
-// ---------------------------------------------------------------------------
-// Global error handler
-// Must be registered AFTER all routes. Express identifies a 4-argument
-// middleware as an error handler. Controllers call next(err) to reach here.
-//
-// Handles two categories:
-//  • Operational errors (AppError.isOperational = true): known, expected
-//    failures like cooldown violations, invalid OTPs, not-found, etc.
-//    We respond with the error's own statusCode and message.
-//  • Programming / unexpected errors: we log the full stack and respond
-//    with a generic 500 so internal details are never leaked to the client.
-// ---------------------------------------------------------------------------
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  if (err.isOperational) {
-    return error(res, {
-      statusCode: err.statusCode || 400,
-      message: err.message,
-    });
-  }
-
-  // Unexpected error — log it fully, hide details from client
-  logger.error(err.stack || err.message);
-  return error(res, {
-    statusCode: 500,
-    message: 'Internal server error',
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Boot
-// ---------------------------------------------------------------------------
-const PORT = process.env.PORT || 5000;
-
-// Wrap Express in a plain Node HTTP server so Socket.IO can share the same
-// port. app.listen() internally does this too, but we need the httpServer
-// reference before listening so we can pass it to initSocket().
+// A plain Node HTTP server so Socket.IO can share the port.
 const httpServer = http.createServer(app);
+
+// Bound how long a client may hold a connection open. The defaults (five
+// minutes per request) let a slow or malicious client pin sockets. Uploads
+// of a payment screenshot on a slow network are the longest legitimate
+// request, which the app itself times out at 30 s.
+httpServer.requestTimeout = 60 * 1000;
+httpServer.headersTimeout = 20 * 1000;
+// Longer than a typical load balancer's 60 s idle timeout, so the balancer
+// closes idle keep-alive connections first and never sends to a socket
+// this process has just closed.
+httpServer.keepAliveTimeout = 65 * 1000;
+
+let purgeTimer = null;
+let shuttingDown = false;
+
+/**
+ * Stop taking new work, let in-flight requests finish, then release the
+ * database. Platform deploys send SIGTERM and wait a few seconds before
+ * SIGKILL; without this every deploy cut off whatever was mid-request —
+ * a vote, a donation upload, a delivered stop.
+ */
+const shutdown = (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`[server] ${signal} received — shutting down`);
+
+  const force = setTimeout(() => {
+    logger.error('[server] shutdown grace period elapsed — forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_GRACE_MS);
+  force.unref();
+
+  if (purgeTimer) clearInterval(purgeTimer);
+
+  try { getIO().close(); } catch (_) { /* socket layer never started */ }
+
+  httpServer.close(async () => {
+    try {
+      await sequelize.close();
+    } catch (err) {
+      logger.warn(`[server] error closing the database pool: ${err.message}`);
+    }
+    logger.info('[server] shutdown complete');
+    process.exit(0);
+  });
+  // Idle keep-alive sockets would otherwise hold close() open until they
+  // time out on their own.
+  httpServer.closeIdleConnections?.();
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// A rejected promise nobody awaited is a bug, but not one worth taking the
+// whole API down for: log it with its stack so it gets fixed.
+process.on('unhandledRejection', (reason) => {
+  logger.error(`[process] unhandled rejection: ${reason?.stack || reason}`);
+});
+// An uncaught exception leaves the process in an unknown state. Log it and
+// exit; the process manager restarts a clean instance.
+process.on('uncaughtException', (err) => {
+  logger.error(`[process] uncaught exception: ${err.stack || err.message}`);
+  process.exit(1);
+});
 
 testConnection()
   .then(() => {
-    // Attach Socket.IO to the HTTP server (must happen before listen)
     initSocket(httpServer);
 
-    // Bind to 0.0.0.0 so phones on the same network (or via ngrok) can reach the server
+    // 0.0.0.0 so devices on the same network (or a tunnel) can reach it.
     httpServer.listen(PORT, '0.0.0.0', () => {
       logger.info(`Server running on port ${PORT}`);
     });
 
-    // Provision a chat group for any zone that hasn't got one, then reconcile
-    // every zone-backed group's membership. Deliberately AFTER listen and
-    // deliberately not awaited: it is a self-healing background task, and a
-    // hiccup in it must not keep the API from coming up. Every entitlement
-    // change during the day reconciles its own zone; this is the backstop
-    // that catches anything those hooks missed.
+    // Provision a chat group for any zone without one and reconcile every
+    // zone group's membership. Not awaited: a self-healing background task
+    // must not keep the API from coming up.
     chatGroupSync.bootstrap().catch((err) => {
       logger.error(`[chatSync] Bootstrap failed: ${err.name}: ${err.message}`);
     });
+
+    // Housekeeping for ended sessions. Idempotent, so every instance may
+    // run it; unref'd so it never holds the process open on shutdown.
+    const purge = () => authSessionService.purgeStaleSessions()
+      .catch((err) => logger.warn(`[auth] session purge failed: ${err.message}`));
+    purge();
+    purgeTimer = setInterval(purge, SESSION_PURGE_MS);
+    purgeTimer.unref();
   })
   .catch((err) => {
     logger.error(`Failed to connect to the database: ${err.message}`);

@@ -1,6 +1,8 @@
 'use strict';
 
 const express = require('express');
+const limits = require('../middleware/rateLimits');
+
 const router = express.Router();
 const { verifyToken, requireRole } = require('../middleware/auth');
 const { sendBroadcast, listBroadcasts } = require('../controllers/broadcastController');
@@ -12,7 +14,7 @@ const { sendBroadcast, listBroadcasts } = require('../controllers/broadcastContr
 // POST /api/broadcasts — send a push to everyone in the target audience
 // A zone admin may broadcast, but only to their own zone — enforced in the
 // controller from their token, not from the request body.
-router.post('/', verifyToken, requireRole('admin', 'super_admin'), sendBroadcast);
+router.post('/', verifyToken, requireRole('admin', 'super_admin'), limits.broadcast, sendBroadcast);
 
 // GET /api/broadcasts — audit history, newest first
 // Scoped the same way: an admin sees their zone's history, a super admin all.

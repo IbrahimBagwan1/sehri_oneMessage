@@ -5,6 +5,7 @@ const { param, query, body } = require('express-validator');
 const router = express.Router();
 const { verifyToken, requireRole } = require('../middleware/auth');
 const { handleValidationErrors } = require('../middleware/otpValidation');
+const limits = require('../middleware/rateLimits');
 const {
   getMyGroups,
   createGroup,
@@ -108,7 +109,7 @@ router.get('/groups/:id/messages', verifyToken, getMessages);
 
 // POST /api/chat/groups/:id/messages — send a message
 // Body: { content, reply_to_id? }
-router.post('/groups/:id/messages', verifyToken, sendMessage);
+router.post('/groups/:id/messages', verifyToken, limits.chatSend, sendMessage);
 
 // POST /api/chat/groups/:id/read — mark all messages as read
 router.post('/groups/:id/read', verifyToken, markAsRead);
@@ -128,6 +129,7 @@ router.delete('/groups/:id/messages/:msgId', verifyToken, deleteMessage);
 router.post(
   '/groups/:id/messages/:msgId/report',
   verifyToken,
+  limits.chatReport,
   param('id').isUUID().withMessage('group id must be a UUID'),
   param('msgId').isUUID().withMessage('message id must be a UUID'),
   body('reason').optional({ nullable: true }).isString().isLength({ max: 1000 })

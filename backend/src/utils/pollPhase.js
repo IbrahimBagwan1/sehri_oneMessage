@@ -3,59 +3,55 @@
 /**
  * pollPhase.js — Single source of truth for poll timing logic.
  *
- * Every controller that needs to know "what phase is the poll in right now?"
- * must use getPollPhase() from this file. No controller should re-implement
- * time comparisons independently.
+ * Every controller that needs to know "what phase is this poll in right
+ * now?" must use getPollPhase() from this file. No controller should
+ * re-implement time comparisons independently.
  *
- * ⚠️  SHARED UTILITY — changes to WINDOWS or getPollPhase behavior affect
- *     both Person 1 (voting flow) and Person 2 (special cases / toggle).
- *     Any modification to this file must be reviewed by both before merging.
+ * A poll row is keyed by the SEHRI DATE it collects votes for (`polls.date`,
+ * "YYYY-MM-DD" in IST). Its day runs like this, all times IST:
  *
- * Daily schedule (all times IST, Asia/Kolkata):
- * ┌─────────────────────────────────────────────────────────────┐
- * │  22:00 (10 PM)  →  Poll opens. Voting begins.              │
- * │  09:50 (9:50AM) →  Reminder notification sent (cron only)  │
- * │  10:00 (10 AM)  →  Voting closes. Kitchen prepares food.   │
- * │  10:00 – 17:00  →  Special case window. Users can opt-in   │
- * │                    or opt-out if their plans changed.       │
- * │  17:00 – 18:00  →  Allotment window. Super admin reviews   │
- * │                    and approves/rejects special cases.      │
- * │  18:00 – 22:00  →  Status window. Final list visible to    │
- * │                    all. No changes allowed.                 │
- * │  22:00          →  Next day's poll opens. Cycle repeats.   │
- * └─────────────────────────────────────────────────────────────┘
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │  date−1 22:00 → date 10:00   VOTING        members vote yes / no │
+ * │  date   10:00 → 17:00        SPECIAL_CASE  opt in / opt out      │
+ * │  date   17:00 → 18:00        ALLOTMENT     super admin decides   │
+ * │  date   18:00 onwards        STATUS        final list, read only │
+ * └──────────────────────────────────────────────────────────────────┘
  *
- * Manual override (is_active flag):
- *   `is_active` controls the voting phase only. The rest of the day
- *   (special cases, allotment, status) always runs on the automatic clock.
+ * WHY THE PHASE IS A FUNCTION OF THE POLL'S DATE, NOT JUST THE CLOCK
+ * The previous version looked only at the current IST hour. At 22:00 that
+ * put TODAY's poll — whose kitchen run was already cooked and delivered —
+ * straight back into VOTING, because "22:00–09:59 is the voting window" is
+ * true of every day. Anchoring each window to the poll's own date makes
+ * a poll's life one-way: it opens once, closes once, and ends in STATUS.
  *
- *   Concretely:
- *   • Super admin closes voting early (sets is_active=false at e.g. 23:00):
- *     → phase returns CLOSED during the remaining voting window
- *     → at 10:00 AM the clock takes over and phase becomes SPECIAL_CASE
- *     → special cases, allotment, and status still happen on schedule
+ * THE MANUAL OVERRIDE (`is_active`) IS THREE-STATE
+ *   null  → automatic: the table above, nothing else.
+ *   true  → forced OPEN: voting stays open past 10:00 (an extension).
+ *   false → forced CLOSED: voting shut early, before 10:00.
  *
- *   • Super admin extends voting (sets is_active=true at e.g. 11:00 AM):
- *     → phase returns VOTING even though the clock says special_case
- *     → special case / allotment windows are effectively delayed until
- *       the super admin closes voting again or the next natural phase begins
+ * It used to be two-state, and poll creation set `true` whenever it ran in
+ * the voting window. Since `true` outside the window means "extended", every
+ * poll created at night stayed open all the next day: special cases and
+ * allotment never started unless a super admin remembered to close voting
+ * by hand, and the dashboard reported a manual extension nobody had made.
+ * Creation now writes null. See setVotingOpen() for how the toggle keeps the
+ * override from outliving the decision that set it.
  *
- *   `deadline_time` is a timestamp set to the moment the super admin toggled
- *   the poll. It is stored for audit/display purposes only — it is NOT read
- *   back by getPollPhase(). Phase logic uses is_active + the IST clock.
- *   If you ever need to use deadline_time for phase computation, discuss with
- *   both Person 1 and Person 2 first.
+ * `deadline_time` records when the override was last changed. It is audit
+ * data only and is never read back here.
  */
+
+const { istInstant, addDays } = require('./istTime');
 
 // ---------------------------------------------------------------------------
 // Phase constants — import these in controllers, never use raw strings.
 // ---------------------------------------------------------------------------
 const PHASES = Object.freeze({
-  VOTING: 'voting',             // 22:00 – 10:00  Users vote yes/no
-  SPECIAL_CASE: 'special_case', // 10:00 – 17:00  Users raise special cases
-  ALLOTMENT: 'allotment',       // 17:00 – 18:00  Super admin reviews special cases
-  STATUS: 'status',             // 18:00 – 22:00  Read-only results visible
-  CLOSED: 'closed',             // Poll does not exist or voting force-closed
+  VOTING: 'voting',             // date−1 22:00 – date 10:00
+  SPECIAL_CASE: 'special_case', // 10:00 – 17:00
+  ALLOTMENT: 'allotment',       // 17:00 – 18:00
+  STATUS: 'status',             // 18:00 onwards
+  CLOSED: 'closed',             // no poll, not open yet, or voting force-closed
 });
 
 // ---------------------------------------------------------------------------
@@ -63,94 +59,81 @@ const PHASES = Object.freeze({
 // Change here only; never put these numbers directly in controllers.
 // ---------------------------------------------------------------------------
 const WINDOWS = Object.freeze({
-  VOTING_OPEN_HOUR: 22,        // 10:00 PM — voting begins
-  VOTING_CLOSE_HOUR: 10,       // 10:00 AM — voting ends
-  SPECIAL_CASE_CLOSE_HOUR: 17, //  5:00 PM — special case window closes
-  ALLOTMENT_CLOSE_HOUR: 18,    //  6:00 PM — allotment window closes
-  // STATUS:  18:00 → 22:00 (derived, no explicit constant needed)
+  VOTING_OPEN_HOUR: 22,        // 10:00 PM the evening BEFORE the poll's date
+  VOTING_CLOSE_HOUR: 10,       // 10:00 AM on the poll's date
+  SPECIAL_CASE_CLOSE_HOUR: 17, //  5:00 PM
+  ALLOTMENT_CLOSE_HOUR: 18,    //  6:00 PM
 });
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the current hour (0–23) in IST (Asia/Kolkata).
- *
- * Implementation note: we use Intl.DateTimeFormat instead of toLocaleString
- * because the 'hour12: false' option in toLocaleString returns "24" at
- * midnight in some Node/V8 versions rather than "0", which would silently
- * break the voting-window check. Intl.DateTimeFormat with hour12:false
- * consistently returns 0–23 across all supported Node versions (≥12).
- */
-const getISTHour = () => {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Kolkata',
-    hour: 'numeric',
-    hour12: false,
-  });
-  // formatter.format() returns e.g. "22", "09", "00" — always numeric string.
-  const hourStr = formatter.format(new Date());
-  const hour = parseInt(hourStr, 10);
-  // Defensive guard: if parsing fails for any reason, throw clearly rather
-  // than returning NaN which would silently pass every comparison.
-  if (Number.isNaN(hour)) {
-    throw new Error(`pollPhase: getISTHour() could not parse IST hour from "${hourStr}"`);
-  }
-  return hour;
-};
-
-/**
- * Returns the current UTC Date for use as a timestamp value (e.g. storing
- * special_case_at, deadline_time). MySQL stores timestamps as UTC; Sequelize
- * and MySQL handle the IST ↔ UTC conversion transparently on read/write.
- *
- * Do NOT add an IST offset manually here — that would double-convert.
- * Use this purely to get a consistent "now" reference in controllers instead
- * of calling new Date() directly in multiple places.
- */
+/** Returns the current UTC Date — one "now" for controllers to share. */
 const getNow = () => new Date();
 
-// ---------------------------------------------------------------------------
-// Core export
-// ---------------------------------------------------------------------------
+/** Normalise the stored override into true | false | null. */
+const overrideOf = (poll) => {
+  const v = poll?.is_active;
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0) return false;
+  return null;
+};
+
+/** The instants that bound a poll's phases. */
+const windowsFor = (dateStr) => ({
+  opensAt:        istInstant(addDays(dateStr, -1), WINDOWS.VOTING_OPEN_HOUR),
+  closesAt:       istInstant(dateStr, WINDOWS.VOTING_CLOSE_HOUR),
+  specialEndsAt:  istInstant(dateStr, WINDOWS.SPECIAL_CASE_CLOSE_HOUR),
+  allotmentEndsAt: istInstant(dateStr, WINDOWS.ALLOTMENT_CLOSE_HOUR),
+});
 
 /**
  * Determines the current phase of a poll.
  *
- * @param {object|null} poll — Sequelize Poll instance or plain object with
- *                             { is_active: boolean } fields, or null if no
- *                             poll record exists for today.
+ * @param {object|null} poll — Poll instance or plain { date, is_active }.
+ * @param {Date} [now]       — injectable for tests.
  * @returns {string}         — One of the PHASES constants.
- *
- * Decision tree:
- *  1. No poll record                                  → CLOSED
- *  2. is_active=false AND inside voting window        → CLOSED
- *     (super admin force-closed voting)
- *  3. is_active=true  AND outside voting window       → VOTING
- *     (super admin extended voting past 10 AM)
- *  4. Normal path: derive phase from IST clock alone.
  */
-const getPollPhase = (poll) => {
-  if (!poll) return PHASES.CLOSED;
+const getPollPhase = (poll, now = getNow()) => {
+  if (!poll || !poll.date) return PHASES.CLOSED;
 
-  const hour = getISTHour();
+  const override = overrideOf(poll);
+  const w = windowsFor(String(poll.date).slice(0, 10));
+  const t = now.getTime();
 
-  // Voting window spans midnight: 22:00–23:59 and 00:00–09:59.
-  const inVotingWindow =
-    hour >= WINDOWS.VOTING_OPEN_HOUR || hour < WINDOWS.VOTING_CLOSE_HOUR;
+  if (t < w.opensAt.getTime()) {
+    // Not open yet. A super admin may still open it early on purpose.
+    return override === true ? PHASES.VOTING : PHASES.CLOSED;
+  }
+  if (t < w.closesAt.getTime()) {
+    return override === false ? PHASES.CLOSED : PHASES.VOTING;
+  }
 
-  // Override: super admin force-closed voting while inside the window.
-  if (!poll.is_active && inVotingWindow) return PHASES.CLOSED;
-
-  // Override: super admin extended voting past the normal close time.
-  if (poll.is_active && !inVotingWindow) return PHASES.VOTING;
-
-  // Normal automatic schedule.
-  if (inVotingWindow)                               return PHASES.VOTING;
-  if (hour < WINDOWS.SPECIAL_CASE_CLOSE_HOUR)      return PHASES.SPECIAL_CASE;
-  if (hour < WINDOWS.ALLOTMENT_CLOSE_HOUR)          return PHASES.ALLOTMENT;
+  // Past the scheduled close. An explicit extension keeps voting going and
+  // holds the later phases back until it is lifted.
+  if (override === true) return PHASES.VOTING;
+  if (t < w.specialEndsAt.getTime()) return PHASES.SPECIAL_CASE;
+  if (t < w.allotmentEndsAt.getTime()) return PHASES.ALLOTMENT;
   return PHASES.STATUS;
+};
+
+/** Would voting be open right now on the automatic schedule alone? */
+const isScheduledVoting = (poll, now = getNow()) =>
+  getPollPhase(poll ? { ...(poll.get ? poll.get({ plain: true }) : poll), is_active: null } : null, now)
+    === PHASES.VOTING;
+
+/**
+ * The override value that makes voting open (or closed) right now, without
+ * leaving a standing override behind when the schedule already agrees.
+ *
+ * "Close" inside the window writes false — an early close. "Open" inside
+ * the window writes null, because the schedule already has it open; writing
+ * true there would silently turn into an extension at 10:00, which is the
+ * exact bug the three-state model exists to prevent. Symmetrically, "open"
+ * after the window writes true (an extension) and "close" writes null.
+ *
+ * @returns {true|false|null}
+ */
+const overrideForDesiredState = (poll, wantOpen, now = getNow()) => {
+  const scheduledOpen = isScheduledVoting(poll, now);
+  return wantOpen === scheduledOpen ? null : Boolean(wantOpen);
 };
 
 // ---------------------------------------------------------------------------
@@ -158,13 +141,13 @@ const getPollPhase = (poll) => {
 // ---------------------------------------------------------------------------
 
 /** True when users may submit yes/no votes. */
-const isVotingOpen = (poll) => getPollPhase(poll) === PHASES.VOTING;
+const isVotingOpen = (poll, now) => getPollPhase(poll, now) === PHASES.VOTING;
 
 /** True when users may raise or undo special cases. */
-const isSpecialCaseWindowOpen = (poll) => getPollPhase(poll) === PHASES.SPECIAL_CASE;
+const isSpecialCaseWindowOpen = (poll, now) => getPollPhase(poll, now) === PHASES.SPECIAL_CASE;
 
 /** True when the super admin may approve/reject special cases. */
-const isAllotmentWindowOpen = (poll) => getPollPhase(poll) === PHASES.ALLOTMENT;
+const isAllotmentWindowOpen = (poll, now) => getPollPhase(poll, now) === PHASES.ALLOTMENT;
 
 module.exports = {
   PHASES,
@@ -173,5 +156,9 @@ module.exports = {
   isVotingOpen,
   isSpecialCaseWindowOpen,
   isAllotmentWindowOpen,
+  isScheduledVoting,
+  overrideForDesiredState,
+  overrideOf,
+  windowsFor,
   getNow,
 };

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,8 +17,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { locationsAdminApi } from '../../api/locations';
 import { locationsApi } from '../../api/auth';
 import {
-  Button, Card, Chip, EmptyState, ErrorState, Header, Input, LoadingState,
-  KeyboardAvoidingView
+  Button,
+  Chip,
+  EmptyState,
+  ErrorState,
+  Header,
+  Input,
+  LoadingState,
+  KeyboardAvoidingView,
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 
@@ -40,11 +46,6 @@ import MapView, { PROVIDER_GOOGLE, Marker } from 'react-native-maps';
 
 // Bangalore center — pin defaults here if the PG doesn't have coords yet.
 const BANGALORE_CENTER = { latitude: 12.9716, longitude: 77.5946 };
-const DEFAULT_REGION = {
-  ...BANGALORE_CENTER,
-  latitudeDelta:  0.08,
-  longitudeDelta: 0.08,
-};
 
 const FILTERS = [
   { key: 'unpinned', label: 'Needs pin' },
@@ -74,7 +75,9 @@ export default function LocationsCoordScreen() {
   const [zonesLoading, setZonesLoading] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+
+    else setLoading(true);
     setError(null);
     try {
       const res = await locationsAdminApi.listAddresses();
@@ -517,13 +520,20 @@ function PGFormSheet({ visible, mode, initial, zones, zonesLoading, onClose, onS
   const [zoneId, setZoneId] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  // Reset fields whenever the sheet opens, seeding from `initial` in edit mode.
-  useEffect(() => {
-    if (!visible) return;
-    setName(isEdit ? (initial?.name || '') : '');
-    setZoneId(isEdit ? (initial?.parent_id || null) : null);
-    setSaving(false);
-  }, [visible, isEdit, initial?.id, initial?.name, initial?.parent_id]);
+  // Reset fields whenever the sheet opens, seeding from `initial` in edit
+  // mode. Done while rendering (React's "adjust state when a prop changes"
+  // pattern) rather than in an effect, which would render the stale form
+  // once before correcting it.
+  const openKey = visible ? `${isEdit ? initial?.id : 'new'}` : null;
+  const [seededFor, setSeededFor] = useState(null);
+  if (openKey !== seededFor) {
+    setSeededFor(openKey);
+    if (openKey) {
+      setName(isEdit ? (initial?.name || '') : '');
+      setZoneId(isEdit ? (initial?.parent_id || null) : null);
+      setSaving(false);
+    }
+  }
 
   const trimmed = name.trim();
   const canSubmit =

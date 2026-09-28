@@ -171,48 +171,60 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
   }, [loadHistory, loadBlocked, loadBanState]));
 
   // --- Socket subscription -----------------------------------------------
+  // Handlers live in the effect's own scope so the cleanup can remove
+  // exactly them. (They used to be returned from inside the async block,
+  // where React never saw the cleanup — every visit to a room stacked two
+  // more listeners on the shared socket.)
   useEffect(() => {
     let alive = true;
     let socketRef = null;
+
+    const onNew = (msg) => {
+      if (!alive || !msg || msg.group_id !== groupId) return;
+      // A room broadcast reaches everyone in it, including people who
+      // blocked the sender. Drop it here; history is filtered server-side.
+      const senderKey = `${msg.sender?.role}:${msg.sender?.id}`;
+      if (blockedRef.current.has(senderKey)) return;
+      // Dedupe — the sender already appended optimistically.
+      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+      // Nudge scroll if the user is near the bottom.
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+    };
+    const onDeleted = (payload) => {
+      if (!alive || !payload?.message_id) return;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === payload.message_id ? { ...m, is_deleted: true, content: null } : m))
+      );
+    };
+    // Rooms are per connection on the server: after any reconnect (network
+    // change, app resumed) the room has to be joined again, and anything
+    // sent while disconnected is fetched from history.
+    const onConnect = () => {
+      if (!alive || !socketRef) return;
+      socketRef.emit('join_group', { group_id: groupId });
+      loadHistory();
+    };
 
     (async () => {
       const s = await connectSocket();
       if (!alive || !s) return;
       socketRef = s;
       s.emit('join_group', { group_id: groupId });
-
-      const onNew = (msg) => {
-        if (!alive || !msg || msg.group_id !== groupId) return;
-        // A room broadcast reaches everyone in it, including people who
-        // blocked the sender. Drop it here; history is filtered server-side.
-        const senderKey = `${msg.sender?.role}:${msg.sender?.id}`;
-        if (blockedRef.current.has(senderKey)) return;
-        // Dedupe — the sender already appended optimistically.
-        setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-        // Nudge scroll if the user is near the bottom.
-        requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
-      };
-      const onDeleted = (payload) => {
-        if (!alive || !payload?.message_id) return;
-        setMessages((prev) =>
-          prev.map((m) => (m.id === payload.message_id ? { ...m, is_deleted: true, content: null } : m))
-        );
-      };
       s.on('new_message', onNew);
       s.on('message_deleted', onDeleted);
-
-      return () => {
-        s.off('new_message', onNew);
-        s.off('message_deleted', onDeleted);
-      };
+      s.io.on('reconnect', onConnect);
     })();
 
     return () => {
       alive = false;
       const s = socketRef || getSocket();
-      if (s?.connected) s.emit('leave_group', { group_id: groupId });
+      if (!s) return;
+      s.off('new_message', onNew);
+      s.off('message_deleted', onDeleted);
+      s.io.off('reconnect', onConnect);
+      if (s.connected) s.emit('leave_group', { group_id: groupId });
     };
-  }, [groupId]);
+  }, [groupId, loadHistory]);
 
   useEffect(() => { blockedRef.current = blockedKeys; }, [blockedKeys]);
 
@@ -406,6 +418,14 @@ function ChatRoomAuthed({ groupId, groupName, onBack }) {
               ? 'Deleted message'
               : `${item.sender?.name || 'Unknown'}: ${item.content}`
           }
+          // Report / block / delete live behind a long press. Screen-reader
+          // users get the same menu as a named action, so reporting abuse is
+          // not a sighted-only feature.
+          accessibilityHint={item.is_deleted ? undefined : 'Double tap and hold for options: report, block or delete'}
+          accessibilityActions={item.is_deleted ? undefined : [{ name: 'longpress', label: 'Message options' }]}
+          onAccessibilityAction={(e) => {
+            if (e.nativeEvent.actionName === 'longpress') handleLongPress(item);
+          }}
         >
           {showSenderName && (
             <Text style={styles.senderName} numberOfLines={1}>{item.sender?.name}</Text>

@@ -68,7 +68,8 @@ export default function SuperAdminSpecialCasesScreen() {
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await pollsApi.getSpecialCases();
@@ -83,7 +84,7 @@ export default function SuperAdminSpecialCasesScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const cases = data?.cases || [];
+  const cases = useMemo(() => data?.cases || [], [data]);
   const poll  = data?.poll  || null;
   const phase = poll?.phase || 'closed';
 

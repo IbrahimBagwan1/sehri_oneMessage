@@ -162,13 +162,18 @@ const reconcileGroup = async (group, zoneIndex) => {
   // a ban could be laundered: leave the zone, let the reconciler delete the
   // row, come back, and the reconciler inserts a fresh unbanned one. The
   // row is cheap and it is the only place the ban is recorded.
-  const staleIds = existing
-    .filter((m) => m.source === 'auto'
-      && !m.is_banned
-      && !wanted.has(key(m.user_type, m.user_id)))
-    .map((m) => m.id);
+  const stale = existing.filter((m) => m.source === 'auto'
+    && !m.is_banned
+    && !wanted.has(key(m.user_type, m.user_id)));
+  const staleIds = stale.map((m) => m.id);
   if (staleIds.length) {
     await ChatGroupMember.destroy({ where: { id: { [Op.in]: staleIds } } });
+    // Out of the live room too, so someone who left the zone (or lost the
+    // role) stops receiving its messages now rather than at their next
+    // reconnect. Required lazily: socketService loads models at runtime.
+    require('./socketService')
+      .evictFromGroup(group.id, stale.map((m) => ({ user_id: m.user_id, user_type: m.user_type })))
+      .catch(() => { /* socket layer not running (scripts, tests) */ });
   }
 
   return { added: toInsert.length, removed: staleIds.length, promoted };

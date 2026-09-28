@@ -1,6 +1,8 @@
 'use strict';
 
 const express = require('express');
+const limits = require('../middleware/rateLimits');
+
 const router = express.Router();
 const { verifyToken, requireRole, requireUserAccess } = require('../middleware/auth');
 const {
@@ -22,7 +24,7 @@ const {
 
 // POST /api/feedback — submit feedback
 // Body: { category, message }
-router.post('/', verifyToken, requireUserAccess, submitFeedback);
+router.post('/', verifyToken, requireUserAccess, limits.feedback, submitFeedback);
 
 // GET /api/feedback/my — calling user's own feedback history
 router.get('/my', verifyToken, requireUserAccess, getMyFeedback);

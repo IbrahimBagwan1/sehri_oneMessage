@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { colors, radius, space, type } from '../../theme';
+import { colors, space, type } from '../../theme';
 import Button from './Button';
 import RubStar from './RubStar';
 

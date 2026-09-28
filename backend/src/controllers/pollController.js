@@ -11,29 +11,32 @@ const { describeMember } = require('../utils/memberDisplay');
 const {
   getPollPhase,
   isVotingOpen,
+  overrideOf,
   PHASES,
 } = require('../utils/pollPhase');
+const pollCalendar = require('../services/pollCalendar');
 
 const { Poll, PollResponse, User } = db;
 
-// ---------------------------------------------------------------------------
-// Shared helper — fetch today's poll record.
-// "Today" means the IST calendar date. We query by the `date` column which
-// stores a DATEONLY value representing the Sehri date being voted for.
-// The poll for tonight's Sehri opens at 10 PM the previous calendar night,
-// so `date` is always tomorrow's date from the perspective of someone voting
-// after 10 PM. The cron job that creates polls must set `date` to the Sehri
-// date (tomorrow), not the creation date (today). This controller does not
-// create polls — it only reads the one the cron produced.
-// ---------------------------------------------------------------------------
-const getTodaysPoll = async () => {
-  // Get today's date string in IST (YYYY-MM-DD).
-  const istDateStr = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'Asia/Kolkata',
-  }); // en-CA locale gives YYYY-MM-DD format natively
+/**
+ * The poll as clients see it. `is_active` is the EFFECTIVE state — is
+ * voting open right now — which is what every screen actually wants to
+ * know; the stored three-state override is reported separately so the
+ * super admin can see whether a manual decision is in force.
+ */
+const shapePoll = (poll, phase = getPollPhase(poll)) => ({
+  id: poll.id,
+  date: poll.date,
+  question: poll.question,
+  is_active: phase === PHASES.VOTING,
+  override: overrideOf(poll) === true ? 'forced_open' : overrideOf(poll) === false ? 'forced_closed' : null,
+});
 
-  return Poll.findOne({ where: { date: istDateStr } });
-};
+// ---------------------------------------------------------------------------
+// Shared helper — the poll members are currently looking at. From 22:00 IST
+// that is tomorrow's poll once it has been opened; see services/pollCalendar.
+// ---------------------------------------------------------------------------
+const getTodaysPoll = () => pollCalendar.getCurrentPoll();
 
 // ---------------------------------------------------------------------------
 // GET /api/polls/active
@@ -87,12 +90,7 @@ const getActivePoll = async (req, res, next) => {
       statusCode: 200,
       message: 'Active poll fetched',
       data: {
-        poll: {
-          id: poll.id,
-          date: poll.date,
-          question: poll.question,
-          is_active: poll.is_active,
-        },
+        poll: shapePoll(poll, phase),
         phase,
         my_response: myResponse,
       },
@@ -174,13 +172,23 @@ const submitVote = async (req, res, next) => {
       });
     }
 
-    // 5. Create the response
-    const pollResponse = await PollResponse.create({
-      poll_id: pollId,
-      user_id: req.actingUserId,
-      response: vote,
-      zone: zoneName,
-    });
+    // 5. Create the response. The unique (poll_id, user_id) index is the
+    // real guard: two taps racing past the check above both reach here, and
+    // the loser gets the same 409 as a second vote rather than a 500.
+    let pollResponse;
+    try {
+      pollResponse = await PollResponse.create({
+        poll_id: pollId,
+        user_id: req.actingUserId,
+        response: vote,
+        zone: zoneName,
+      });
+    } catch (err) {
+      if (err.name === 'SequelizeUniqueConstraintError') {
+        return error(res, { statusCode: 409, message: 'You have already voted on this poll' });
+      }
+      throw err;
+    }
 
     return success(res, {
       statusCode: 201,
@@ -342,7 +350,7 @@ const getActiveStats = async (req, res, next) => {
       statusCode: 200,
       message: 'Poll stats fetched',
       data: {
-        poll: { id: poll.id, date: poll.date },
+        poll: shapePoll(poll),
         phase: getPollPhase(poll),
         by_zone: stats,
         grand_total: grandTotal,
@@ -384,7 +392,17 @@ const getZoneVoters = async (req, res, next) => {
           message: 'Could not resolve your admin zone',
         });
       }
-      const adminZoneName = adminZoneLocation.name.toLowerCase().replace(/\s+/g, '_');
+      // The zone's stable key, exactly as votes store it. Slugifying the
+      // display name here (as this used to) meant an admin of "Girls
+      // Accommodation" asked for `girls_accommodation`, which never matched
+      // the stored key, and saw an empty list or a 403.
+      const adminZoneName = adminZoneLocation.zone_key;
+      if (!adminZoneName) {
+        return error(res, {
+          statusCode: 422,
+          message: `Your zone "${adminZoneLocation.name}" has not been set up for voting yet.`,
+        });
+      }
 
       // If the admin tried to pass a different zone, reject it.
       if (targetZone && targetZone !== adminZoneName) {
@@ -516,57 +534,43 @@ const getZoneVoters = async (req, res, next) => {
 // ---------------------------------------------------------------------------
 const createTodaysPoll = async (req, res, next) => {
   try {
-    const istDateStr = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'Asia/Kolkata',
-    });
+    // The poll a super admin opens now: today's before 22:00 IST,
+    // tomorrow's from 22:00 — when tomorrow's voting window opens. Before
+    // this, creating at 22:00 hit today's existing poll (409), so voting
+    // could not actually start until after midnight.
+    const pollDate = pollCalendar.creationDateFor();
 
-    // Idempotency guard — one poll row per calendar day (enforced by the
-    // unique index on polls.date too, but we want a friendly 409 not a raw
-    // UniqueConstraintError from Sequelize).
-    const existing = await Poll.findOne({ where: { date: istDateStr } });
+    const existing = await Poll.findOne({ where: { date: pollDate } });
     if (existing) {
       return error(res, {
         statusCode: 409,
-        message: "Today's poll already exists.",
-        // eslint-disable-next-line no-unused-vars
-        errors: undefined,
+        message: `The poll for ${pollDate} already exists.`,
+        code: 'POLL_EXISTS',
       });
     }
 
-    // Default is_active from the current IST hour: on during the voting
-    // window, off otherwise. Uses the shared pollPhase constants so the
-    // schedule stays defined in exactly one place.
-    const { WINDOWS } = require('../utils/pollPhase');
-    const istHourStr = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'Asia/Kolkata',
-      hour: 'numeric',
-      hour12: false,
-    }).format(new Date());
-    const istHour = parseInt(istHourStr, 10) % 24;
-    const inVotingWindow =
-      istHour >= WINDOWS.VOTING_OPEN_HOUR || istHour < WINDOWS.VOTING_CLOSE_HOUR;
+    // is_active stays NULL: the schedule decides when voting opens and
+    // closes. Writing TRUE here (as before) read as a manual extension, so
+    // voting never closed at 10:00 on its own. See utils/pollPhase.js.
+    let poll;
+    try {
+      poll = await Poll.create({ date: pollDate, is_active: null });
+    } catch (err) {
+      if (err.name === 'SequelizeUniqueConstraintError') {
+        return error(res, { statusCode: 409, message: `The poll for ${pollDate} already exists.`, code: 'POLL_EXISTS' });
+      }
+      throw err;
+    }
+    const phase = getPollPhase(poll);
+    pollCalendar.invalidateDeliveryPoll();
 
-    const poll = await Poll.create({
-      date: istDateStr,
-      is_active: inVotingWindow,
-    });
+    logger.info(`[polls] super_admin=${req.auth.id} created poll ${poll.id} for ${pollDate} (phase=${phase})`);
 
-    logger.info(
-      `[polls] super_admin=${req.auth.id} manually created poll ${poll.id} for ${istDateStr} (is_active=${poll.is_active})`
-    );
-
-    // Tell the community the poll is open.
-    //
-    // This is the ONLY code path that creates a poll — this project has no
-    // scheduler (see the note in services/prayerService.js), so the manual
-    // endpoint is it. If a cron is added later it must call this same
-    // handler or lift this block with it, rather than growing a second
-    // notify path that can drift out of step.
-    //
-    // Only fired when the poll actually opens for voting. Creating
-    // tomorrow's poll early in the afternoon should not buzz everyone's
-    // phone about a window that is not open yet.
-    if (poll.is_active) {
+    // Tell the community the poll is open — only if it actually is. This is
+    // the only code path that creates a poll (there is no scheduler), and
+    // the unique index on polls.date means it can succeed once per date, so
+    // the notification cannot double-fire even with several instances.
+    if (phase === PHASES.VOTING) {
       notificationService.notifyInBackground(
         () => notificationService.sendToAll({
           title: 'Sehri poll is open',
@@ -579,15 +583,10 @@ const createTodaysPoll = async (req, res, next) => {
 
     return success(res, {
       statusCode: 201,
-      message: 'Today\'s poll created',
+      message: `Poll for ${pollDate} created`,
       data: {
-        poll: {
-          id: poll.id,
-          date: poll.date,
-          question: poll.question,
-          is_active: poll.is_active,
-        },
-        phase: getPollPhase(poll),
+        poll: shapePoll(poll, phase),
+        phase,
       },
     });
   } catch (err) {
@@ -597,6 +596,7 @@ const createTodaysPoll = async (req, res, next) => {
 
 module.exports = {
   getTodaysPoll, // exported so Person 2 handlers can import it
+  shapePoll,
   getActivePoll,
   submitVote,
   getMyResponses,

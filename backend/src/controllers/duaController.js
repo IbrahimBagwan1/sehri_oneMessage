@@ -18,6 +18,7 @@
  */
 
 const db = require('../models');
+const { istDayOfYear } = require('../utils/istTime');
 const { success, error } = require('../utils/response');
 const logger = require('../utils/logger');
 const { syncDuas } = require('../services/islamicApiSync');
@@ -32,14 +33,7 @@ const { DuaCategory, Dua } = db;
 // and rotates at midnight). Using IST specifically so it matches the
 // user community's local sense of "today".
 // ---------------------------------------------------------------------------
-const getISTDayOfYear = () => {
-  const nowIST = new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
-  );
-  const startOfYear = new Date(Date.UTC(nowIST.getFullYear(), 0, 1));
-  const diffMs = Date.UTC(nowIST.getFullYear(), nowIST.getMonth(), nowIST.getDate()) - startOfYear.getTime();
-  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
-};
+const getISTDayOfYear = () => istDayOfYear();
 
 /**
  * Given today's IST day-of-year and the total dua count, return the

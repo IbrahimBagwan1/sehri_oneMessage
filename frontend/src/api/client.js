@@ -1,163 +1,197 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-// API base URL is read from an EXPO_PUBLIC_ env var so every developer
-// can point at their own ngrok tunnel (or LAN IP) without editing this
-// file. Expo inlines EXPO_PUBLIC_* variables at bundle time from
-// `frontend/.env` — see `frontend/.env.example` for the format.
+// ---------------------------------------------------------------------------
+// API base URL — from EXPO_PUBLIC_API_BASE_URL, inlined by Expo at bundle
+// time (frontend/.env locally; eas.json / EAS environment variables for
+// store builds). See frontend/.env.example.
 //
-// Fallback: an unreachable placeholder that makes the mistake loud. If
-// you see requests going here, you forgot to set EXPO_PUBLIC_API_BASE_URL.
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ||
-  'https://SET-EXPO_PUBLIC_API_BASE_URL-in-frontend-dotenv.invalid/api';
+// A release build must talk to the API over HTTPS: tokens and members'
+// personal data travel on every request. A build that was bundled without
+// the variable, or with a development http:// address, falls back to an
+// unreachable placeholder so the mistake is loud rather than a silent
+// cleartext connection.
+// ---------------------------------------------------------------------------
+const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || '';
+const isInsecureInRelease = !__DEV__ && !/^https:\/\//i.test(configuredBaseUrl);
+
+export const API_BASE_URL = !configuredBaseUrl || isInsecureInRelease
+  ? 'https://SET-EXPO_PUBLIC_API_BASE_URL-to-an-https-url.invalid/api'
+  : configuredBaseUrl;
+
+// Only needed when developing through an ngrok tunnel; never sent to a
+// production API.
+const devHeaders = /ngrok/i.test(API_BASE_URL) ? { 'ngrok-skip-browser-warning': 'true' } : {};
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': 'true',
-  },
-  timeout: 10000,
+  headers: { 'Content-Type': 'application/json', ...devHeaders },
+  timeout: 15000,
 });
 
 // ---------------------------------------------------------------------------
-// Request interceptor — attach a JWT to every outgoing request.
-//
-// A request may carry `config.authToken` to authenticate as somebody other
-// than the signed-in user. That exists for the rider session: a rider who is
-// also a member holds TWO tokens, and the rider app pushes GPS every 30
-// seconds while the member session stays live in the same process.
-//
-// The previous approach was to overwrite the shared 'access_token' key in
-// SecureStore, run the call, then put the old one back. That is a race with
-// a window open on every single GPS push: two overlapping rider calls, or
-// any member-side request landing inside the window, authenticated as the
-// wrong identity — and if the app was killed mid-window, the rider's token
-// stayed installed as the member's token permanently.
-//
-// Passing the token per request has no shared state, so there is no window.
+// Two sessions can be live in one app: the member session (whatever role the
+// member is using) and, for a member who is also a rider, the rider session.
+// Each has its own token pair in SecureStore. A request picks its session
+// with `authScope: 'rider'` (default: the member session); rider requests
+// also pass `authToken` explicitly so a rider call can never go out with the
+// member's token.
 // ---------------------------------------------------------------------------
+const SCOPES = {
+  member: { access: 'access_token', refresh: 'refresh_token' },
+  rider:  { access: 'rider_access_token', refresh: 'rider_refresh_token' },
+};
+
 apiClient.interceptors.request.use(
   async (config) => {
-    const token = config.authToken || (await SecureStore.getItemAsync('access_token'));
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    const scope = SCOPES[config.authScope] || SCOPES.member;
+    const token = config.authToken || (await SecureStore.getItemAsync(scope.access));
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
   (error) => Promise.reject(error)
 );
 
 // ---------------------------------------------------------------------------
-// Response interceptor — silent token refresh.
-//
-// If any request comes back 401 (expired access token), we call
-// POST /api/auth/refresh-token once, replay the original request with
-// the new access token, and continue transparently. If refresh itself
-// fails, we clear the tokens and fire an event so the app can navigate
-// to the login screen.
-//
-// Concurrency: many requests may 401 at the same time. We use a
-// single-flight promise (`refreshInFlight`) so only ONE refresh call
-// happens; subsequent 401s await the same promise. This avoids a
-// stampede and the "refresh with a stale refresh token" race.
-//
-// Guards:
-//   • Don't try to refresh a request that's ALREADY /auth/refresh-token
-//     itself — that would loop forever.
-//   • Don't try to refresh if there's no refresh token stored.
-//   • Only retry each original request once (config.__isRetry flag).
+// Session-ended listeners — the auth store (member) and rider store (rider)
+// subscribe so they can sign the person out and return to the login screen.
 // ---------------------------------------------------------------------------
-let refreshInFlight = null;
-const onAuthFailureListeners = new Set();
+const listeners = { member: new Set(), rider: new Set() };
 
-/**
- * Subscribe to hard-logout events. Called when refresh fails (invalid
- * or expired refresh token). The auth store hooks this to run its
- * logout() flow and route back to /(auth)/login.
- * Returns an unsubscribe function.
- */
-export const onAuthFailure = (fn) => {
-  onAuthFailureListeners.add(fn);
-  return () => onAuthFailureListeners.delete(fn);
+export const onAuthFailure = (fn, scope = 'member') => {
+  listeners[scope].add(fn);
+  return () => listeners[scope].delete(fn);
 };
 
-const fireAuthFailure = () => {
-  for (const fn of onAuthFailureListeners) {
+const fireAuthFailure = (scope) => {
+  for (const fn of listeners[scope]) {
     try { fn(); } catch (_) { /* noop */ }
   }
 };
 
+const clearScope = async (scope) => {
+  try {
+    await SecureStore.deleteItemAsync(SCOPES[scope].access);
+    await SecureStore.deleteItemAsync(SCOPES[scope].refresh);
+  } catch (_) { /* noop */ }
+};
+
+/** Thrown when the server has definitively ended the session. */
+class SessionEndedError extends Error {}
+
+// One refresh in flight per scope: many requests expiring together share it.
+const inFlight = { member: null, rider: null };
+
+/**
+ * Exchange the stored refresh token for a new pair and store it.
+ *
+ * Signs the person out ONLY when the server says the session is over (401 /
+ * 403 from the refresh endpoint). A network error or timeout leaves the
+ * tokens alone and just fails this attempt — the previous version cleared
+ * the session on ANY refresh failure, so a moment of bad signal logged
+ * people out.
+ *
+ * REFRESH_SUPERSEDED means another context on this device (the rider's
+ * background location task, typically) rotated the token a moment ago. The
+ * new pair is already in SecureStore; use it.
+ *
+ * @returns {Promise<string>} the new access token
+ */
+export const refreshSession = (scopeName = 'member') => {
+  if (inFlight[scopeName]) return inFlight[scopeName];
+  const scope = SCOPES[scopeName];
+
+  inFlight[scopeName] = (async () => {
+    const sent = await SecureStore.getItemAsync(scope.refresh);
+    if (!sent) throw new SessionEndedError('no refresh token');
+    try {
+      const resp = await axios.post(
+        `${API_BASE_URL}/auth/refresh-token`,
+        { refreshToken: sent },
+        { timeout: 15000, headers: { 'Content-Type': 'application/json', ...devHeaders } }
+      );
+      const { accessToken, refreshToken } = resp.data?.data || {};
+      if (!accessToken || !refreshToken) throw new Error('Refresh response missing tokens');
+      await SecureStore.setItemAsync(scope.access, accessToken);
+      await SecureStore.setItemAsync(scope.refresh, refreshToken);
+      return accessToken;
+    } catch (err) {
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      if (status === 401 && code === 'REFRESH_SUPERSEDED') {
+        await new Promise((r) => setTimeout(r, 600));
+        const current = await SecureStore.getItemAsync(scope.refresh);
+        const access = await SecureStore.getItemAsync(scope.access);
+        if (current && current !== sent && access) return access;
+      }
+      if (status === 401 || status === 403) throw new SessionEndedError(code || 'session ended');
+      throw err; // transient: offline, timeout, 5xx — keep the session
+    }
+  })().finally(() => { inFlight[scopeName] = null; });
+
+  return inFlight[scopeName];
+};
+
+/** Ask the server to end the session this device holds. Best effort. */
+export const revokeSession = async (scopeName = 'member') => {
+  try {
+    const token = await SecureStore.getItemAsync(SCOPES[scopeName].refresh);
+    if (!token) return;
+    await axios.post(
+      `${API_BASE_URL}/auth/logout`,
+      { refreshToken: token },
+      { timeout: 8000, headers: { 'Content-Type': 'application/json', ...devHeaders } }
+    );
+  } catch (_) {
+    // Offline: the server-side session simply expires on its own.
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Response interceptor — silent refresh and replay on 401.
+// ---------------------------------------------------------------------------
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error?.config;
-    const status   = error?.response?.status;
+    const status = error?.response?.status;
 
-    // Not a 401, or the request has already been retried once, or we
-    // don't have a config to replay — bail out unchanged.
     if (
-      status !== 401 ||
-      !original ||
-      original.__isRetry ||
-      original.url?.includes('/auth/refresh-token') ||
-      original.url?.includes('/auth/login') ||
-      // A request that carried its own token is NOT the signed-in member's.
-      // Refreshing here would mint a new MEMBER token and replay the rider's
-      // request with it — authenticating as the wrong person. The rider
-      // session owns its own refresh; see store/riderSession.js.
-      original.authToken
+      status !== 401
+      || !original
+      || original.__isRetry
+      || original.url?.includes('/auth/refresh-token')
+      || original.url?.includes('/auth/login')
+      || original.url?.includes('/auth/logout')
+      || original.url?.includes('/tracking/rider-login')
     ) {
       return Promise.reject(error);
     }
 
-    const stored = await SecureStore.getItemAsync('refresh_token');
-    if (!stored) {
-      fireAuthFailure();
-      return Promise.reject(error);
-    }
+    // A request carrying an explicit token is refreshed only when it names
+    // its session; an unscoped explicit token is never refreshed as the
+    // member, which would replay it under the wrong identity.
+    if (original.authToken && original.authScope !== 'rider') return Promise.reject(error);
+    const scopeName = original.authScope === 'rider' ? 'rider' : 'member';
+    const scope = SCOPES[scopeName];
 
     try {
-      // Single-flight: coalesce concurrent 401s into one refresh call.
-      if (!refreshInFlight) {
-        refreshInFlight = (async () => {
-          const resp = await axios.post(
-            `${API_BASE_URL}/auth/refresh-token`,
-            { refreshToken: stored },
-            {
-              timeout: 10000,
-              headers: {
-                'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': 'true',
-              },
-            }
-          );
-          const { accessToken, refreshToken } = resp.data?.data || {};
-          if (!accessToken || !refreshToken) {
-            throw new Error('Refresh response missing tokens');
-          }
-          await SecureStore.setItemAsync('access_token',  accessToken);
-          await SecureStore.setItemAsync('refresh_token', refreshToken);
-          return accessToken;
-        })().finally(() => { refreshInFlight = null; });
-      }
-      const newAccess = await refreshInFlight;
+      // Someone else may already have refreshed while this request was in
+      // flight; if the stored token is newer than the one it was sent
+      // with, replay with that instead of refreshing again.
+      const sentWith = (original.headers?.Authorization || '').replace(/^Bearer /, '');
+      const stored = await SecureStore.getItemAsync(scope.access);
+      const token = stored && stored !== sentWith ? stored : await refreshSession(scopeName);
 
-      // Replay the original request with the new token.
       original.__isRetry = true;
-      original.headers   = { ...(original.headers || {}), Authorization: `Bearer ${newAccess}` };
+      original.authToken = scopeName === 'rider' ? token : original.authToken;
+      original.headers = { ...(original.headers || {}), Authorization: `Bearer ${token}` };
       return apiClient(original);
     } catch (refreshErr) {
-      // Refresh failed — clear stored tokens + notify the app to log
-      // the user out cleanly. We deliberately do NOT delete the guest
-      // flag or user_data here; useAuthStore.logout() handles the full
-      // cleanup so any UI subscribing to auth state resets in one go.
-      try {
-        await SecureStore.deleteItemAsync('access_token');
-        await SecureStore.deleteItemAsync('refresh_token');
-      } catch (_) { /* noop */ }
-      fireAuthFailure();
+      if (refreshErr instanceof SessionEndedError) {
+        await clearScope(scopeName);
+        fireAuthFailure(scopeName);
+      }
       return Promise.reject(error);
     }
   }

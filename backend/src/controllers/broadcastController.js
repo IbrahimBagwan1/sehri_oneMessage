@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const { success, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
+const locationIndex = require('../services/locationIndex');
 
 const { Broadcast, User, Location } = db;
 
@@ -15,51 +16,10 @@ const { Broadcast, User, Location } = db;
 // We walk the parent chain in one query (all locations, cheap table),
 // then BFS in memory. Returns a Set<string> of location ids.
 // ---------------------------------------------------------------------------
-const collectDescendantIds = async (rootId) => {
-  const rows = await Location.findAll({
-    attributes: ['id', 'parent_id'],
-    where: { is_active: true },
-    raw: true,
-  });
+const collectDescendantIds = async (rootId) =>
+  // Shared, cached tree walk — see services/locationIndex.js.
+  locationIndex.descendantIds(rootId);
 
-  const childrenOf = new Map();
-  for (const r of rows) {
-    if (!r.parent_id) continue;
-    if (!childrenOf.has(r.parent_id)) childrenOf.set(r.parent_id, []);
-    childrenOf.get(r.parent_id).push(r.id);
-  }
-
-  const ids = new Set([rootId]);
-  const queue = [rootId];
-  while (queue.length) {
-    const cur = queue.shift();
-    const kids = childrenOf.get(cur) || [];
-    for (const k of kids) {
-      if (!ids.has(k)) {
-        ids.add(k);
-        queue.push(k);
-      }
-    }
-  }
-  return ids;
-};
-
-// ---------------------------------------------------------------------------
-// POST /api/broadcasts
-// Access: admin (own zone only) or super_admin (anywhere)
-// Body: { title?, message, target_location_id? }
-//
-// SCOPING follows the rule the rest of the admin surface already uses — a
-// zone admin sees and acts on their own zone, a super admin sees everything
-// (users list, feedback, poll stats all work this way). So a zone admin's
-// broadcast is forced to their zone regardless of what they post, and any
-// attempt to target elsewhere is refused rather than silently narrowed:
-// being told "that is not your zone" is better than believing you reached
-// people you did not.
-//
-// Sends to every approved user in the audience and stores an audit row.
-// The Expo batch is awaited so delivered_count is honest.
-// ---------------------------------------------------------------------------
 const sendBroadcast = async (req, res, next) => {
   try {
     const { title, message, target_location_id } = req.body;

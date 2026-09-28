@@ -22,7 +22,7 @@ import {
   Header,
   LoadingState,
 } from '../../components/ui';
-import { colors, radius, space, type } from '../../theme';
+import { colors, space, type } from '../../theme';
 
 const CATEGORY = {
   suggestion:   { label: 'Suggestion',   tone: 'teal',    icon: 'bulb-outline'    },
@@ -53,7 +53,8 @@ export default function AdminFeedbackScreen() {
   const [error,      setError]      = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const params = filter === 'unread' ? { is_read: false } : {};

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { chatApi } from '../api/chat';
 import { adminApi } from '../api/admin';
@@ -83,9 +83,11 @@ function ChatCreateGroupInner({ router }) {
   const [selectedZones, setSelectedZones] = useState({});
 
   // --- Load pickers -------------------------------------------------------
+  // Fetches the pickers. Loading/error are reset by `retry` (a tap), not
+  // here: the first load runs from an effect, where a synchronous setState
+  // would force an extra render — and the initial state is already
+  // "loading, no error".
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     try {
       const [adminRes, userRes, zoneRes] = await Promise.all([
         chatApi.listAdminsForPicker(),
@@ -102,7 +104,8 @@ function ChatCreateGroupInner({ router }) {
       setLoading(false);
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const retry = () => { setLoading(true); setError(null); load(); };
 
   // --- Selection ---------------------------------------------------------
   const toggleAdmin = (a) => {
@@ -370,7 +373,7 @@ function ChatCreateGroupInner({ router }) {
             loading ? (
               <LoadingState message="Loading members…" />
             ) : error ? (
-              <ErrorState message={error} onRetry={load} />
+              <ErrorState message={error} onRetry={retry} />
             ) : (
               <EmptyState icon={currentEmpty.icon} title={currentEmpty.title} message={currentEmpty.msg} />
             )

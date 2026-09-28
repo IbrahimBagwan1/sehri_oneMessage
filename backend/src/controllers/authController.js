@@ -9,7 +9,11 @@ const {
   describePhoneConflict,
 } = require('../utils/phoneAccounts');
 const { success, error } = require('../utils/response');
-const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const authSessionService = require('../services/authSessionService');
+const loginThrottle = require('../services/loginThrottleService');
+const reviewDemo = require('../services/reviewDemoService');
+const chatGroupSync = require('../services/chatGroupSync');
+const logger = require('../utils/logger');
 const { User, Location, Admin, SuperAdmin, Rider } = db;
 
 // ---------------------------------------------------------------------------
@@ -34,34 +38,6 @@ const { User, Location, Admin, SuperAdmin, Rider } = db;
 const NO_ACCOUNT_CODE = 'NO_ACCOUNT_FOUND';
 const NO_ACCOUNT_MESSAGE =
   'No account found for this number. Create a new account to get started.';
-
-/**
- * Builds the JWT payload for a given role + account record.
- *
- * user_id is included in admin/super_admin tokens when the account has a
- * linked users row. This lets those roles hit user-scoped routes (voting,
- * poll history, etc.) without needing a separate login.
- */
-const buildTokenPayload = (role, account) => {
-  const payload = { id: account.id, role };
-
-  if (role === 'admin') {
-    payload.zone_location_id = account.zone_location_id;
-  }
-
-  if (role === 'rider') {
-    if (account.zone_location_id) payload.zone_location_id = account.zone_location_id;
-    if (account.user_id) payload.user_id = account.user_id;
-  }
-
-  // Carry the linked user identity for admin and super_admin so they can
-  // act as a regular user when the token is active for that role.
-  if ((role === 'admin' || role === 'super_admin') && account.user_id) {
-    payload.user_id = account.user_id;
-  }
-
-  return payload;
-};
 
 /**
  * Given a phone number, checks all three tables and returns every role
@@ -164,9 +140,20 @@ const registerUser = async (req, res, next) => {
       });
     }
 
-    const location = await Location.findByPk(location_id);
-    if (!location || !['zone', 'address'].includes(location.type)) {
-      return error(res, { statusCode: 400, message: 'Invalid location' });
+    // The App Review demo number always lands in the sandbox, approved, no
+    // matter which location the form sent — a reviewer testing sign-up must
+    // never end up in a real zone's chat or delivery run. See
+    // services/reviewDemoService.js.
+    const isDemo = reviewDemo.isDemoPhone(phone);
+    let targetLocationId = location_id;
+    if (isDemo) {
+      const { pg } = await reviewDemo.ensureSandbox();
+      targetLocationId = pg.id;
+    } else {
+      const location = await Location.findByPk(location_id);
+      if (!location || location.is_sandbox || !['zone', 'address'].includes(location.type)) {
+        return error(res, { statusCode: 400, message: 'Invalid location' });
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -178,11 +165,18 @@ const registerUser = async (req, res, next) => {
       gender,
       occupation,
       city,
-      location_id,
+      location_id: targetLocationId,
       address,
-      status: 'pending',
+      status: isDemo ? 'approved' : 'pending',
       is_phone_verified: true,
     });
+
+    if (isDemo) {
+      chatGroupSync
+        .zoneForLocation(targetLocationId)
+        .then((zoneId) => chatGroupSync.syncInBackground([zoneId], 'review demo registered'))
+        .catch(() => { /* boot reconcile is the backstop */ });
+    }
 
     return success(res, {
       statusCode: 201,
@@ -210,13 +204,23 @@ const registerUser = async (req, res, next) => {
 // ---------------------------------------------------------------------------
 const loginUser = async (req, res, next) => {
   try {
-    const { phone, password } = req.body;
+    const { phone, password } = req.body || {};
 
-    if (!phone || !password) {
+    if (typeof phone !== 'string' || typeof password !== 'string' || !phone || !password) {
       return error(res, {
         statusCode: 400,
         message: 'Phone and password are required',
       });
+    }
+
+    // A locked number is refused before any account lookup or password
+    // comparison — see services/loginThrottleService.js.
+    await loginThrottle.assertNotLocked(phone);
+
+    // The reviewer's account repairs itself on a sign-in with the documented
+    // password, so a previous reviewer deleting it cannot lock out the next.
+    if (reviewDemo.isDemoPhone(phone) && reviewDemo.isDemoPassword(password)) {
+      await reviewDemo.ensureDemoMember();
     }
 
     const accounts = await findAllRolesForPhone(phone);
@@ -224,9 +228,7 @@ const loginUser = async (req, res, next) => {
 
     // Authenticate under the highest privilege this number holds — but
     // only counting roles that are actually usable. Suspending someone's
-    // zone-admin role must not cost them their membership: previously the
-    // inactive admin row won the priority contest and the whole number was
-    // reported as deactivated, so a perfectly fine member could not sign in.
+    // zone-admin role must not cost them their membership.
     const byPrivilege = [
       [superAdminAccount, 'super_admin'],
       [adminAccount,      'admin'],
@@ -242,6 +244,22 @@ const loginUser = async (req, res, next) => {
     }
 
     const usable = byPrivilege.filter(([candidate]) => candidate.is_active !== false);
+    const [account, role] = usable[0] || byPrivilege[0];
+
+    // The password is checked BEFORE anything about the account's state is
+    // revealed. Previously "still pending approval" / "rejected" /
+    // "deactivated" came back to anyone who typed the number, password or
+    // not — a free lookup of any member's approval status.
+    const isPasswordValid = await bcrypt.compare(password, account.password);
+    if (!isPasswordValid) {
+      await loginThrottle.recordFailure(phone);
+      return error(res, {
+        statusCode: 401,
+        message: 'Invalid phone or password',
+        code: 'INVALID_CREDENTIALS',
+      });
+    }
+    await loginThrottle.recordSuccess(phone);
 
     // Every role this number holds is suspended. 'Deactivated' means
     // exactly this — a super admin turned the account off and can turn it
@@ -251,10 +269,9 @@ const loginUser = async (req, res, next) => {
       return error(res, {
         statusCode: 403,
         message: 'This account has been deactivated. Contact an admin to restore it.',
+        code: 'ACCOUNT_DEACTIVATED',
       });
     }
-
-    const [account, role] = usable[0];
 
     // User-role accounts must be approved before they can log in.
     // For admin/super_admin the active flag is the only gate.
@@ -265,20 +282,11 @@ const loginUser = async (req, res, next) => {
           account.status === 'pending'
             ? 'Your account is still pending approval'
             : 'Your account registration was rejected',
+        code: account.status === 'pending' ? 'ACCOUNT_PENDING' : 'ACCOUNT_REJECTED',
       });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, account.password);
-    if (!isPasswordValid) {
-      return error(res, {
-        statusCode: 401,
-        message: 'Invalid phone or password',
-      });
-    }
-
-    const tokenPayload = buildTokenPayload(role, account);
-    const accessToken = signAccessToken(tokenPayload);
-    const refreshToken = signRefreshToken(tokenPayload);
+    const { accessToken, refreshToken } = await authSessionService.issueSession(role, account);
 
     if ('last_login_at' in account.dataValues) {
       account.last_login_at = new Date();
@@ -389,9 +397,18 @@ const switchRole = async (req, res, next) => {
       });
     }
 
-    const tokenPayload = buildTokenPayload(requestedRole, targetAccount);
-    const accessToken = signAccessToken(tokenPayload);
-    const refreshToken = signRefreshToken(tokenPayload);
+    const { accessToken, refreshToken } = await authSessionService.issueSession(
+      requestedRole,
+      targetAccount
+    );
+
+    // Switching between member-side roles replaces the app's session, so the
+    // one being left is ended rather than left valid in the background. The
+    // rider session is the exception: the app keeps it ALONGSIDE the member
+    // session (see useAuthStore.switchRole), so neither is revoked.
+    if (requestedRole !== 'rider' && req.auth.role !== 'rider' && req.auth.sid) {
+      await authSessionService.revokeSession(req.auth.sid, 'role_switched');
+    }
 
     const availableRoles = deriveAvailableRoles(accounts);
 
@@ -453,30 +470,52 @@ const forgotPasswordReset = async (req, res, next) => {
       });
     }
 
+    // Look the number up BEFORE consuming the code, so a typo'd number does
+    // not burn the OTP on a path that cannot finish.
+    const [superAdmin, admin, user, rider] = await Promise.all([
+      SuperAdmin.scope('withPassword').findOne({ where: { phone } }),
+      Admin.scope('withPassword').findOne({ where: { phone } }),
+      User.scope('withPassword').findOne({ where: { phone } }),
+      Rider.scope('withPassword').findOne({ where: { phone } }),
+    ]);
+    const accounts = [superAdmin, admin, user, rider].filter(Boolean);
+
+    if (accounts.length === 0) {
+      return error(res, {
+        statusCode: 404,
+        message: 'No account found with this phone number',
+        code: NO_ACCOUNT_CODE,
+      });
+    }
+
     const isOtpValid = await otpService.verifyOtp(phone, 'forgot_password', otp);
     if (!isOtpValid) {
       return error(res, { statusCode: 400, message: 'Invalid or expired OTP' });
     }
 
-    // Find the account — same priority order as login.
-    const account =
-      (await SuperAdmin.scope('withPassword').findOne({ where: { phone } })) ||
-      (await Admin.scope('withPassword').findOne({ where: { phone } })) ||
-      (await User.scope('withPassword').findOne({ where: { phone } }));
+    // One number is one person, whichever roles they hold. Resetting only
+    // the highest-privilege row (as before) left the other roles on the old
+    // password — a member whose admin row was reset still could not sign
+    // in to the rider screen with the new one.
+    const hash = await bcrypt.hash(newPassword, 10);
+    await db.sequelize.transaction(async (transaction) => {
+      for (const account of accounts) {
+        account.password = hash;
+        await account.save({ transaction });
+      }
+    });
 
-    if (!account) {
-      return error(res, {
-        statusCode: 404,
-        message: 'No account found with this phone number',
-      });
-    }
-
-    account.password = await bcrypt.hash(newPassword, 10);
-    await account.save();
+    // A reset is what someone does when they think their password is known
+    // to someone else. Every device signed in with the old one is signed
+    // out, and a lockout from the guessing that prompted the reset is lifted.
+    const subjects = await authSessionService.subjectsForPhone(phone);
+    await authSessionService.revokeSubjects(subjects, 'password_reset');
+    await loginThrottle.recordSuccess(phone);
+    logger.info(`[auth] password reset for ${logger.maskPhone(phone)} (${accounts.length} account row(s))`);
 
     return success(res, {
       statusCode: 200,
-      message: 'Password reset successfully',
+      message: 'Password reset successfully. Sign in with your new password.',
     });
   } catch (err) {
     next(err);
@@ -487,57 +526,53 @@ const forgotPasswordReset = async (req, res, next) => {
 // POST /api/auth/refresh-token
 // Body: { refreshToken: string }
 //
-// Verifies the refresh token, issues a fresh access + refresh token pair.
-// Carries forward all fields in the original payload including user_id.
+// Rotates the session: the presented refresh token is retired and a new
+// pair issued, with claims re-read from the database. See
+// services/authSessionService.js for rotation, reuse detection, and why a
+// refresh can no longer revive a removed role or a deleted account.
 // ---------------------------------------------------------------------------
 const refreshToken = async (req, res, next) => {
   try {
-    const { refreshToken: token } = req.body;
+    const { refreshToken: token } = req.body || {};
 
-    if (!token) {
+    if (!token || typeof token !== 'string') {
       return error(res, {
         statusCode: 400,
         message: 'Refresh token is required',
       });
     }
 
-    let decoded;
-    try {
-      decoded = verifyRefreshToken(token);
-    } catch (err) {
-      return error(res, {
-        statusCode: 401,
-        message: 'Invalid or expired refresh token',
-      });
-    }
-
-    // Rebuild the payload, carrying forward every field that was in the original.
-    const payload = { id: decoded.id, role: decoded.role };
-
-    // Admin and rider tokens both carry zone_location_id — admins strictly,
-    // riders optionally (null = serves every zone). Carrying it forward is
-    // what lets Socket.IO's subscribe_tracking auto-scope survive refreshes.
-    if ((decoded.role === 'admin' || decoded.role === 'rider') && decoded.zone_location_id) {
-      payload.zone_location_id = decoded.zone_location_id;
-    }
-
-    // Preserve user_id so admin/super_admin/rider keep their user-side identity
-    // across silent token refreshes.
-    if (decoded.user_id) {
-      payload.user_id = decoded.user_id;
-    }
-
-    const newAccessToken = signAccessToken(payload);
-    const newRefreshToken = signRefreshToken(payload);
+    const { accessToken, refreshToken: newRefreshToken } = await authSessionService.rotateSession(token);
 
     return success(res, {
       statusCode: 200,
       message: 'Token refreshed successfully',
       data: {
-        accessToken: newAccessToken,
+        accessToken,
         refreshToken: newRefreshToken,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/logout
+// Body: { refreshToken: string }
+//
+// Ends the session this device holds. Authenticated by possession of the
+// refresh token alone, so signing out still works when the access token has
+// already expired. Always 200 — an unknown or expired token has no session
+// left to end, which is the outcome the caller asked for.
+// ---------------------------------------------------------------------------
+const logout = async (req, res, next) => {
+  try {
+    const { refreshToken: token } = req.body || {};
+    if (typeof token === 'string' && token) {
+      await authSessionService.revokeByRefreshToken(token, 'signed_out');
+    }
+    return success(res, { statusCode: 200, message: 'Signed out' });
   } catch (err) {
     next(err);
   }
@@ -549,4 +584,5 @@ module.exports = {
   switchRole,
   forgotPasswordReset,
   refreshToken,
+  logout,
 };

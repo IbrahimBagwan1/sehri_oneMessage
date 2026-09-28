@@ -65,6 +65,7 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['poll_id', 'location_id'] },
         { fields: ['poll_id'] },
         { fields: ['status'] },
+        { fields: ['poll_id', 'status'], name: 'idx_delivery_stops_poll_status' },
       ],
     }
   );

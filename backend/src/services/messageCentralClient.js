@@ -13,6 +13,30 @@ const COUNTRY_CODE = '91';
 // 6 digits everywhere, regardless of OTP_PROVIDER.
 const { OTP_LENGTH } = require('../utils/otp');
 
+// Without a timeout, a slow provider held the sign-up request (and a
+// database connection behind it) open indefinitely. Ten seconds is well
+// past a healthy response and well inside the app's own request timeout.
+const PROVIDER_TIMEOUT_MS = 10 * 1000;
+
+const callProvider = async (url, method) => {
+  try {
+    return await fetch(url.toString(), {
+      method,
+      headers: { authToken: process.env.MESSAGECENTRAL_AUTH_TOKEN },
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    throw new AppError(
+      timedOut
+        ? 'The SMS service is taking too long to respond. Please try again.'
+        : 'Could not reach the SMS service. Please try again.',
+      502,
+      'OTP_PROVIDER_UNAVAILABLE'
+    );
+  }
+};
+
 const sendOtp = async (phone) => {
   const url = new URL(`${BASE_URL}/verification/v3/send`);
   url.searchParams.set('customerId', process.env.MESSAGECENTRAL_CUSTOMER_ID);
@@ -21,12 +45,7 @@ const sendOtp = async (phone) => {
   url.searchParams.set('flowType', 'SMS');
   url.searchParams.set('otpLength', String(OTP_LENGTH));
 
-  const response = await fetch(url.toString(), {
-    method: 'POST',
-    headers: {
-      authToken: process.env.MESSAGECENTRAL_AUTH_TOKEN,
-    },
-  });
+  const response = await callProvider(url, 'POST');
 
   const rawText = await response.text();
 
@@ -50,16 +69,9 @@ const validateOtp = async (verificationId, code) => {
   url.searchParams.set('verificationId', verificationId);
   url.searchParams.set('code', code);
 
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    headers: {
-      authToken: process.env.MESSAGECENTRAL_AUTH_TOKEN,
-    },
-  });
+  const response = await callProvider(url, 'GET');
 
   const rawText = await response.text();
-
-
 
   let data;
   try {

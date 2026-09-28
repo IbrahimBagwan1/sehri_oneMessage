@@ -96,7 +96,7 @@ const readISTHour = () => {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'Asia/Kolkata',
       hour: '2-digit',
-      hour12: false,
+      hourCycle: 'h23', // 0–23, never "24" at midnight (the % 24 below is a second guard)
     }).formatToParts(new Date());
     const h = parts.find((p) => p.type === 'hour');
     return h ? parseInt(h.value, 10) % 24 : 0;
@@ -201,14 +201,17 @@ function TodayTab() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // Manual safety net — the daily cron that would normally create the
-  // poll doesn't exist yet (see backend/README on the cron gap), so a
-  // super admin needs a way to create it themselves. Idempotent on the
-  // backend; 409 collision surfaces as a friendly alert.
+  // There is no scheduler: a super admin opens each night's poll. From
+  // 10 pm IST the backend creates TOMORROW's poll (whose voting window is
+  // opening); before 10 pm, today's. Idempotent on the backend; a 409
+  // surfaces as a friendly alert.
+  const opensTomorrow = readISTHour() >= 22;
   const handleCreateToday = () => {
     Alert.alert(
-      "Create today's poll?",
-      "This creates the day's Sehri poll immediately. Skip only if the automatic schedule has already run — you'll get a warning if a poll already exists.",
+      opensTomorrow ? "Open tomorrow's poll?" : "Create today's poll?",
+      opensTomorrow
+        ? 'Voting for tomorrow’s Sehri opens now and closes at 10:00 AM. Members are notified that the poll is open.'
+        : 'This creates today’s Sehri poll now. If it is before 10:00 AM, voting opens immediately and members are notified.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -218,7 +221,7 @@ function TodayTab() {
             try {
               const res = await pollsApi.createTodayPoll();
               if (res.success) {
-                Alert.alert("Today's poll created", res.message || 'Ready for voting.');
+                Alert.alert('Poll created', res.message || 'Ready for voting.');
                 await load();
               }
             } catch (err) {
@@ -304,17 +307,16 @@ function TodayTab() {
       <ScrollView contentContainerStyle={styles.list}>
         <SectionHeader title="Today" ornament="star" />
         <Card>
-          <Text style={styles.blockTitle}>No poll for today</Text>
+          <Text style={styles.blockTitle}>No poll open</Text>
           <Text style={styles.blockBody}>
-            The daily poll is normally opened automatically at 10 pm. If that
-            didn't run, you can create it manually now — voting opens
-            immediately if you're inside the scheduled window (10 pm–10 am),
-            otherwise the poll is created in a paused state and you can flip
-            it on from here.
+            Each night’s poll is opened by a super admin. Voting runs from
+            10 pm to 10 am and then closes on its own; special cases,
+            allotment and the final list follow on schedule. From 10 pm this
+            opens tomorrow’s poll; before then, today’s.
           </Text>
           <View style={{ marginTop: space[3] }}>
             <Button
-              label={creating ? 'Creating…' : "Create today's poll"}
+              label={creating ? 'Creating…' : (opensTomorrow ? "Open tomorrow's poll" : "Create today's poll")}
               onPress={handleCreateToday}
               loading={creating}
               disabled={creating}
@@ -329,6 +331,28 @@ function TodayTab() {
 
   return (
     <ScrollView contentContainerStyle={styles.list}>
+      {/* From 10 pm, once today's poll has finished, tomorrow's can be opened
+          from here — otherwise this screen keeps showing today's final list
+          and there is no way to start the next night's voting. */}
+      {opensTomorrow && phase === 'status' && (
+        <Card tone="warm" style={{ marginBottom: space[3] }}>
+          <Text style={styles.blockTitle}>Tomorrow’s poll is not open yet</Text>
+          <Text style={styles.blockBody}>
+            Voting for tomorrow’s Sehri should open now. Members are notified when you open it.
+          </Text>
+          <View style={{ marginTop: space[3] }}>
+            <Button
+              label={creating ? 'Opening…' : "Open tomorrow's poll"}
+              onPress={handleCreateToday}
+              loading={creating}
+              disabled={creating}
+              icon="add-circle-outline"
+              fullWidth
+            />
+          </View>
+        </Card>
+      )}
+
       {/* Phase hero */}
       <Card padding={false}>
         <View style={styles.phaseHero}>
@@ -336,10 +360,10 @@ function TodayTab() {
             <Ionicons name={cfg.icon} size={22} color={toneFg(cfg.tone)} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.phaseEyebrow}>Today's poll · {formatDate(poll.date)}</Text>
+            <Text style={styles.phaseEyebrow}>Sehri poll · {formatDate(poll.date)}</Text>
             <Text style={styles.phaseTitle}>{cfg.label}</Text>
           </View>
-          <Chip label={poll.is_active ? 'Active' : 'Inactive'} tone={poll.is_active ? 'success' : 'neutral'} />
+          <Chip label={poll.is_active ? 'Voting open' : 'Voting closed'} tone={poll.is_active ? 'success' : 'neutral'} />
         </View>
 
         {/* Override banner — makes it unambiguous why phase doesn't match the clock */}

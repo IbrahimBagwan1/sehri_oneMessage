@@ -19,7 +19,7 @@ export default function RiderLayout() {
   const isAuthenticated = useRiderStore((s) => s.isAuthenticated);
   const syncDeliveryState = useRiderStore((s) => s.syncDeliveryState);
 
-  useEffect(() => { hydrate(); }, []);
+  useEffect(() => { hydrate(); }, [hydrate]);
 
   // Reconcile once the session is known. The OS owns the location task, so
   // it outlives the JS context: the app can be killed mid-round and
@@ -35,7 +35,7 @@ export default function RiderLayout() {
     const onLoginScreen = segments[segments.length - 1] === 'login';
     if (!isAuthenticated && !onLoginScreen) router.replace('/(rider)/login');
     if (isAuthenticated && onLoginScreen) router.replace('/(rider)/map');
-  }, [isHydrated, isAuthenticated, segments]);
+  }, [isHydrated, isAuthenticated, segments, router]);
 
   const onLoginScreen = segments[segments.length - 1] === 'login';
 

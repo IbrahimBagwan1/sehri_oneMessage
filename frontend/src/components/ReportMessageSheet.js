@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { KeyboardAvoidingView } from './ui';
 import { colors, radius, space, type } from '../theme';
+import { LEGAL_URLS, openLegalUrl } from '../constants/legal';
 
 // -----------------------------------------------------------------------------
 // ReportMessageSheet — confirm before a message is reported.
@@ -144,6 +145,19 @@ export default function ReportMessageSheet({
               </View>
             </Pressable>
 
+            {/* What counts as a breach, for someone deciding whether to
+                send this. Apple expects a reporting mechanism for
+                user-generated content; the standard being reported against
+                should be one tap away from it. */}
+            <Text
+              style={styles.guidelinesLink}
+              onPress={() => openLegalUrl(LEGAL_URLS.guidelines, 'the community guidelines')}
+              accessibilityRole="link"
+              accessibilityLabel="Read the community guidelines, opens in your browser"
+            >
+              What are the community guidelines?
+            </Text>
+
             {/* Actions */}
             <View style={styles.actions}>
               <Pressable
@@ -253,6 +267,14 @@ const styles = StyleSheet.create({
   checkLabel: { ...type.bodyStrong },
   checkHint:  { ...type.meta, marginTop: 2 },
 
+  guidelinesLink: {
+    ...type.meta,
+    color: colors.tealDark,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: space[4],
+    paddingVertical: space[2],
+  },
   actions: { flexDirection: 'row', gap: space[2], marginTop: space[5] },
   btn: {
     flex: 1, minHeight: 48,

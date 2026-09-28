@@ -69,7 +69,8 @@ export default function DonationHistoryScreen() {
   const [previewUri,  setPreviewUri]  = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await donationsApi.getMy({

@@ -60,7 +60,8 @@ export default function SuperAdminUsers() {
   const [busyId, setBusyId]       = useState(null);
 
   const load = useCallback(async (tab = activeTab, isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await adminApi.getUsers(tab);
@@ -73,7 +74,7 @@ export default function SuperAdminUsers() {
     }
   }, [activeTab]);
 
-  useFocusEffect(useCallback(() => { load(activeTab); }, [activeTab]));
+  useFocusEffect(useCallback(() => { load(activeTab); }, [load, activeTab]));
 
   const handleStatus = (id, status, name) => {
     const verb = status === 'approved' ? 'approve' : 'reject';

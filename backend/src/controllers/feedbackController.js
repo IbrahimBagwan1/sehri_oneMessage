@@ -15,9 +15,11 @@
 
 const db = require('../models');
 const { success, error } = require('../utils/response');
+const { Op } = require('sequelize');
 const {
   buildLocationInclude,
   resolveZoneFromLoaded,
+  locationIdsInZone,
 } = require('../utils/zoneScope');
 const { describeMember } = require('../utils/memberDisplay');
 
@@ -129,6 +131,15 @@ const listFeedback = async (req, res, next) => {
       where.is_read = req.query.is_read === 'true';
     }
 
+    // Zone admins are scoped IN THE QUERY. Filtering the page afterwards
+    // (as before) returned short or empty pages and a `total` counting
+    // every zone's feedback.
+    const userWhere = {};
+    if (role === 'admin') {
+      const ids = await locationIdsInZone(zone_location_id);
+      userWhere.location_id = { [Op.in]: ids.length ? ids : [null] };
+    }
+
     const { count, rows } = await Feedback.findAndCountAll({
       where,
       include: [
@@ -136,27 +147,20 @@ const listFeedback = async (req, res, next) => {
           model: User,
           as: 'user',
           attributes: ['id', 'name', 'phone'],
+          where: userWhere,
+          // INNER JOIN for admins: feedback from a deleted member has no
+          // zone, so it belongs only in the super admin's view.
+          required: role === 'admin',
           include: [buildLocationInclude()],
         },
       ],
       order: [['created_at', 'DESC']],
       limit,
       offset,
+      distinct: true,
     });
 
-    // Feedback from an erased member has no user row, so it has no zone
-    // to match on. A zone admin therefore stops seeing it (it is no
-    // longer "theirs"); the super admin still does, labelled as coming
-    // from a former member.
-    let visible = rows;
-    if (role === 'admin') {
-      visible = rows.filter((f) => {
-        const zone = resolveZoneFromLoaded(f.user?.location);
-        return zone && zone.id === zone_location_id;
-      });
-    }
-
-    const feedback = visible.map((f) => ({
+    const feedback = rows.map((f) => ({
       ...f.get({ plain: true }),
       user: describeMember(f.user, ['id', 'name', 'phone']),
     }));

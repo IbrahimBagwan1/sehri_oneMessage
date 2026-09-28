@@ -89,25 +89,9 @@ const sendToUser = async (userId, notification) => {
  * the same approach broadcastController already uses.
  */
 const descendantLocationIds = async (rootId) => {
-  const rows = await Location.findAll({
-    attributes: ['id', 'parent_id'],
-    where: { is_active: true },
-    raw: true,
-  });
-  const childrenOf = new Map();
-  for (const r of rows) {
-    if (!r.parent_id) continue;
-    if (!childrenOf.has(r.parent_id)) childrenOf.set(r.parent_id, []);
-    childrenOf.get(r.parent_id).push(r.id);
-  }
-  const ids = new Set([rootId]);
-  const queue = [rootId];
-  while (queue.length) {
-    for (const child of childrenOf.get(queue.shift()) || []) {
-      if (!ids.has(child)) { ids.add(child); queue.push(child); }
-    }
-  }
-  return [...ids];
+  // In-memory walk of the cached tree; see services/locationIndex.js.
+  const locationIndex = require('./locationIndex');
+  return [...(await locationIndex.descendantIds(rootId))];
 };
 
 const sendToZone = async (zoneId, notification) => {

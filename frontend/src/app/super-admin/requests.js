@@ -68,7 +68,8 @@ export default function SuperAdminRequests() {
   const [busyId,     setBusyId]     = useState(null);
 
   const load = useCallback(async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const res = await usersApi.getProfileEditRequests({ status: filter === 'all' ? undefined : filter });
