@@ -1,5 +1,5 @@
 import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure, setSecure, deleteSecure } from '../services/secureStorage';
 
 // ---------------------------------------------------------------------------
 // API base URL — from EXPO_PUBLIC_API_BASE_URL, inlined by Expo at bundle
@@ -45,7 +45,7 @@ const SCOPES = {
 apiClient.interceptors.request.use(
   async (config) => {
     const scope = SCOPES[config.authScope] || SCOPES.member;
-    const token = config.authToken || (await SecureStore.getItemAsync(scope.access));
+    const token = config.authToken || (await getSecure(scope.access));
     if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
@@ -71,8 +71,8 @@ const fireAuthFailure = (scope) => {
 
 const clearScope = async (scope) => {
   try {
-    await SecureStore.deleteItemAsync(SCOPES[scope].access);
-    await SecureStore.deleteItemAsync(SCOPES[scope].refresh);
+    await deleteSecure(SCOPES[scope].access);
+    await deleteSecure(SCOPES[scope].refresh);
   } catch (_) { /* noop */ }
 };
 
@@ -102,7 +102,7 @@ export const refreshSession = (scopeName = 'member') => {
   const scope = SCOPES[scopeName];
 
   inFlight[scopeName] = (async () => {
-    const sent = await SecureStore.getItemAsync(scope.refresh);
+    const sent = await getSecure(scope.refresh);
     if (!sent) throw new SessionEndedError('no refresh token');
     try {
       const resp = await axios.post(
@@ -112,16 +112,16 @@ export const refreshSession = (scopeName = 'member') => {
       );
       const { accessToken, refreshToken } = resp.data?.data || {};
       if (!accessToken || !refreshToken) throw new Error('Refresh response missing tokens');
-      await SecureStore.setItemAsync(scope.access, accessToken);
-      await SecureStore.setItemAsync(scope.refresh, refreshToken);
+      await setSecure(scope.access, accessToken);
+      await setSecure(scope.refresh, refreshToken);
       return accessToken;
     } catch (err) {
       const status = err?.response?.status;
       const code = err?.response?.data?.code;
       if (status === 401 && code === 'REFRESH_SUPERSEDED') {
         await new Promise((r) => setTimeout(r, 600));
-        const current = await SecureStore.getItemAsync(scope.refresh);
-        const access = await SecureStore.getItemAsync(scope.access);
+        const current = await getSecure(scope.refresh);
+        const access = await getSecure(scope.access);
         if (current && current !== sent && access) return access;
       }
       if (status === 401 || status === 403) throw new SessionEndedError(code || 'session ended');
@@ -135,7 +135,7 @@ export const refreshSession = (scopeName = 'member') => {
 /** Ask the server to end the session this device holds. Best effort. */
 export const revokeSession = async (scopeName = 'member') => {
   try {
-    const token = await SecureStore.getItemAsync(SCOPES[scopeName].refresh);
+    const token = await getSecure(SCOPES[scopeName].refresh);
     if (!token) return;
     await axios.post(
       `${API_BASE_URL}/auth/logout`,
@@ -180,7 +180,7 @@ apiClient.interceptors.response.use(
       // flight; if the stored token is newer than the one it was sent
       // with, replay with that instead of refreshing again.
       const sentWith = (original.headers?.Authorization || '').replace(/^Bearer /, '');
-      const stored = await SecureStore.getItemAsync(scope.access);
+      const stored = await getSecure(scope.access);
       const token = stored && stored !== sentWith ? stored : await refreshSession(scopeName);
 
       original.__isRetry = true;
