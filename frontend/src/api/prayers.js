@@ -1,12 +1,25 @@
 import apiClient from './client';
+import { networkFirst } from '../services/offlineCache';
+
+const todayIST = () => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+};
+
 
 export const prayersApi = {
   // GET /api/prayers
   // Returns today's prayer timings with Hijri date, Tahajjud, and Imsak.
-  getToday: async () => {
-    const response = await apiClient.get('/prayers');
-    return response.data; // { success, message, data: { timings, tahajjud_time, imsak_time, date_hijri, ... } }
-  },
+  // Saved for offline use, but a saved copy is only offered for the same
+  // IST day — yesterday's prayer times shown as today's would be wrong.
+  getToday: async () => networkFirst(
+    'prayers:today',
+    async () => (await apiClient.get('/prayers')).data, // { success, data: { date, timings, tahajjud_time, imsak_time, date_hijri, ... } }
+    { usable: (saved) => saved?.data?.date === todayIST() }
+  ),
 
   // POST /api/prayers/refresh — admin/super_admin. Force-fetches from
   // AlAdhan, bypassing the DB cache. Optional `date` = YYYY-MM-DD
