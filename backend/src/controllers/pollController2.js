@@ -35,12 +35,20 @@ const {
   isAllotmentWindowOpen,
   overrideForDesiredState,
   getNow,
+  PHASES,
 } = require('../utils/pollPhase');
 const { istDateString } = require('../utils/istTime');
 
 // getTodaysPoll() returns the poll members are currently looking at — see
 // services/pollCalendar.js for why that is tomorrow's from 22:00 IST.
 const { getTodaysPoll, shapePoll } = require('./pollController');
+const reviewDemo = require('../services/reviewDemoService');
+
+/** poll_responses.zone NOT IN the sandbox zones — keeps App Review out of real numbers. */
+const notSandboxZone = async () => {
+  const keys = await reviewDemo.sandboxZoneKeys();
+  return keys.length ? { zone: { [Op.notIn]: keys } } : {};
+};
 
 const { Poll, PollResponse, User } = db;
 
@@ -306,7 +314,7 @@ const getSpecialCases = async (req, res, next) => {
     }
 
     const cases = await PollResponse.findAll({
-      where: { poll_id: poll.id, is_special_case: true },
+      where: { poll_id: poll.id, is_special_case: true, ...(await notSandboxZone()) },
       include: [
         {
           model: User,
@@ -445,8 +453,21 @@ const togglePoll = async (req, res, next) => {
     }
 
     const now = getNow();
+    const override = overrideForDesiredState(poll, wantOpen, now);
+
+    // A poll whose day has ended (22:00 on its date, when the next poll's
+    // voting opens) can no longer be reopened. Say so instead of storing an
+    // override that would have no effect.
+    if (wantOpen && getPollPhase({ date: poll.date, is_active: override }, now) !== PHASES.VOTING) {
+      return error(res, {
+        statusCode: 409,
+        message: "This poll's day has ended. Open tomorrow's poll instead.",
+        code: 'POLL_DAY_ENDED',
+      });
+    }
+
     await poll.update({
-      is_active: overrideForDesiredState(poll, wantOpen, now),
+      is_active: override,
       deadline_time: now, // audit timestamp only
     });
 
@@ -505,7 +526,7 @@ const getPollHistory = async (req, res, next) => {
 
     const countWhere = {
       poll_id: { [Op.in]: pollIds },
-      ...(adminZoneName ? { zone: adminZoneName } : {}),
+      ...(adminZoneName ? { zone: adminZoneName } : await notSandboxZone()),
     };
 
     const responseCounts = await PollResponse.findAll({

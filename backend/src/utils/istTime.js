@@ -19,6 +19,8 @@
  * directions; that is what istInstant relies on.
  */
 
+const clock = require('./clock');
+
 const IST_TZ = 'Asia/Kolkata';
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
@@ -33,7 +35,7 @@ const partsFormatter = new Intl.DateTimeFormat('en-US', {
 });
 
 /** { year, month, day, hour, minute } of `date` on the IST wall clock. */
-const istParts = (date = new Date()) => {
+const istParts = (date = clock.now()) => {
   const out = {};
   for (const p of partsFormatter.formatToParts(date)) {
     if (p.type !== 'literal') out[p.type] = Number(p.value);
@@ -48,13 +50,13 @@ const istParts = (date = new Date()) => {
 const pad = (n) => String(n).padStart(2, '0');
 
 /** "YYYY-MM-DD" of `date` in IST. */
-const istDateString = (date = new Date()) => {
+const istDateString = (date = clock.now()) => {
   const { year, month, day } = istParts(date);
   return `${year}-${pad(month)}-${pad(day)}`;
 };
 
 /** Current IST hour, 0–23. */
-const istHour = (date = new Date()) => istParts(date).hour;
+const istHour = (date = clock.now()) => istParts(date).hour;
 
 /** Shift a "YYYY-MM-DD" by whole days. Pure calendar arithmetic, no time zone. */
 const addDays = (dateStr, days) => {
@@ -69,7 +71,7 @@ const istInstant = (dateStr, hour = 0, minute = 0) => {
 };
 
 /** Day of the year (0-based) of `date` in IST. */
-const istDayOfYear = (date = new Date()) => {
+const istDayOfYear = (date = clock.now()) => {
   const { year, month, day } = istParts(date);
   return Math.floor((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86400000);
 };
