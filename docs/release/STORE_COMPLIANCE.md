@@ -20,7 +20,7 @@ Checked against the current published policies (September 2026):
 | **1.1.5** accurate religious text | Qur'an, duas | ✅ established sources, credited in-app (Profile → Legal & support → Sources & credits; also from the Qur'an and Dua tabs) | — |
 | **2.1** demo account, backend live | OTP + approval | ✅ sandboxed reviewer accounts (`docs/release/APP_REVIEW_ACCESS.md`) | turn on `REVIEW_DEMO_ENABLED`, paste the notes |
 | **2.5.4 / 5.1.5** location only when relevant; background modes only for their purpose | Rider tracking | ✅ "While Using" only, never "Always"; `UIBackgroundModes` = `location` only (the unused `fetch` mode is stripped); blue indicator; auto-stop after 10 h | explain in review notes (text provided) |
-| **3.2.2(iv)** charity funds only outside the app | Donations | ✅ "View payment details" opens `/payment.html` in Safari; the app shows no payment number and has no in-app payment | — |
+| **3.2.2(iv)** charity funds only outside the app | Donations | ✅ "View payment details" opens the website home page (UPI ID + QR) in Safari; the app shows no payment number and has no in-app payment | — |
 | **4.2** minimum functionality | — | ✅ guest mode: prayer times, Qur'an, duas, verse of the day | — |
 | **4.8** login services | Phone + password only | ✅ not applicable (no third-party sign-in) | — |
 | **5.1.1(i)** privacy policy in listing and in app | — | ✅ sign-in footer, registration consent, Profile | set the URL in App Store Connect |
@@ -44,7 +44,7 @@ Checked against the current published policies (September 2026):
 | **Background location** declaration | Would apply only if requested | ✅ not requested — the feed is a user-started foreground service | none needed |
 | **Foreground service type** declaration (Android 14+) | Rider feed | ✅ `location` type, user-initiated, ends on Stop or after 10 h | declare "Location — user-initiated location sharing" + short video |
 | **Notifications** (Android 13+) | Push | ✅ channel created before the runtime prompt | — |
-| **Payments policy** — Play billing is not required for *tax-exempt* donations | Donate | ✅ same as iOS: the app opens `/payment.html` in the system browser and shows no payment number; payment happens in the donor's UPI app; the app only accepts the screenshot afterwards | if the kitchen is a registered tax-exempt body, say so in the review notes (optional) |
+| **Payments policy** — Play billing is not required for *tax-exempt* donations | Donate | ✅ same as iOS: the app opens the website home page in the system browser and shows no payment number; payment happens in the donor's UPI app; the app only accepts the screenshot afterwards | if the kitchen is a registered tax-exempt body, say so in the review notes (optional) |
 | **Child Safety Standards** | Chat | ✅ `/child-safety` page | set the URL, name a contact |
 | **Data safety** accurate | — | ✅ inventory in `DATA_INVENTORY.md` | fill in the form |
 | **Target audience** | Chat, not for children | — | 13+ only; not "designed for children" |

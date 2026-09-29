@@ -14,7 +14,8 @@ import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import { useRiderStore } from '../../store/useRiderStore';
-import { Button, Chip, Header, LoadingState } from '../../components/ui';
+import { Button, Chip, Header, LoadingState, MapUnavailable } from '../../components/ui';
+import { googleMapsAvailable } from '../../services/maps';
 import { colors, radius, space, type } from '../../theme';
 
 // -----------------------------------------------------------------------------
@@ -288,6 +289,10 @@ export default function RiderMapScreen() {
               your position to the community while you deliver.
             </Text>
           </View>
+        ) : !googleMapsAvailable ? (
+          // No Maps key in this build: the SDK would crash the app. Location
+          // sharing, stops and Start/Stop below work without the map.
+          <MapUnavailable />
         ) : (
           <MapView
             ref={mapRef}

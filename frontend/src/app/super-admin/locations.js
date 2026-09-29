@@ -43,6 +43,8 @@ import { colors, radius, space, type } from '../../theme';
 // config plugin at prebuild — requires a dev-client build (Expo Go
 // doesn't ship the Google Maps native SDK).
 import MapView, { PROVIDER_GOOGLE, Marker } from 'react-native-maps';
+import MapUnavailable from '../../components/ui/MapUnavailable';
+import { googleMapsAvailable } from '../../services/maps';
 import { describeError } from '../../api/errors';
 
 // Bangalore center — pin defaults here if the PG doesn't have coords yet.
@@ -348,7 +350,10 @@ export default function LocationsCoordScreen() {
             onBack={closePicker}
           />
 
-          {pickCoord ? (
+          {!googleMapsAvailable ? (
+            // No Maps key in this build: mounting the map would crash the app.
+            <MapUnavailable />
+          ) : pickCoord ? (
             <View style={styles.mapWrap}>
               <MapView
                 provider={PROVIDER_GOOGLE}
@@ -409,7 +414,9 @@ export default function LocationsCoordScreen() {
               label="Save pin"
               onPress={handleSave}
               loading={saving}
-              disabled={!pickCoord}
+              // Without a map nobody chose a point; saving would store the
+              // picker's starting coordinate as the building's pin.
+              disabled={!pickCoord || !googleMapsAvailable}
               icon="checkmark"
               style={{ flex: 1 }}
             />

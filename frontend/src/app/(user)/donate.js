@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,10 +6,9 @@ import {
   Alert,
   Pressable,
   Image,
-  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { donationsApi } from '../../api/donations';
@@ -17,24 +16,24 @@ import {
   Button,
   Card,
   Chip,
-  ErrorState,
   GuestGate,
   Header,
   Input,
-  LoadingState,
   SectionHeader,
   KeyboardAwareScroll
 } from '../../components/ui';
 import { colors, radius, space, type } from '../../theme';
 import { useAuthStore } from '../../store/useAuthStore';
 import { describeError } from '../../api/errors';
+import { LEGAL_URLS, openLegalUrl } from '../../constants/legal';
 
 // -----------------------------------------------------------------------------
 // DonateScreen — external UPI donation flow.
 //
-// On both platforms "View payment details" opens the hosted payment.html
-// page in the system browser (Safari / the default Android browser). The
-// app itself never shows the payment number or starts a payment: Apple
+// On both platforms "View payment details" opens the OneMessage website's
+// home page (LEGAL_URLS.payment), which carries the UPI ID and QR code, in
+// the system browser (Safari / the default Android browser). The app itself
+// never shows the payment number or starts a payment: Apple
 // 3.2.2(iv) requires charity funds to be collected outside the app, and
 // Google Play only exempts tax-exempt donations from its billing rule, so
 // keeping the payment step on the web satisfies both.
@@ -77,35 +76,9 @@ function DonateScreenAuthed() {
   const [screenshot, setScreenshot] = useState(null);   // { uri, mimeType?, fileName? }
   const [submitting, setSubmitting] = useState(false);
 
-  const [payment, setPayment]       = useState(null);   // { payment_url, ... }
-  const [loadingPay, setLoadingPay] = useState(true);
-  const [payError, setPayError]     = useState(null);
-
-  const fetchPayment = useCallback(async () => {
-    setPayError(null);
-    setLoadingPay(true);
-    try {
-      const res = await donationsApi.getPaymentInfo();
-      if (res.success) setPayment(res.data);
-    } catch (err) {
-      setPayError(describeError(err, "Couldn't load payment details right now."));
-    } finally {
-      setLoadingPay(false);
-    }
-  }, []);
-
-  useFocusEffect(useCallback(() => { fetchPayment(); }, [fetchPayment]));
-
-  const handleOpenPaymentPage = async () => {
-    if (!payment?.payment_url) return;
-    try {
-      const supported = await Linking.canOpenURL(payment.payment_url);
-      if (!supported) throw new Error('unsupported');
-      await Linking.openURL(payment.payment_url);
-    } catch {
-      Alert.alert("Couldn't open the payment page", 'Check that a web browser is installed and try again.');
-    }
-  };
+  // A fixed web page, so there is nothing to load before the button works;
+  // with no signal the browser shows its own offline page.
+  const handleOpenPaymentPage = () => openLegalUrl(LEGAL_URLS.payment, 'the payment details');
 
   // No permission request: the system picker (PHPicker on iOS, the Photo
   // Picker on Android) runs outside the app and returns only the image the
@@ -186,34 +159,27 @@ function DonateScreenAuthed() {
       />
 
       <KeyboardAwareScroll contentContainerStyle={styles.scroll}>
-          {/* Step 1 — Payment details, platform-branched */}
+          {/* Step 1 — Payment details, on the website */}
           <View style={styles.section}>
             <SectionHeader title="1. Pay with any UPI app" ornament="star" />
-            {loadingPay ? (
-              <Card><LoadingState message="Loading payment details…" compact /></Card>
-            ) : payError ? (
-              <Card><ErrorState message={payError} onRetry={fetchPayment} /></Card>
-            ) : (
-              <Card tone="warm">
-                <Text style={styles.paymentEyebrow}>Payment details</Text>
-                <Text style={styles.paymentHeadline}>Open the payment page</Text>
-                <Text style={styles.paymentBody}>
-                  Tap below to see where to send your donation. It opens in your
-                  browser; pay with any UPI app, then come back here and upload the
-                  screenshot.
-                </Text>
-                <Button
-                  label="View payment details"
-                  onPress={handleOpenPaymentPage}
-                  disabled={!payment?.payment_url}
-                  icon="open-outline"
-                  iconRight
-                  fullWidth
-                  accessibilityLabel="View payment details. Opens in your browser"
-                  style={{ marginTop: space[3] }}
-                />
-              </Card>
-            )}
+            <Card tone="warm">
+              <Text style={styles.paymentEyebrow}>Payment details</Text>
+              <Text style={styles.paymentHeadline}>Open the payment page</Text>
+              <Text style={styles.paymentBody}>
+                Tap below to see where to send your donation. It opens in your
+                browser; pay with any UPI app, then come back here and upload the
+                screenshot.
+              </Text>
+              <Button
+                label="View payment details"
+                onPress={handleOpenPaymentPage}
+                icon="open-outline"
+                iconRight
+                fullWidth
+                accessibilityLabel="View payment details. Opens in your browser"
+                style={{ marginTop: space[3] }}
+              />
+            </Card>
           </View>
 
           {/* Step 2 — Amount */}

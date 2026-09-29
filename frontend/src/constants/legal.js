@@ -26,6 +26,10 @@ import { Alert, Linking } from 'react-native';
  *               app with chat.
  *   deleteAccount — Play Console's account-deletion URL. Deleting works
  *               inside the app too; this page explains what is kept.
+ *   payment   — where "View payment details" on the Donate screen goes.
+ *               The site's home page carries the UPI ID, QR code and "pay
+ *               with a UPI app" link, so the app never shows payment
+ *               details itself (Apple 3.2.2(iv), Google Play payments).
  */
 
 export const SITE_URL = 'https://onemessage-official.vercel.app';
@@ -38,6 +42,7 @@ export const LEGAL_URLS = {
   guidelines:    `${SITE_URL}/community-guidelines`,
   childSafety:   `${SITE_URL}/child-safety`,
   deleteAccount: `${SITE_URL}/delete-account`,
+  payment:       SITE_URL,
 };
 
 /**

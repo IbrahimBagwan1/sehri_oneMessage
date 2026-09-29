@@ -240,16 +240,16 @@ Also for Play → App content:
    Play exempts only *"tax exempt donations"* from its billing requirement
    (Payments policy, §3.2), and the UPI ID in use looks like a personal
    number (`9632716392@axl`). The app now behaves the same on Android as on
-   iOS: "View payment details" opens the hosted payment page in the system
-   browser, and the app itself shows no payment number and starts no payment
+   iOS: "View payment details" opens the website's home page (which carries
+   the UPI ID and QR code) in the system browser, and the app itself shows no payment number and starts no payment
    — it only takes the screenshot afterwards. This satisfies Apple 3.2.2(iv)
    and keeps the payment step off Play entirely. Residual: if a Play reviewer
    still asks, the answer is in the review notes ("the app never processes
    payments; it links to a web page"). If the kitchen is a registered
    tax-exempt trust/society, saying so there removes all doubt.
-2. **UPI ID mismatch** between the website donation page (`onemessage@axl`)
-   and the QR/backend (`9632716392@axl`) — already on the launch checklist;
-   must be resolved before screenshots of the Donate screen are taken.
+2. **UPI IDs** — the website shows `onemessage@axl` and its QR resolves to
+   `9632716392@axl`; both reach the same account (confirmed by the owner).
+   Nothing to do.
 3. **iOS privacy manifest was missing two declared types** (Other Data Types
    for gender/occupation; chat as Emails or Text Messages). Fixed in
    `app.config.js`; takes effect in the next build.

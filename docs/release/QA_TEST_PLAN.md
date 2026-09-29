@@ -86,8 +86,8 @@ current day's poll until 10 pm at the latest).
 | 2.8 | Between 10 am and 5 pm | Special-case options (opt in/out) appear per the poll's rules |
 | 2.9 | Profile → Vote history | Past answers listed with dates |
 | 2.10 | Profile → edit name/landmark → Submit for approval | "Pending admin approval" badge; the change appears only after an admin approves |
-| 2.11 | Donate → View payment details | **Both phones**: the payment page opens in the system browser (Safari / Chrome or the default browser) and shows the UPI number. The Donate screen itself shows **no** payment number and has no Copy or "pay" button. Return to the app with the back gesture / app switcher: the form is still there |
-| 2.11a | Donate with no browser able to open the page (Android: disable Chrome and have no other browser) | "Couldn't open the payment page — check that a web browser is installed" — no crash |
+| 2.11 | Donate → View payment details | **Both phones**: the OneMessage website's home page (`onemessage-official.vercel.app`) opens in the system browser (Safari / Chrome or the default browser), showing the UPI ID, QR code, Copy and "Open UPI app". The Donate screen itself shows **no** payment number and has no Copy or "pay" button. Return to the app with the back gesture / app switcher: the form is still there |
+| 2.11a | Donate with no browser able to open the page (Android: disable Chrome and have no other browser) | "Couldn't open the payment details — visit https://onemessage-official.vercel.app in your browser" — no crash |
 | 2.12 | Donate → enter amount → attach screenshot → submit | "Submitted — a super admin will verify it". Donation history shows it as pending, and **the screenshot opens** from history |
 | 2.13 | Feedback → send a message | Appears in "Your feedback" |
 

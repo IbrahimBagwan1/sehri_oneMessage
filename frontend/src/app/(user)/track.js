@@ -10,6 +10,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
+import MapUnavailable from '../../components/ui/MapUnavailable';
+import { googleMapsAvailable } from '../../services/maps';
 import { trackingApi } from '../../api/tracking';
 import {
   Chip,
@@ -446,6 +448,9 @@ function TrackScreenAuthed() {
 
       {/* Map — native Google Maps via react-native-maps */}
       <View style={styles.mapContainer}>
+        {/* No Maps key in this build: the SDK would crash the app, so the
+            panel below the map (ETA, rider, stops) shows without it. */}
+        {!googleMapsAvailable ? <MapUnavailable /> : (
         <MapView
           ref={mapRef}
           provider={PROVIDER_GOOGLE}
@@ -529,6 +534,7 @@ function TrackScreenAuthed() {
             />
           )}
         </MapView>
+        )}
 
         {/* Recenter button — small overlay, top-right. Re-arms auto-follow. */}
         <Pressable

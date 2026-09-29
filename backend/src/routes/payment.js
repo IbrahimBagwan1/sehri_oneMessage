@@ -4,10 +4,10 @@
  * GET /api/payment/info
  *
  * Returns the UPI/phone number to which donations should be sent, plus
- * the URL of the hosted payment page. The app (iOS and Android) only uses
- * payment_url, opening it in the system browser — it never renders the
- * number itself. contact_number is read by payment.html, and kept for app
- * builds released before that change.
+ * the URL of the hosted payment page. Current app builds do not call this:
+ * "View payment details" opens the OneMessage website's home page, which
+ * carries the payment details. Kept for payment.html and for app builds
+ * released before that change.
  *
  * The number comes from the PAYMENT_CONTACT_NUMBER env var. The
  * payment_url is derived from the current request so it works whether

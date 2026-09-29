@@ -116,8 +116,6 @@ Treat these as public. Rotate, then update the server `.env` and EAS.
 
 - [ ] **Redeploy** (canonical domain fixes; privacy policy and delete-account
       pages describe current deletion, crash reporting, phone visibility).
-- [ ] **Reconcile the UPI ID** (`onemessage@axl` on the page vs
-      `9632716392@axl` in the QR/backend), then a ₹1 test payment both ways.
 - [ ] Optional wording for the privacy policy: payment screenshots are
       stored privately and shown only to the super admins who verify them.
 

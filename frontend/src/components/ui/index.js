@@ -24,6 +24,7 @@ export { default as Input }          from './Input';
 export { default as KeyboardAwareScroll } from './KeyboardAwareScroll';
 export { KeyboardAvoidingView, KeyboardStickyView } from './KeyboardAwareScroll';
 export { default as LoadingState }   from './LoadingState';
+export { default as MapUnavailable } from './MapUnavailable';
 export { default as OfflineNote }    from './OfflineNote';
 export { default as RubStar }        from './RubStar';
 export { default as SectionHeader }  from './SectionHeader';

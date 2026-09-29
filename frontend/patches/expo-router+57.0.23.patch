@@ -1,0 +1,28 @@
+diff --git a/node_modules/expo-router/build/react-navigation/bottom-tabs/views/TabBarIcon.js b/node_modules/expo-router/build/react-navigation/bottom-tabs/views/TabBarIcon.js
+index 1b568c5..c621816 100644
+--- a/node_modules/expo-router/build/react-navigation/bottom-tabs/views/TabBarIcon.js
++++ b/node_modules/expo-router/build/react-navigation/bottom-tabs/views/TabBarIcon.js
+@@ -30,7 +30,13 @@ function TabBarIcon({ route: _, variant, size, badge, badgeStyle, activeOpacity,
+                     ? styles.wrapperUikitCompact
+                     : styles.wrapperUikit,
+             style,
+-        ], children: [(0, jsx_runtime_1.jsx)(react_native_1.View, { style: [
++        ], children: [(0, jsx_runtime_1.jsx)(react_native_1.View, { 
++                // OneMessage patch: never flatten this wrapper. Its opacity flips
++                // 1 <-> 0 on every focus change; flattening at 1 and unflattening at 0
++                // makes Fabric re-parent the icon, which crashes ("child already has a
++                // parent") when it happens inside a screen that is animating out.
++                // https://github.com/software-mansion/react-native-screens/issues/4677
++                collapsable: false, style: [
+                     styles.icon,
+                     {
+                         opacity: activeOpacity,
+@@ -41,7 +47,7 @@ function TabBarIcon({ route: _, variant, size, badge, badgeStyle, activeOpacity,
+                     focused: true,
+                     size: iconSize,
+                     color: activeTintColor,
+-                }) }), (0, jsx_runtime_1.jsx)(react_native_1.View, { style: [styles.icon, { opacity: inactiveOpacity }], children: renderIcon({
++                }) }), (0, jsx_runtime_1.jsx)(react_native_1.View, { collapsable: false, style: [styles.icon, { opacity: inactiveOpacity }], children: renderIcon({
+                     focused: false,
+                     size: iconSize,
+                     color: inactiveTintColor,

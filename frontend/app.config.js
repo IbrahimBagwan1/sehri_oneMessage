@@ -263,6 +263,10 @@ module.exports = () => ({
     },
     extra: {
       eas: process.env.EAS_PROJECT_ID ? { projectId: process.env.EAS_PROJECT_ID } : undefined,
+      // Whether each platform's Maps key was supplied (booleans, never the
+      // key). The map screens read it so a build without a key shows a
+      // "map not available" panel instead of crashing (services/maps.js).
+      googleMaps: { android: Boolean(androidMapsKey), ios: Boolean(iosMapsKey) },
     },
   },
 });
